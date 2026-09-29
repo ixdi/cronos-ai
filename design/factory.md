@@ -1,10 +1,10 @@
-# Self-improving Software Factory
+# Cronos AI: Self-improving Software Factory
 
 - Factory Mindset
   - You won't be building the product
   - You will be building the thing that builds the product
 
-![Self-improving Software Factory](./ai_factory_workflow.png)
+![Cronos AI workflow](./cronos_ai_workflow.png)
 
 ## Inputs
 

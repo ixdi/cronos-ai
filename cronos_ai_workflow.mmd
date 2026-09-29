@@ -1,0 +1,28 @@
+flowchart TD
+    newTask[New task or issue] --> triage[Triage agent runs]
+    triage --> outcome{Triage outcome}
+
+    outcome -->|Automatable| implementation[Implementation agent runs]
+    outcome -->|Needs specs due to scope or ambiguity| specs[Spec agent runs]
+    specs --> specReview[Human reviews specs]
+    specReview -->|Needs revision| specs
+    specReview -->|Approved| implementation
+    outcome -->|Needs human clarification| clarification[Human provides input]
+    clarification -->|Clarification provided| triage
+    outcome -->|Park for now| parked[Park issue for now]
+
+    implementation --> codeReview[Code review agent runs]
+    codeReview --> verification[Verification agent runs]
+    verification --> humanReview[Human reviews code and verification output]
+    humanReview --> ready{Ready to ship?}
+    ready -->|Not ready| implementation
+    ready -->|Approved| cicd[CI/CD]
+
+    cicd --> ship[Ship it]
+    ship --> monitoring[Monitoring agent runs]
+    monitoring --> issueDetected{Issue detected?}
+    issueDetected -->|Yes| createIssue[Create issue]
+    createIssue --> factoryLoop[Factory loop continues]
+    factoryLoop --> newTask
+    issueDetected -->|No| continueMonitoring[Continue monitoring]
+    continueMonitoring --> monitoring

@@ -1,10 +1,10 @@
-# Crear una AI Software Factory (fàbrica de programari orientada a agents)
+# Cronos AI: fàbrica de programari orientada a agents
 
 Utilitzant Herdr com a entorn d'execució és una de les arquitectures més potents i modernes per a la generació de codi autònoma. Com que Herdr actua com a gestor de terminals locals persistent i invisible, resol el gran problema de les "fàbriques de programari": la pèrdua de context i la dificultat de supervisar múltiples agents treballant en paral·lel.
 
 A continuació, es mostra com estructurar el flux de treball per crear productes complets des de zero mitjançant una arquitectura multiagent.
 
-## L'Arquitectura de la Software Factory (Model de 4 Capes)
+## Arquitectura de Cronos AI (Model de 4 Capes)
 
 [ Usuari: Idea de Producte ]
 
@@ -25,7 +25,7 @@ A continuació, es mostra com estructurar el flux de treball per crear productes
 - Execució en terminal: El script de Python llança comandes com:
 
 ```
-herdr session create software-factory-saas
+herdr session create cronos-ai
 herdr pane split --right
 herdr pane split --bottom
 ```
@@ -36,8 +36,8 @@ herdr pane split --bottom
 
 L'orquestrador envia prompts i arrenca agents especialitzats en línia de comandes dins de cada panell de Herdr:
 
-## Workflow de la IA Software Factory
+## Workflow de Cronos AI
 
-Llegeig el document ./factory.md per entendre el workflow que es vol
+Llegeig el document ./cronos_ai_workflow.mmd en mermaid per entendre el workflow que es vol
 
 Cada node del workflow està basat en un o més skills especialitzats
