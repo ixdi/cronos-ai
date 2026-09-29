@@ -34,4 +34,4 @@
 - [x] 5.2 Expose the dashboard through the canonical `cronos-ai` CLI and wire graceful shutdown and error reporting; verify CLI tests pass and existing non-interactive CLI tests remain unchanged and green.
 - [x] 5.3 Add an end-to-end test with concurrent persisted runs, progress events, blocked work, human attention, and review/output references; verify displayed counts, stage, percentage, event history, and read-only behavior match the database state.
 - [x] 5.4 Commit the CLI integration slice with a commitlint-valid Conventional Commit subject and verify all implementation commits are present on the dedicated branch.
-- [ ] 5.5 Run `uv run pytest`, `uv run ruff check .`, `uv run mypy`, `uv build --no-sources`, and `uv audit --locked`; verify all pass, then review `git status --short` and `git log` for a clean implementation worktree and compliant commits.
+- [x] 5.5 Run `uv run pytest`, `uv run ruff check .`, `uv run mypy`, `uv build --no-sources`, and `uv audit --locked`; verify all pass, then review `git status --short` and `git log` for a clean implementation worktree and compliant commits.
