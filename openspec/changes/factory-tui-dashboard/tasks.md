@@ -12,13 +12,13 @@
 - [x] 2.2 Implement the additive SQLite migration and indexed event append/query APIs; verify the migration tests pass against both a new database and a database at the previous schema version.
 - [x] 2.3 Add failing sanitization tests for provider-token formats, environment secrets, oversized summaries, and raw tool payload exclusion; verify they fail before implementing the sanitizer.
 - [x] 2.4 Implement fail-closed summary sanitization and record concise task lifecycle and worker progress events at durable event boundaries; verify the sanitization tests pass and raw RPC/tool payloads are not persisted.
-- [ ] 2.5 Commit the completed activity-history slice with a commitlint-valid Conventional Commit subject, and verify the commit contains only intended source/tests and no state database, logs, secrets, or temporary files.
+- [x] 2.5 Commit the completed activity-history slice with a commitlint-valid Conventional Commit subject, and verify the commit contains only intended source/tests and no state database, logs, secrets, or temporary files.
 
 ## 3. Dashboard read model and progress derivation
 
-- [ ] 3.1 Add failing read-model tests for run aggregation, current stage selection, worker/task counts, completed-task percentage rounding, unknown stage, and human-attention state; verify the tests fail before adding the read model.
-- [ ] 3.2 Implement bounded read snapshots from existing run, task, attempt, review, context, controller, attention, and activity data; verify read-model tests cover concurrent runs and taskless/unavailable details.
-- [ ] 3.3 Add tests proving snapshot refreshes and dashboard queries do not mutate requests, tasks, attempts, approvals, or control actions; verify persisted state is unchanged before and after repeated reads.
+- [x] 3.1 Add failing read-model tests for run aggregation, current stage selection, worker/task counts, completed-task percentage rounding, unknown stage, and human-attention state; verify the tests fail before adding the read model.
+- [x] 3.2 Implement bounded read snapshots from existing run, task, attempt, review, context, controller, attention, and activity data; verify read-model tests cover concurrent runs and taskless/unavailable details.
+- [x] 3.3 Add tests proving snapshot refreshes and dashboard queries do not mutate requests, tasks, attempts, approvals, or control actions; verify persisted state is unchanged before and after repeated reads.
 - [ ] 3.4 Commit the read-model slice with a commitlint-valid Conventional Commit subject and verify the commit is isolated to the intended worktree and change.
 
 ## 4. Interactive dashboard
