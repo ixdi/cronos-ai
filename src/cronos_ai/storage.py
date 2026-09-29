@@ -13,6 +13,7 @@ from threading import RLock
 from typing import cast
 
 from cronos_ai.models import (
+    ActivityEvent,
     Attempt,
     AttemptStatus,
     ControlAction,
@@ -215,6 +216,29 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
         """
         CREATE INDEX idx_delivery_attempts_latest
         ON delivery_attempts(run_id, updated_at)
+        """,
+    ),
+    10: (
+        """
+        CREATE TABLE factory_activity_events (
+            event_id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            task_id TEXT,
+            occurred_at TEXT NOT NULL,
+            category TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            FOREIGN KEY (run_id) REFERENCES runs(run_id) ON DELETE CASCADE,
+            FOREIGN KEY (run_id, task_id)
+                REFERENCES tasks(run_id, task_id) ON DELETE CASCADE
+        )
+        """,
+        """
+        CREATE INDEX idx_factory_activity_events_run_order
+        ON factory_activity_events(run_id, occurred_at DESC, event_id DESC)
+        """,
+        """
+        CREATE INDEX idx_factory_activity_events_task_order
+        ON factory_activity_events(run_id, task_id, occurred_at DESC, event_id DESC)
         """,
     ),
 }
@@ -528,6 +552,65 @@ class FactoryStore:
             (run_id, task_id),
         )
         return [Attempt.model_validate_json(row["payload_json"]) for row in rows]
+
+    def append_activity_event(self, event: ActivityEvent) -> None:
+        """Append one sanitized run or task activity event."""
+        with self._transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO factory_activity_events (
+                    event_id, run_id, task_id, occurred_at, category, summary
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.event_id,
+                    event.run_id,
+                    event.task_id,
+                    event.occurred_at.isoformat(),
+                    event.category,
+                    event.summary,
+                ),
+            )
+
+    def list_activity_events(
+        self,
+        run_id: str,
+        *,
+        task_id: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[ActivityEvent]:
+        """Load a bounded, newest-first page of activity for one run or task."""
+        if limit < 1 or limit > 1000:
+            raise ValueError("activity event limit must be between 1 and 1000")
+        if offset < 0:
+            raise ValueError("activity event offset must not be negative")
+        task_filter = " AND task_id = ?" if task_id is not None else ""
+        parameters: tuple[object, ...] = (run_id,)
+        if task_id is not None:
+            parameters += (task_id,)
+        parameters += (limit, offset)
+        rows = self._fetchall(
+            f"""
+            SELECT event_id, run_id, task_id, occurred_at, category, summary
+            FROM factory_activity_events
+            WHERE run_id = ?{task_filter}
+            ORDER BY occurred_at DESC, event_id DESC
+            LIMIT ? OFFSET ?
+            """,
+            parameters,
+        )
+        return [
+            ActivityEvent(
+                event_id=str(row["event_id"]),
+                run_id=str(row["run_id"]),
+                task_id=(str(row["task_id"]) if row["task_id"] is not None else None),
+                occurred_at=datetime.fromisoformat(str(row["occurred_at"])),
+                category=str(row["category"]),
+                summary=str(row["summary"]),
+            )
+            for row in rows
+        ]
 
     def record_plan_approval(self, run_id: str, approval: PlanApproval) -> None:
         """Append a plan approval or rejection to the durable audit history."""

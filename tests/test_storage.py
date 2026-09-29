@@ -66,7 +66,7 @@ def test_schema_migrates_and_task_attempt_survive_reopen(tmp_path) -> None:
     with FactoryStore(database_path) as store:
         store.create_run("run-1", request, plan)
         store.record_attempt("run-1", task, attempt)
-        assert store.schema_version == 9
+        assert store.schema_version == 10
 
     with FactoryStore(database_path) as reopened:
         assert reopened.get_run("run-1") == (request, plan)

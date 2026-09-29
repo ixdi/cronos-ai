@@ -13,6 +13,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StringConstraints,
+    field_validator,
     model_validator,
 )
 
@@ -303,6 +304,30 @@ class TaskRecord(ValidatedModel):
         if self.state is TaskState.RUNNING and self.worker_id is None:
             raise ValueError("running tasks require an assigned worker")
         return self
+
+
+class ActivityEvent(ValidatedModel):
+    """A bounded, safe-to-display progress or lifecycle event."""
+
+    event_id: NonEmptyString
+    run_id: NonEmptyString
+    task_id: NonEmptyString | None = None
+    occurred_at: datetime
+    category: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=64),
+    ]
+    summary: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=512),
+    ]
+
+    @field_validator("occurred_at")
+    @classmethod
+    def normalize_timestamp(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("activity timestamps must be timezone-aware")
+        return value.astimezone(UTC)
 
 
 class MCPServerDefinition(ValidatedModel):
