@@ -11,7 +11,7 @@ Cronos AI is a local-first software factory that orchestrates autonomous AI agen
 
 It is based on the Zach Lloyd ideas and proposals.
 
-Read the [Cronos AI user guide](https://ixdi.github.io) for a first-use walkthrough and workflow diagram.
+Read the [Cronos AI user guide](https://ixdi.github.io/cronos-ai/) for a first-use walkthrough and workflow diagram.
 
 It requires Python 3.12 or newer, Git, `uv`, and the OpenSpec CLI on `PATH`.
 
