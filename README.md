@@ -1,4 +1,4 @@
-# Cronos AI - Engineering the tool that builds products
+# Cronos AI - Engineering Software Manufacturing
 
 <div align="center">
   <img src="assets/banner.jpeg" alt="Cronos AI banner" width="60%">
