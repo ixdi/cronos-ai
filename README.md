@@ -1,12 +1,62 @@
 # Cronos AI
 
-![Cronos AI banner](assets/banner.jpeg)
+<div align="center">
+  <img src="assets/banner.jpeg" alt="Cronos AI banner" width="60%">
+</div>
+
+> [!WARNING]
+> **Work in progress:** Cronos AI is actively evolving. Some integrations and automated workflows are available through Python APIs but are not yet orchestrated end to end by the CLI.
 
 Cronos AI is a local-first software factory that orchestrates autonomous AI agents to plan, architect, build, and validate production-ready applications.
+
+It is based on the Zach Lloyd ideas and proposals.
 
 Read the [Cronos AI user guide](docs/factory-guide.html) for a first-use walkthrough and workflow diagram.
 
 It requires Python 3.12 or newer, Git, `uv`, and the OpenSpec CLI on `PATH`.
+
+## Contents
+
+- [Technologies](#technologies)
+  - [Application](#application)
+  - [Agent and infrastructure integrations](#agent-and-infrastructure-integrations)
+  - [Development toolchain](#development-toolchain)
+- [Development setup](#development-setup)
+- [Workflows](#workflows)
+  - [Initialize a target repository](#initialize-a-target-repository)
+  - [Request intake](#request-intake)
+  - [Triage and planning](#triage-and-planning)
+    - [Task states, retries, and review](#task-states-retries-and-review)
+  - [Webhooks and delivery adapters](#webhooks-and-delivery-adapters)
+  - [Sandbox prerequisites and recovery](#sandbox-prerequisites-and-recovery)
+    - [Provider key and egress configuration](#provider-key-and-egress-configuration)
+    - [Worktree recovery](#worktree-recovery)
+  - [Pi, Herdr, and specialist profiles](#pi-herdr-and-specialist-profiles)
+    - [Factory-managed profile resources](#factory-managed-profile-resources)
+    - [Runtime verification](#runtime-verification)
+
+## Technologies
+
+### Application
+
+- **Python 3.12+** provides the application runtime.
+- **LangGraph** supports planning and orchestration workflows.
+- **Pydantic** validates configuration and domain data.
+- **SQLite** stores durable requests, task state, and human actions locally.
+- **Git** provides repository validation, branches, and isolated worktrees.
+- **OpenSpec CLI** creates and validates change artifacts for target repositories.
+
+### Agent and infrastructure integrations
+
+- **Pi** runs agents in RPC mode and requires Node.js 22.19 or newer.
+- **Herdr** manages persistent sessions, workspaces, and worker panes.
+- **Model Context Protocol (MCP)** exposes profile-approved tools through the bridge.
+- **Docker** isolates worker execution and the network egress gateway.
+
+### Development toolchain
+
+- **uv** manages Python dependencies, environments, and builds.
+- **pytest**, **Ruff**, and **mypy** provide tests, linting, and static type checking.
 
 ## Development setup
 
@@ -42,7 +92,9 @@ uv pip install --python "$BUILD_DIR/venv/bin/python" "$BUILD_DIR"/dist/*.whl
 "$BUILD_DIR/venv/bin/cronos-ai" --version
 ```
 
-## Initialize a target repository
+## Workflows
+
+### Initialize a target repository
 
 The target must already exist and be the root of a Git working tree.
 
@@ -66,7 +118,7 @@ Check the installed command syntax with:
 uv run cronos-ai init --help
 ```
 
-## Request intake
+### Request intake
 
 Request intake is available through both the CLI and Python API.
 
@@ -93,7 +145,7 @@ request = intake_request(
 
 The resulting request has a generated identifier, the resolved repository path, and the user-provided description.
 
-## Triage and planning
+### Triage and planning
 
 Triage outcomes must be recorded explicitly; the factory does not guess intent from request text.
 
@@ -209,7 +261,7 @@ Reject it with a rationale to return integrated tasks to remediation:
 uv run cronos-ai action --action reject-review --run <run-id> --target run --data review_hash=<fingerprint> --data reviewer=<name> --data rationale="Describe requested changes"
 ```
 
-### Task states, retries, and review
+#### Task states, retries, and review
 
 | State               | Meaning                                                                  | Human attention                                           |
 | ------------------- | ------------------------------------------------------------------------ | --------------------------------------------------------- |
@@ -265,7 +317,7 @@ Queued requests and human actions remain in `factory.sqlite3` and are visible af
 
 Use `cronos-ai status` with the same `--state-dir` to inspect the recovered queue.
 
-## Webhooks and delivery adapters
+### Webhooks and delivery adapters
 
 `WebhookEndpoint` is a WSGI application that can be mounted at `POST /webhooks/<source-id>`.
 
@@ -309,7 +361,7 @@ Missing adapter configuration, failed workflows, or inconclusive statuses remain
 
 `FakeCIAdapter` is deterministic and intended for tests, not production delivery.
 
-## Sandbox prerequisites and recovery
+### Sandbox prerequisites and recovery
 
 The Docker sandbox requires a running Docker-compatible daemon and an engine that supports Linux containers, shared network namespaces, bind mounts, resource limits, and the `NET_ADMIN`, `SETUID`, and `SETGID` capabilities for the egress gateway only.
 
@@ -327,7 +379,7 @@ Its only host bind mount is the task worktree at `/workspace`; temporary writes 
 
 The egress gateway uses a separate network namespace container and does not mount the task worktree or receive provider credentials.
 
-### Provider key and egress configuration
+#### Provider key and egress configuration
 
 A specialist profile names the environment variable containing its dedicated provider API key with `provider_api_key_env`.
 
@@ -376,7 +428,7 @@ CRONOS_AI_DOCKER_E2E=1 uv run pytest tests/test_sandbox_docker.py
 
 The test verifies task-worktree access, unavailable host authentication paths, provider-key injection, direct-egress denial, and blocked unlisted proxy destinations.
 
-### Worktree recovery
+#### Worktree recovery
 
 Inspect registered Git worktrees and the state of a task checkout with:
 
@@ -395,7 +447,7 @@ When an integration conflict occurs, the run worktree retains its conflict state
 
 Do not use force removal to recover a dirty task worktree; inspect or preserve its changes first.
 
-## Pi, Herdr, and specialist profiles
+### Pi, Herdr, and specialist profiles
 
 The tested local versions are Pi 0.87.1, Herdr 0.9.1, Docker Engine 29.8.1, and Node.js 26.10.0.
 
@@ -426,7 +478,7 @@ Completed tasks map to Herdr's idle agent state with the `Done` sidebar label.
 
 Task summaries are prefixed with the task ID and bounded to 240 characters.
 
-### Factory-managed profile resources
+#### Factory-managed profile resources
 
 Store factory profiles in an explicit resource directory outside the target repository.
 
@@ -499,7 +551,7 @@ The profile's `provider_api_key_env` field contains an environment-variable name
 
 Set the configured variable in the controller environment before dispatch, and do not store its value in profile files, MCP command arguments, task plans, or logs.
 
-### Runtime verification
+#### Runtime verification
 
 The opt-in Docker end-to-end tests use a fake Pi RPC child and fake Herdr Socket API with a real Docker sandbox.
 
