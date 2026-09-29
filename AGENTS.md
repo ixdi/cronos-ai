@@ -17,7 +17,8 @@ A continuació, es mostra com estructurar el flux de treball per crear productes
 
 - Acció: L'usuari introdueix un requisit ("Vull una aplicació SaaS de notes amb Markdown i base de dades").
 - Tecnologia: Un agent de planificació (creat en Python amb LangGraph) processa el prompt i genera un PRD (Product Requirement Document) dividit en subtasques tècniques
-- Utilitza OpenSpec per generar un diagrama de dependències entre les tasques i assigna prioritat a cada agent especialitzat.
+- Utilitza OpenSpec per al node de implementation agent
+- Al fitxer ./factory.md hi ha més detalls sobre alguns dels passos i com es poden generar
 
 ## Pas 2: Orquestració i Desplegament de la "Fàbrica" a Herdr
 
@@ -40,4 +41,17 @@ L'orquestrador envia prompts i arrenca agents especialitzats en línia de comand
 
 Llegeig el document ./cronos_ai_workflow.mmd en mermaid per entendre el workflow que es vol
 
-Cada node del workflow està basat en un o més skills especialitzats
+Cada node del workflow pot ser una decisió que l'orquestrador pren.
+
+Els agensts estan especialitzats en diferents tasques com marca el workflow i es basen en skills i servidors mcp
+
+El workflow ha de tenir en compte també, a part del codi i els tests:
+
+- Documentació
+- Configuració de desplegament
+- Infrastructura
+- Seguretat
+- Compliance
+- Dependencies
+- Monitorització, logs i alertes
+- Repositoris i versions
