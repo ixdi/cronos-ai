@@ -4,7 +4,7 @@
 
 - [x] 1.1 Create a dedicated Git branch and worktree for implementation, make the OpenSpec change artifacts available there without carrying unrelated working-tree changes, and verify the branch/path with `git worktree list` and `git status --short`.
 - [x] 1.2 Inspect repository/CI for commitlint configuration, add no unrelated commit tooling, and record the commit subject convention to use; verify each eventual implementation commit with configured commitlint or, if absent, the Conventional Commit `type(scope): description` format.
-- [ ] 1.3 Add Textual in the package dependency metadata and lockfile, then verify `uv sync --locked` and the dependency audit pass in the implementation worktree.
+- [x] 1.3 Add Textual in the package dependency metadata and lockfile, then verify `uv sync --locked` and the dependency audit pass in the implementation worktree.
 
 ## 2. Durable and safe activity history
 
