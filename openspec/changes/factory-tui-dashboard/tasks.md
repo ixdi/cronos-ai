@@ -25,13 +25,13 @@
 
 - [x] 4.1 Add UI tests for the overview, empty state, controller health, run/task selection, activity pagination, review/output availability, and safe display of sanitized summaries; verify keyboard navigation and narrow-terminal behavior.
 - [x] 4.2 Implement the Textual dashboard with refreshable overview and run/task details, bounded background reads, explicit status/empty/error states, and read-only navigation; verify the UI tests pass and refresh does not block input.
-- [ ] 4.3 Document dashboard invocation, refresh/navigation keys, completion-percentage meaning, read-only behavior, log-safety limits, state-directory override, and terminal requirements; verify each documented command/option matches CLI help.
-- [ ] 4.4 Commit the dashboard UI and its tests/documentation with a commitlint-valid Conventional Commit subject and verify the commit contains no generated runtime output.
+- [x] 4.3 Document dashboard invocation, refresh/navigation keys, completion-percentage meaning, read-only behavior, log-safety limits, state-directory override, and terminal requirements; verify each documented command/option matches CLI help.
+- [x] 4.4 Commit the dashboard UI and its tests/documentation with a commitlint-valid Conventional Commit subject and verify the commit contains no generated runtime output.
 
 ## 5. CLI integration and end-to-end validation
 
-- [ ] 5.1 Add failing CLI tests for the dashboard command, state-directory override, interactive-terminal rejection, and preservation of existing command help/output; verify the tests fail before CLI integration.
-- [ ] 5.2 Expose the dashboard through the canonical `cronos-ai` CLI and wire graceful shutdown and error reporting; verify CLI tests pass and existing non-interactive CLI tests remain unchanged and green.
-- [ ] 5.3 Add an end-to-end test with concurrent persisted runs, progress events, blocked work, human attention, and review/output references; verify displayed counts, stage, percentage, event history, and read-only behavior match the database state.
+- [x] 5.1 Add failing CLI tests for the dashboard command, state-directory override, interactive-terminal rejection, and preservation of existing command help/output; verify the tests fail before CLI integration.
+- [x] 5.2 Expose the dashboard through the canonical `cronos-ai` CLI and wire graceful shutdown and error reporting; verify CLI tests pass and existing non-interactive CLI tests remain unchanged and green.
+- [x] 5.3 Add an end-to-end test with concurrent persisted runs, progress events, blocked work, human attention, and review/output references; verify displayed counts, stage, percentage, event history, and read-only behavior match the database state.
 - [ ] 5.4 Commit the CLI integration slice with a commitlint-valid Conventional Commit subject and verify all implementation commits are present on the dedicated branch.
 - [ ] 5.5 Run `uv run pytest`, `uv run ruff check .`, `uv run mypy`, `uv build --no-sources`, and `uv audit --locked`; verify all pass, then review `git status --short` and `git log` for a clean implementation worktree and compliant commits.

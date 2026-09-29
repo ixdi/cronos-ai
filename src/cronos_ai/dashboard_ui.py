@@ -273,8 +273,14 @@ class FactoryDashboardApp(App[None]):
             if run.completion_percentage is not None
             else f"{run.completed_tasks}/{run.total_tasks} tasks completed"
         )
+        state_counts = ", ".join(
+            f"{state} {count}"
+            for state, count in run.task_counts.items()
+            if count
+        )
         self.query_one("#selected-run", Static).update(
-            f"{run.run_id} | {run.state} | stage: {run.current_stage} | {progress}"
+            f"{run.run_id} | {run.state} | stage: {run.current_stage} | {progress}\n"
+            f"Request: {run.request_summary}\nTask counts: {state_counts}"
         )
         tasks_table = self.query_one("#tasks-table", DataTable)
         tasks_table.clear(columns=False)

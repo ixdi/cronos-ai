@@ -13,6 +13,7 @@ from cronos_ai.models import (
     AttemptStatus,
     OpenSpecPlan,
     PlanTask,
+    PlanTaskKind,
     ReviewPacket,
     ReviewState,
     RunContext,
@@ -110,12 +111,13 @@ def _add_event(
     event_id: str,
     summary: str,
     seconds: int,
+    task_id: str = "task-1",
 ) -> None:
     store.append_activity_event(
         ActivityEvent(
             event_id=event_id,
             run_id=run_id,
-            task_id="task-1",
+            task_id=task_id,
             occurred_at=datetime.now(UTC) + timedelta(seconds=seconds),
             category="progress",
             summary=summary,
@@ -244,3 +246,114 @@ def test_dashboard_keeps_safe_activity_summaries_and_survives_narrow_terminal(
 
     asyncio.run(exercise())
     store.close()
+
+
+def test_end_to_end_dashboard_shows_blocked_work_progress_and_read_only_state(
+    tmp_path: Path,
+) -> None:
+    store = FactoryStore(tmp_path / "factory.sqlite3")
+    worktree = tmp_path / "worktree-run-e2e"
+    worktree.mkdir()
+    open_spec = worktree / "openspec" / "changes" / "change-run-e2e"
+    open_spec.mkdir(parents=True)
+    store.create_run(
+        "run-e2e",
+        WorkRequest(
+            request_id="request-e2e",
+            description="Resolve the integration conflict",
+            repo_path=tmp_path,
+        ),
+        OpenSpecPlan(
+            change_name="change-run-e2e",
+            tasks=(
+                PlanTask(
+                    task_id="plan",
+                    description="Plan implementation",
+                    kind=PlanTaskKind.PLANNING,
+                ),
+                PlanTask(
+                    task_id="merge",
+                    description="Integrate changes",
+                    kind=PlanTaskKind.IMPLEMENTATION,
+                ),
+                PlanTask(
+                    task_id="verify",
+                    description="Run checks",
+                    kind=PlanTaskKind.VERIFICATION,
+                ),
+                PlanTask(
+                    task_id="docs",
+                    description="Review documentation",
+                    kind=PlanTaskKind.VERIFICATION,
+                ),
+            ),
+        ),
+        (
+            TaskRecord(task_id="plan", state=TaskState.DONE),
+            TaskRecord(
+                task_id="merge",
+                state=TaskState.BLOCKED,
+                reason="Merge conflict requires human resolution: src/app.py",
+            ),
+            TaskRecord(task_id="verify", state=TaskState.QUEUED),
+            TaskRecord(task_id="docs", state=TaskState.READY),
+        ),
+    )
+    store.save_run_context(
+        RunContext(
+            run_id="run-e2e",
+            branch_name="factory/run/e2e",
+            run_worktree_path=worktree,
+        )
+    )
+    _add_review_packet(store, "run-e2e")
+    _add_event(
+        store,
+        "run-e2e",
+        "event-e2e",
+        "Blocked awaiting human resolution",
+        10,
+        task_id="merge",
+    )
+    before = (
+        store.get_run("run-e2e"),
+        store.list_tasks("run-e2e"),
+        store.get_attempts("run-e2e", "merge"),
+        store.list_control_action_records(),
+        store.list_activity_events("run-e2e"),
+    )
+    app = FactoryDashboardApp(DashboardReadModel(store), refresh_interval=60)
+
+    async def exercise() -> None:
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.1)
+            summary = _static_text(app, "#selected-run")
+            assert "awaiting human" in summary
+            assert "implementation" in summary
+            assert "1/4 tasks (25% completed)" in summary
+            assert "done 1" in summary
+            assert "blocked 1" in summary
+            assert "queued 1" in summary
+            assert "ready 1" in summary
+            assert "Merge conflict requires human resolution" in _static_text(
+                app, "#attention-list"
+            )
+            assert "resolve-conflict" in _static_text(app, "#attention-list")
+            assert "Blocked awaiting human resolution" in _static_text(
+                app, "#activity-log"
+            )
+            assert "OpenSpec change: available" in _static_text(app, "#outputs")
+            assert "Implementation and verification are ready." in _static_text(
+                app, "#review-summary"
+            )
+
+    asyncio.run(exercise())
+    after = (
+        store.get_run("run-e2e"),
+        store.list_tasks("run-e2e"),
+        store.get_attempts("run-e2e", "merge"),
+        store.list_control_action_records(),
+        store.list_activity_events("run-e2e"),
+    )
+    store.close()
+    assert before == after

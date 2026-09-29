@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 from uuid import uuid4
@@ -15,6 +16,8 @@ from cronos_ai.controller import (
     StateMigrationError,
     default_state_dir,
 )
+from cronos_ai.dashboard import DashboardReadModel
+from cronos_ai.dashboard_ui import FactoryDashboardApp
 from cronos_ai.intake import IntakeError, intake_request
 from cronos_ai.models import (
     ControlAction,
@@ -69,6 +72,13 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     status_parser = commands.add_parser("status", help="inspect controller and queue")
     _add_state_dir(status_parser)
+
+    dashboard_parser = commands.add_parser(
+        "dashboard",
+        help="open the interactive terminal dashboard",
+        description="Interactive terminal dashboard for local factory runs.",
+    )
+    _add_state_dir(dashboard_parser)
 
     attention_parser = commands.add_parser(
         "attention", help="list work that requires a human decision"
@@ -126,6 +136,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     _add_state_dir(start_parser)
 
     args = parser.parse_args(argv)
+    if args.command == "dashboard" and not (
+        sys.stdin.isatty() and sys.stdout.isatty()
+    ):
+        parser.exit(1, "error: dashboard requires an interactive terminal\n")
     if hasattr(args, "state_dir") and args.state_dir is None:
         try:
             args.state_dir = default_state_dir()
@@ -160,6 +174,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         print(f"Queued requests: {len(requests)}")
         print(f"Pending human actions: {len(actions)}")
         print(f"Items needing human attention: {len(attention_items)}")
+    elif args.command == "dashboard":
+        store = FactoryStore(args.state_dir / "factory.sqlite3")
+        try:
+            FactoryDashboardApp(DashboardReadModel(store)).run()
+        finally:
+            store.close()
     elif args.command == "attention":
         with FactoryStore(args.state_dir / "factory.sqlite3") as store:
             items = HumanAttentionQueue(store).list_items(args.run)
