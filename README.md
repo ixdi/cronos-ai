@@ -219,6 +219,28 @@ The attention queue omits tasks waiting only for dependencies and includes each 
 
 Use `cronos-ai attention --json` for structured output.
 
+### Factory monitoring dashboard
+
+Launch the interactive terminal dashboard with `uv run cronos-ai dashboard`.
+
+Pass `--state-dir /path/to/state` or set `CRONOS_AI_STATE_DIR` to inspect a non-default factory state directory.
+
+The overview lists persisted runs with their aggregate state, current workflow stage, task counts, worker assignments, and activity.
+
+Completion is shown as completed planned tasks divided by total planned tasks, not as an estimate of remaining time.
+
+Use the arrow keys to select runs and tasks.
+
+Press `r` to refresh, `n` and `p` to page through older and newer activity, and `q` to exit.
+
+Run details include human-attention context, attempt history, review summaries, and the recorded worktree and OpenSpec paths with availability indicators.
+
+The dashboard is read-only; submit approvals, retries, clarifications, and conflict resolutions through the existing `cronos-ai action` commands.
+
+Activity entries retain concise progress summaries and lifecycle events, redact known credential patterns and secret-valued environment variables, and omit raw tool payloads.
+
+The dashboard requires an interactive terminal and reports an actionable error when one is unavailable.
+
 Submit a clarification answer with:
 
 ```sh

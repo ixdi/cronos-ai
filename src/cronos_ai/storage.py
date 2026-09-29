@@ -636,6 +636,15 @@ class FactoryStore:
         with self._transaction() as connection:
             self._insert_activity_event(connection, event)
 
+    def count_activity_events(self, run_id: str) -> int:
+        """Count one run's activity events without loading their content."""
+        row = self._fetchone(
+            "SELECT COUNT(*) AS event_count FROM factory_activity_events "
+            "WHERE run_id = ?",
+            (run_id,),
+        )
+        return int(row["event_count"]) if row is not None else 0
+
     def list_activity_events(
         self,
         run_id: str,

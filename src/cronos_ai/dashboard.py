@@ -77,10 +77,23 @@ class DashboardRun:
     tasks: tuple[DashboardTask, ...]
     attention_items: tuple[DashboardAttention, ...]
     activity_events: tuple[ActivityEvent, ...]
+    activity_total_events: int
+    activity_page_count: int
     worktree_path: Path | None
     open_spec_path: Path | None
     review_state: str | None
     review_summary: str | None
+
+
+@dataclass(frozen=True)
+class ActivityPage:
+    """One bounded slice of a run's newest-first activity history."""
+
+    events: tuple[ActivityEvent, ...]
+    offset: int
+    total_events: int
+    page_number: int
+    page_count: int
 
 
 @dataclass(frozen=True)
@@ -100,6 +113,34 @@ class DashboardReadModel:
             raise ValueError("events per run must be between 1 and 1000")
         self.store = store
         self.events_per_run = events_per_run
+
+    def activity_page(self, run_id: str, *, offset: int = 0) -> ActivityPage:
+        """Load one bounded page and its navigable history position."""
+        if offset < 0:
+            raise ValueError("activity page offset must not be negative")
+        total_events = self.store.count_activity_events(run_id)
+        page_count = max(
+            1,
+            (total_events + self.events_per_run - 1) // self.events_per_run,
+        )
+        page_number = min(offset // self.events_per_run + 1, page_count)
+        page_offset = (page_number - 1) * self.events_per_run
+        events = tuple(
+            event.model_copy(update={"summary": safe_summary})
+            for event in self.store.list_activity_events(
+                run_id,
+                limit=self.events_per_run,
+                offset=page_offset,
+            )
+            if (safe_summary := sanitize_activity_summary(event.summary)) is not None
+        )
+        return ActivityPage(
+            events=events,
+            offset=page_offset,
+            total_events=total_events,
+            page_number=page_number,
+            page_count=page_count,
+        )
 
     def snapshot(self) -> DashboardSnapshot:
         """Read current controller, run, task, attention, and event summaries."""
@@ -141,16 +182,8 @@ class DashboardReadModel:
             for task in projected_tasks:
                 state = task.state.value if task.state is not None else "unknown"
                 task_counts[state] += 1
-            activity_events = tuple(
-                event.model_copy(update={"summary": safe_summary})
-                for event in self.store.list_activity_events(
-                    run_id,
-                    limit=self.events_per_run,
-                )
-                if (
-                    safe_summary := sanitize_activity_summary(event.summary)
-                ) is not None
-            )
+            activity_page = self.activity_page(run_id)
+            activity_events = activity_page.events
             review = self.store.get_latest_review_packet(run_id)
             runs.append(
                 DashboardRun(
@@ -175,6 +208,8 @@ class DashboardReadModel:
                     tasks=projected_tasks,
                     attention_items=run_attention,
                     activity_events=activity_events,
+                    activity_total_events=activity_page.total_events,
+                    activity_page_count=activity_page.page_count,
                     worktree_path=context.run_worktree_path if context else None,
                     open_spec_path=self._open_spec_path(context, plan)
                     if context

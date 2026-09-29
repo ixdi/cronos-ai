@@ -269,6 +269,41 @@ def test_run_details_include_attempts_paths_review_activity_and_attention(
     assert any(item.item_id == "run-details:review" for item in run.attention_items)
 
 
+def test_activity_pages_bound_results_and_report_total_pages(
+    tmp_path: Path,
+) -> None:
+    plan_tasks = (PlanTask(task_id="task-1", description="Inspect state"),)
+    records = (TaskRecord(task_id="task-1", state=TaskState.READY),)
+    with FactoryStore(tmp_path / "factory.sqlite3") as store:
+        _create_run(store, tmp_path, "run-pages", plan_tasks, records)
+        for index in range(3):
+            store.append_activity_event(
+                ActivityEvent(
+                    event_id=f"page-event-{index}",
+                    run_id="run-pages",
+                    task_id="task-1",
+                    occurred_at=datetime.now(UTC) + timedelta(days=1, seconds=index),
+                    category="progress",
+                    summary=f"Page event {index}",
+                )
+            )
+        model = DashboardReadModel(store, events_per_run=2)
+
+        first_page = model.activity_page("run-pages", offset=0)
+        second_page = model.activity_page("run-pages", offset=2)
+
+    assert first_page.page_number == 1
+    assert first_page.page_count == 2
+    assert first_page.total_events == 4
+    assert [event.event_id for event in first_page.events] == [
+        "page-event-2",
+        "page-event-1",
+    ]
+    assert second_page.page_number == 2
+    assert second_page.page_count == 2
+    assert "page-event-0" in [event.event_id for event in second_page.events]
+
+
 def test_repeated_dashboard_snapshots_do_not_mutate_factory_state(
     tmp_path: Path,
 ) -> None:

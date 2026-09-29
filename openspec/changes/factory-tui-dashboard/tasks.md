@@ -19,12 +19,12 @@
 - [x] 3.1 Add failing read-model tests for run aggregation, current stage selection, worker/task counts, completed-task percentage rounding, unknown stage, and human-attention state; verify the tests fail before adding the read model.
 - [x] 3.2 Implement bounded read snapshots from existing run, task, attempt, review, context, controller, attention, and activity data; verify read-model tests cover concurrent runs and taskless/unavailable details.
 - [x] 3.3 Add tests proving snapshot refreshes and dashboard queries do not mutate requests, tasks, attempts, approvals, or control actions; verify persisted state is unchanged before and after repeated reads.
-- [ ] 3.4 Commit the read-model slice with a commitlint-valid Conventional Commit subject and verify the commit is isolated to the intended worktree and change.
+- [x] 3.4 Commit the read-model slice with a commitlint-valid Conventional Commit subject and verify the commit is isolated to the intended worktree and change.
 
 ## 4. Interactive dashboard
 
-- [ ] 4.1 Add UI tests for the overview, empty state, controller health, run/task selection, activity pagination, review/output availability, and safe display of sanitized summaries; verify keyboard navigation and narrow-terminal behavior.
-- [ ] 4.2 Implement the Textual dashboard with refreshable overview and run/task details, bounded background reads, explicit status/empty/error states, and read-only navigation; verify the UI tests pass and refresh does not block input.
+- [x] 4.1 Add UI tests for the overview, empty state, controller health, run/task selection, activity pagination, review/output availability, and safe display of sanitized summaries; verify keyboard navigation and narrow-terminal behavior.
+- [x] 4.2 Implement the Textual dashboard with refreshable overview and run/task details, bounded background reads, explicit status/empty/error states, and read-only navigation; verify the UI tests pass and refresh does not block input.
 - [ ] 4.3 Document dashboard invocation, refresh/navigation keys, completion-percentage meaning, read-only behavior, log-safety limits, state-directory override, and terminal requirements; verify each documented command/option matches CLI help.
 - [ ] 4.4 Commit the dashboard UI and its tests/documentation with a commitlint-valid Conventional Commit subject and verify the commit contains no generated runtime output.
 
