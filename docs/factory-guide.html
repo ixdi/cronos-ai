@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1">
+		<meta name="color-scheme" content="light dark">
+		<meta name="description" content="A practical guide to planning, supervising, and coordinating software work with the local-first Cronos AI.">
+		<link rel="icon" href="data:,">
+		<title>Cronos AI | User Guide</title>
+		<style>
+			:root {
+				color-scheme: light dark;
+				--page: #f3f2ec;
+				--surface: #fffefa;
+				--ink: #192b32;
+				--muted: #52636a;
+				--line: #d8dedb;
+				--accent: #086b65;
+				--accent-strong: #07544f;
+				--accent-soft: #e0f1eb;
+				--warm: #b94e26;
+				--warm-soft: #fff0e5;
+				--code: #17262d;
+				--code-ink: #f1f5f3;
+				--shadow: 0 24px 72px rgb(24 43 50 / 9%);
+				font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+				font-synthesis: none;
+				text-rendering: optimizeLegibility;
+			}
+
+			* { box-sizing: border-box; }
+			html { scroll-behavior: smooth; scroll-padding-top: 6rem; }
+			body {
+				margin: 0;
+				background:
+				radial-gradient(ellipse at 8% 0%, rgb(8 107 101 / 9%), transparent 34rem),
+				var(--page);
+				color: var(--ink);
+				line-height: 1.7;
+			}
+			a { color: var(--accent-strong); text-decoration-thickness: .08em; text-underline-offset: .18em; }
+			a:hover { color: var(--warm); }
+			a:focus-visible, button:focus-visible, summary:focus-visible {
+				outline: 3px solid #e78a48;
+				outline-offset: 4px;
+				border-radius: 3px;
+			}
+			code, pre, kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+			code { font-size: .91em; }
+			:not(pre) > code {
+				padding: .12em .36em;
+				border: 1px solid var(--line);
+				border-radius: .35em;
+				background: color-mix(in srgb, var(--surface) 75%, var(--accent-soft));
+				overflow-wrap: anywhere;
+			}
+			.skip-link {
+				position: absolute;
+				z-index: 5;
+				top: .75rem;
+				left: .75rem;
+				padding: .65rem 1rem;
+				transform: translateY(-180%);
+				border-radius: .5rem;
+				background: var(--ink);
+				color: white;
+			}
+			.skip-link:focus { transform: translateY(0); color: white; }
+			.topbar {
+				position: sticky;
+				z-index: 4;
+				top: 0;
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				gap: 1rem;
+				min-height: 4.25rem;
+				padding: .75rem clamp(1rem, 4vw, 3.5rem);
+				border-bottom: 1px solid var(--line);
+				background: color-mix(in srgb, var(--page) 90%, transparent);
+				backdrop-filter: blur(16px);
+			}
+			.brand { display: inline-flex; align-items: center; gap: .7rem; color: var(--ink); font-weight: 750; text-decoration: none; }
+			.brand-mark {
+				display: grid;
+				width: 2rem;
+				aspect-ratio: 1;
+				place-items: center;
+				border-radius: .65rem .2rem .65rem .2rem;
+				background: var(--accent);
+				color: white;
+				font-size: .88rem;
+				letter-spacing: -.08em;
+			}
+			.topbar-note { color: var(--muted); font-size: .82rem; }
+			.layout {
+				display: grid;
+				grid-template-columns: minmax(13rem, 16rem) minmax(0, 58rem);
+				gap: clamp(2rem, 5vw, 5rem);
+				max-width: 88rem;
+				margin: 0 auto;
+				padding: 3.25rem clamp(1rem, 4vw, 3.5rem) 6rem;
+			}
+			.sidebar { align-self: start; position: sticky; top: 6.5rem; }
+			.toc-label { margin: 0 0 .8rem; color: var(--muted); font-size: .72rem; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
+			.toc { display: grid; gap: .12rem; margin: 0; padding: 0; list-style: none; }
+			.toc a {
+				display: block;
+				padding: .45rem .7rem;
+				border-left: 2px solid transparent;
+				color: var(--muted);
+				font-size: .88rem;
+				line-height: 1.4;
+				text-decoration: none;
+			}
+			.toc a:hover { border-color: var(--accent); color: var(--accent-strong); }
+			main { min-width: 0; }
+			.hero { position: relative; padding: clamp(2rem, 5vw, 4.5rem); overflow: hidden; border: 1px solid var(--line); border-radius: 1.5rem; background: var(--surface); box-shadow: var(--shadow); }
+			.hero::after {
+				position: absolute;
+				right: -4rem;
+				bottom: -8rem;
+				width: 19rem;
+				aspect-ratio: 1;
+				border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+				border-radius: 50%;
+				box-shadow: 0 0 0 2.5rem color-mix(in srgb, var(--accent) 4%, transparent), 0 0 0 5rem color-mix(in srgb, var(--accent) 3%, transparent);
+				content: "";
+				pointer-events: none;
+			}
+			.eyebrow { display: flex; align-items: center; gap: .55rem; margin: 0 0 1rem; color: var(--accent-strong); font-size: .75rem; font-weight: 850; letter-spacing: .15em; text-transform: uppercase; }
+			.eyebrow::before { width: 1.5rem; height: 2px; background: var(--warm); content: ""; }
+			h1, h2, h3 { color: var(--ink); line-height: 1.18; text-wrap: balance; }
+			h1 { position: relative; z-index: 1; max-width: 12ch; margin: 0; font-size: clamp(2.55rem, 7vw, 5.4rem); letter-spacing: -.065em; }
+			.hero-copy { position: relative; z-index: 1; max-width: 42rem; margin: 1.25rem 0 0; color: var(--muted); font-size: clamp(1.05rem, 2vw, 1.22rem); }
+			.hero-meta { display: flex; flex-wrap: wrap; gap: .6rem; margin-top: 1.7rem; }
+			.pill { display: inline-flex; align-items: center; gap: .4rem; padding: .35rem .7rem; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); color: var(--muted); font-size: .76rem; font-weight: 700; }
+			.pill-dot { width: .45rem; aspect-ratio: 1; border-radius: 50%; background: var(--accent); }
+			.notice {
+				display: grid;
+				grid-template-columns: 2rem minmax(0, 1fr);
+				gap: 1rem;
+				margin: 1.5rem 0 3.5rem;
+				padding: 1.2rem 1.4rem;
+				border: 1px solid color-mix(in srgb, var(--warm) 36%, var(--line));
+				border-radius: .9rem;
+				background: var(--warm-soft);
+			}
+			.notice-icon { display: grid; width: 2rem; aspect-ratio: 1; place-items: center; border-radius: 50%; background: var(--warm); color: white; font-weight: 900; }
+			.notice p { margin: 0; }
+			.notice strong { color: var(--ink); }
+			section { scroll-margin-top: 6rem; }
+			.doc-section { margin-top: 3.4rem; }
+			.section-kicker { margin: 0 0 .45rem; color: var(--accent-strong); font-size: .72rem; font-weight: 850; letter-spacing: .14em; text-transform: uppercase; }
+			h2 { margin: 0 0 1rem; font-size: clamp(1.7rem, 3.2vw, 2.45rem); letter-spacing: -.045em; }
+			h3 { margin: 2rem 0 .6rem; font-size: 1.2rem; letter-spacing: -.025em; }
+			p { margin: .7rem 0; }
+			.section-intro { max-width: 52rem; color: var(--muted); font-size: 1.05rem; }
+			.step-card { margin: 1rem 0; padding: 1.4rem clamp(1rem, 3vw, 1.8rem); border: 1px solid var(--line); border-radius: .9rem; background: var(--surface); }
+			.step-card h3 { margin-top: 0; }
+			.step-card > :last-child { margin-bottom: 0; }
+			.callout {
+				margin: 1.2rem 0;
+				padding: 1rem 1.2rem;
+				border-left: 3px solid var(--accent);
+				border-radius: 0 .7rem .7rem 0;
+				background: var(--accent-soft);
+			}
+			.callout p { margin: .2rem 0; }
+			pre {
+				max-width: 100%;
+				margin: 1rem 0;
+				padding: 1.15rem 1.25rem;
+				overflow: auto;
+				border: 1px solid #34464d;
+				border-radius: .75rem;
+				background: var(--code);
+				color: var(--code-ink);
+				font-size: .86rem;
+				line-height: 1.65;
+				tab-size: 2;
+			}
+			pre code { font-size: inherit; white-space: pre; }
+			.table-wrap { margin: 1.2rem 0; overflow-x: auto; border: 1px solid var(--line); border-radius: .8rem; background: var(--surface); }
+			table { width: 100%; border-collapse: collapse; text-align: left; }
+			th, td { padding: .8rem 1rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+			th { background: var(--accent-soft); color: var(--ink); font-size: .84rem; }
+			tr:last-child td { border-bottom: 0; }
+			.diagram-card { margin: 1.4rem 0; padding: clamp(.8rem, 2vw, 1.4rem); overflow: hidden; border: 1px solid var(--line); border-radius: 1rem; background: var(--surface); }
+			.diagram-scroll { overflow-x: auto; overscroll-behavior-inline: contain; }
+			.workflow { display: block; width: max(100%, 1320px); min-width: 1320px; height: auto; }
+			.workflow text { font-family: ui-sans-serif, system-ui, sans-serif; }
+			.workflow .region-cli { fill: #f5faf7; stroke: #a9c3bd; stroke-width: 2; }
+			.workflow .region-api { fill: #f5f6fa; stroke: #b1b8ca; stroke-width: 2; }
+			.workflow .node { fill: var(--surface); stroke: #a9c3bd; stroke-width: 2; }
+			.workflow .node.cli { fill: #e4f2ec; stroke: #4a9181; }
+			.workflow .node.human { fill: #fff0e5; stroke: #d58555; }
+			.workflow .node.api { fill: #edf0f6; stroke: #8994b1; }
+			.workflow .node-title { fill: #192b32; font-size: 15px; font-weight: 750; }
+			.workflow .node-copy { fill: #52636a; font-size: 12px; }
+			.workflow .edge { fill: none; stroke: #496a6a; stroke-width: 2; marker-end: url(#arrow); }
+			.workflow .edge.dashed { stroke-dasharray: 6 5; }
+			.workflow .edge-label { fill: #52636a; font-size: 11px; }
+			.diagram-note { margin: .8rem .25rem .1rem; color: var(--muted); font-size: .84rem; }
+			.link-list { display: flex; flex-wrap: wrap; gap: .7rem; padding: 0; list-style: none; }
+			.link-list a { display: inline-flex; padding: .5rem .75rem; border: 1px solid var(--line); border-radius: .55rem; background: var(--surface); font-size: .9rem; font-weight: 650; }
+			.footer { margin-top: 4rem; padding-top: 1.3rem; border-top: 1px solid var(--line); color: var(--muted); font-size: .86rem; }
+			@media (prefers-color-scheme: dark) {
+				:root {
+					--page: #11191c;
+					--surface: #1a2529;
+					--ink: #edf4f1;
+					--muted: #b4c2bf;
+					--line: #344448;
+					--accent: #67c7ae;
+					--accent-strong: #84d6bf;
+					--accent-soft: #203a37;
+					--warm: #e58a5b;
+					--warm-soft: #38271f;
+					--code: #0c1215;
+					--code-ink: #eef6f2;
+					--shadow: 0 24px 72px rgb(0 0 0 / 20%);
+				}
+				.workflow .region-cli { fill: #182a28; stroke: #54766e; }
+				.workflow .region-api { fill: #20242f; stroke: #68728a; }
+				.workflow #arrow path { fill: #8ea8a0; }
+				.workflow .node { fill: #1a2529; stroke: #54766e; }
+				.workflow .node.cli { fill: #203a37; stroke: #67a895; }
+				.workflow .node.human { fill: #38271f; stroke: #c8784c; }
+				.workflow .node.api { fill: #292d3a; stroke: #7b86a2; }
+				.workflow .node-title { fill: #edf4f1; }
+				.workflow .node-copy, .workflow .edge-label { fill: #b4c2bf; }
+				.workflow .edge { stroke: #8ea8a0; }
+				.skip-link:focus { color: #11191c; }
+			}
+			@media (max-width: 900px) {
+				.layout { grid-template-columns: minmax(0, 1fr); max-width: 68rem; padding-top: 1.5rem; }
+				.sidebar { position: static; order: 0; }
+				.toc { display: flex; gap: .35rem; overflow-x: auto; padding-bottom: .5rem; }
+				.toc li { flex: 0 0 auto; }
+				.toc a { padding: .4rem .65rem; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); font-size: .78rem; }
+				.toc-label { margin-bottom: .45rem; }
+			}
+			@media (max-width: 560px) {
+				.topbar-note { display: none; }
+				.layout { gap: 1.3rem; padding-inline: .85rem; }
+				.hero { padding: 1.7rem 1.35rem 2.2rem; border-radius: 1rem; }
+				.hero::after { right: -8rem; }
+				.notice { grid-template-columns: 1.7rem minmax(0, 1fr); gap: .7rem; padding: 1rem; }
+				.notice-icon { width: 1.7rem; }
+				.step-card { padding: 1.1rem; }
+				pre { padding: .9rem; font-size: .78rem; }
+				th, td { padding: .65rem .75rem; }
+			}
+			@media (prefers-reduced-motion: reduce) {
+				*, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+			}
+		</style>
+	</head>
+	<body>
+		<a class="skip-link" href="#main-content">Skip to guide</a>
+		<header class="topbar">
+			<a class="brand" href="../README.md" aria-label="Cronos AI home">
+				<span class="brand-mark" aria-hidden="true">CA</span>
+				<span>Cronos AI</span>
+			</a>
+			<span class="topbar-note">Local-first · Human-supervised · Practical guide</span>
+		</header>
+		<div class="layout">
+			<aside class="sidebar" aria-label="On this page">
+				<p class="toc-label">On this page</p>
+				<nav aria-label="Guide contents">
+					<ul class="toc">
+						<li><a href="#prerequisites">Prerequisites</a></li>
+						<li><a href="#prepare-repository">Prepare a repository</a></li>
+						<li><a href="#queue-request">Queue a request</a></li>
+						<li><a href="#controller">Local controller</a></li>
+						<li><a href="#attention-recovery">Attention &amp; recovery</a></li>
+						<li><a href="#workers">Worker execution</a></li>
+						<li><a href="#webhooks-delivery">Webhooks &amp; delivery</a></li>
+						<li><a href="#workflow">Workflow diagram</a></li>
+						<li><a href="#further-learning">Further learning</a></li>
+					</ul>
+				</nav>
+			</aside>
+			<main id="main-content">
+				<header class="hero">
+					<p class="eyebrow">User guide</p>
+					<h1>Build software with an AI Software Factory.</h1>
+					<p class="hero-copy">Cronos AI is a local-first toolkit for planning, supervising, and coordinating software work. This guide walks through the available CLI and points to the deeper component APIs.</p>
+					<div class="hero-meta" aria-label="Guide properties">
+						<span class="pill"><span class="pill-dot" aria-hidden="true"></span>Local-first</span>
+						<span class="pill">Human approvals</span>
+						<span class="pill">Python 3.12+</span>
+					</div>
+				</header>
+
+				<aside class="notice" aria-label="Current integration boundary">
+					<span class="notice-icon" aria-hidden="true">!</span>
+					<p><strong>Current integration boundary.</strong>
+					<code>cronos-ai run</code>
+					validates and queues a request. The current controller maintains its lifecycle and processes queued human actions, but does not yet turn queued requests into a complete plan-to-delivery run automatically. The planning, worker, task-recovery, review, webhook, and CI/CD components are available as APIs and are exercised together in tests; task recovery is not yet invoked by the CLI controller.</p>
+				</aside>
+
+				<section class="doc-section" id="prerequisites">
+					<p class="section-kicker">01 · Get ready</p>
+					<h2>Prerequisites</h2>
+					<p class="section-intro">For the CLI, install Python 3.12 or newer, Git, <code>uv</code>, and the OpenSpec CLI.</p>
+					<div class="step-card">
+						<h3>Install the locked dependencies</h3>
+						<p>From this repository checkout, run:</p>
+						<pre><code>uv sync --locked</code></pre>
+						<p>Herdr, Pi, Docker, profile resources, and a provider API key are needed only when configuring worker execution.</p>
+						<p>Before enabling workers, read the <a href="../README.md#sandbox-prerequisites-and-recovery">sandbox guide</a>
+							and <a href="../README.md#pi-herdr-and-specialist-profiles">Pi, Herdr, and profile guide</a>.</p>
+					</div>
+				</section>
+
+				<section class="doc-section" id="prepare-repository">
+					<p class="section-kicker">02 · Set the target</p>
+					<h2>Prepare a target repository</h2>
+					<p>The factory only accepts an explicit Git repository root with a clean working tree and initialized OpenSpec.</p>
+					<div class="step-card">
+						<h3>Initialize OpenSpec for the chosen repository</h3>
+						<pre><code>uv run cronos-ai init --repo /absolute/path/to/repository</code></pre>
+						<p>This command initializes OpenSpec only when needed and does not modify a different checkout.</p>
+						<p>Check the command options with <code>uv run cronos-ai init --help</code>.</p>
+					</div>
+				</section>
+
+				<section class="doc-section" id="queue-request">
+					<p class="section-kicker">03 · Submit work</p>
+					<h2>Queue a request</h2>
+					<p>Submit a request by naming both the target repository and requested outcome:</p>
+					<pre><code>uv run cronos-ai run --repo /absolute/path/to/repository --request "Improve the settings page"</code></pre>
+					<p>The command validates the target and stores the request in the local SQLite queue.</p>
+					<div class="callout"><p>It does not infer whether the work is actionable, needs detailed specifications, needs clarification, or should be parked. Those decisions belong to the triage workflow.</p></div>
+				</section>
+
+				<section class="doc-section" id="controller">
+					<p class="section-kicker">04 · Keep it running</p>
+					<h2>Run the local controller</h2>
+					<p>Start the controller in the foreground:</p>
+					<pre><code>uv run cronos-ai controller start</code></pre>
+					<p>The controller owns a process lock, reports heartbeats, requeues interrupted human-action records, and processes queued human actions. Stop it with Ctrl+C. Restart it with the same state directory to retain queued requests and actions.</p>
+					<p>Worker-task recovery is available through <code>TaskRecoveryManager</code>, but the CLI controller does not yet run that component automatically.</p>
+					<p>Inspect the controller and queued work with:</p>
+					<pre><code>uv run cronos-ai status</code></pre>
+					<p>The default local state directory is <code>$XDG_STATE_HOME/cronos-ai</code>
+						when <code>XDG_STATE_HOME</code>
+						is set, or <code>~/.local/state/cronos-ai</code>
+						otherwise.</p>
+					<p>On first use of the default location, Cronos AI moves an existing <code>ai-software-factory</code>
+						state directory to the corresponding <code>cronos-ai</code>
+						location. The migration preserves the full directory, including <code>factory.sqlite3</code>, its schema, queued requests, and human actions.</p>
+					<p>If both default directories exist, Cronos AI stops with an actionable error and leaves both unchanged. Back up both directories, choose the authoritative state, then move the other directory out of the state root before restarting.</p>
+					<p>Use <code>--state-dir /path/to/state</code>
+						or <code>CRONOS_AI_STATE_DIR</code>
+						to select a custom location; either explicit override bypasses default-path migration.</p>
+					<p><code>AI_SOFTWARE_FACTORY_STATE_DIR</code>
+					is not recognized. If you previously used that variable, set <code>CRONOS_AI_STATE_DIR</code>
+					to the same custom state path.</p>
+				</section>
+
+				<section class="doc-section" id="attention-recovery">
+					<p class="section-kicker">05 · Human oversight</p>
+					<h2>Human attention and recovery</h2>
+					<p>List requests and tasks that need a human decision with:</p>
+					<pre><code>uv run cronos-ai attention</code></pre>
+					<p>Tasks waiting only for dependencies stay queued and are not reported as human blockers. Use <code>uv run cronos-ai attention --json</code>
+						for machine-readable output.</p>
+					<p>The queue shows the reason, latest result, and next action for clarification, plan approval, eligible retries, merge conflicts, and run-level review.</p>
+
+					<div class="step-card">
+						<h3>Answer a request clarification</h3>
+						<p>Use the request ID shown by the queue:</p>
+						<pre><code>uv run cronos-ai action --action clarify-request --target &lt;request-id&gt; --data "answer=Describe the clarification"</code></pre>
+						<p>For a task clarification, include its run ID:</p>
+						<pre><code>uv run cronos-ai action --action clarify-request --run &lt;run-id&gt; --target &lt;task-id&gt; --data "answer=Describe the clarification"</code></pre>
+					</div>
+					<div class="step-card">
+						<h3>Approve a plan or retry a task</h3>
+						<p>Approve an OpenSpec plan using its current fingerprint:</p>
+						<pre><code>uv run cronos-ai action --action approve-plan --run &lt;run-id&gt; --target &lt;change-name&gt; --data plan_hash=&lt;fingerprint&gt; --data reviewer=&lt;name&gt;</code></pre>
+						<p>Retry an eligible failed task within the configured attempt limit:</p>
+						<pre><code>uv run cronos-ai action --action retry-task --run &lt;run-id&gt; --target &lt;task-id&gt;</code></pre>
+					</div>
+					<div class="step-card">
+						<h3>Resolve merge conflicts</h3>
+						<p>Resolve and stage the files in the run worktree, then record the resolution:</p>
+						<pre><code>uv run cronos-ai action --action resolve-conflict --run &lt;run-id&gt; --target &lt;task-id&gt; --data "resolution=Describe the resolution"</code></pre>
+					</div>
+					<div class="step-card">
+						<h3>Review a run</h3>
+						<p>Inspect a review packet's diff and verification evidence:</p>
+						<pre><code>uv run cronos-ai review --run &lt;run-id&gt;</code></pre>
+						<p>Approve the current run-level review using its fingerprint:</p>
+						<pre><code>uv run cronos-ai action --action approve-review --run &lt;run-id&gt; --target run --data review_hash=&lt;fingerprint&gt; --data reviewer=&lt;name&gt;</code></pre>
+						<p>Reject it with a rationale to return eligible tasks to remediation:</p>
+						<pre><code>uv run cronos-ai action --action reject-review --run &lt;run-id&gt; --target run --data review_hash=&lt;fingerprint&gt; --data reviewer=&lt;name&gt; --data rationale="Describe requested changes"</code></pre>
+						<p>Review actions must reference the current review fingerprint and reviewer.</p>
+					</div>
+					<p>Inspect past action outcomes with:</p>
+					<pre><code>uv run cronos-ai actions</code></pre>
+					<p>See the <a href="../README.md#task-states-retries-and-review">task states and review details</a>
+						for retry limits and approval behavior.</p>
+
+					<h3>Task states and human attention</h3>
+					<div class="table-wrap" role="region" aria-label="Task states table" tabindex="0">
+						<table>
+							<thead><tr><th scope="col">State</th><th scope="col">Meaning</th><th scope="col">Human attention</th></tr></thead>
+							<tbody>
+								<tr><td><code>queued</code></td><td>Waiting for dependencies or scheduling.</td><td>Dependency-only waits are not human blockers.</td></tr>
+								<tr><td><code>ready</code></td><td>Eligible for a worker or remediation assignment.</td><td>Not a blocker by itself.</td></tr>
+								<tr><td><code>running</code></td><td>Assigned to an active worker.</td><td>Herdr reports Working.</td></tr>
+								<tr><td><code>integrating</code></td><td>Worker finished successfully and its branch awaits integration.</td><td>Not a human blocker.</td></tr>
+								<tr><td><code>waiting for human</code></td><td>Requires clarification or an approval decision.</td><td>Appears with the reason and next action.</td></tr>
+								<tr><td><code>blocked</code></td><td>Cannot proceed, for example because of a merge conflict.</td><td>Appears with the reason and recovery action.</td></tr>
+								<tr><td><code>failed</code></td><td>Execution stopped after a failure.</td><td>Retry is offered only below the configured attempt limit.</td></tr>
+								<tr><td><code>review</code></td><td>Integrated and available to downstream tasks, awaiting run-level review.</td><td>Appears after a review packet is ready.</td></tr>
+								<tr><td><code>done</code></td><td>Human-approved review completed for the task.</td><td>Herdr shows the Done label.</td></tr>
+							</tbody>
+						</table>
+					</div>
+					<p><code>FactoryConfig.max_attempts</code>
+					defaults to three attempts and bounds transient retries and remediation assignments. A retry action never increases or resets that limit. Exhausted retries show a policy-escalation step instead of offering an out-of-policy retry.</p>
+					<p>Failed or inconclusive CI/CD workflows appear in the attention queue and are never considered delivered. Review packets require at least one automated check and one user-perspective scenario result. Failed checks, failed scenarios, or blocking review findings create a blocked packet and return eligible tasks to remediation.</p>
+					<p>A human decision applies only to the latest packet and only while its integrated diff and evidence fingerprints remain unchanged. The delivery gate remains closed after rejection, missing evidence, a changed diff, or an inconclusive review.</p>
+					<p>The default state directory is <code>$XDG_STATE_HOME/cronos-ai</code>
+						when <code>XDG_STATE_HOME</code>
+						is set, or <code>~/.local/state/cronos-ai</code>
+						otherwise. Set <code>CRONOS_AI_STATE_DIR</code>
+						to use a different location.</p>
+					<p>The previous <code>AI_SOFTWARE_FACTORY_STATE_DIR</code>
+						variable is not honored. Set <code>CRONOS_AI_STATE_DIR</code>
+						to your existing custom location if you used the old variable.</p>
+					<p>Request submission and human actions are durable even if the controller is stopped. The controller can be stopped with Ctrl+C, and its process lock is released on exit. To restart it, run the same command with the same state directory. Queued requests and human actions remain in <code>factory.sqlite3</code>
+						and are visible after restart without being re-enqueued by controller startup. Use <code>cronos-ai status</code>
+						with the same <code>--state-dir</code>
+						to inspect the recovered queue.</p>
+				</section>
+
+				<section class="doc-section" id="workers">
+					<p class="section-kicker">06 · Specialist components</p>
+					<h2>Worker execution and integration components</h2>
+					<p>The worker path is assembled from Python APIs rather than started by <code>cronos-ai run</code>.</p>
+					<ul>
+						<li><code>TaskWorktreeManager</code>
+						creates a branch and isolated Git worktree for each attempt.</li>
+						<li><code>FactoryProfileRegistry</code>
+						resolves only explicitly approved skills, MCP tools, models, provider-key environment names, and network origins.</li>
+						<li><code>PiWorkerExecutor</code>
+						supervises Pi RPC through a reusable Herdr pane and the configured sandbox adapter.</li>
+						<li><code>TaskIntegrator</code>
+						merges dependency-ready task branches into the run branch and leaves conflicts for a human to resolve.</li>
+					</ul>
+					<p>The Docker adapter mounts only the task worktree, injects the configured provider key, and fails closed when sandbox requirements are unavailable.</p>
+					<div class="callout"><p>Do not mount host authentication directories or treat repository-provided skills, extensions, MCP servers, or webhook text as trusted resources.</p></div>
+					<p>See the <a href="../README.md#sandbox-prerequisites-and-recovery">sandbox security and recovery details</a>
+						and <a href="../README.md#factory-managed-profile-resources">worker resource configuration</a>.</p>
+				</section>
+
+				<section class="doc-section" id="webhooks-delivery">
+					<p class="section-kicker">07 · External signals</p>
+					<h2>Webhooks and delivery</h2>
+					<p><code>WebhookEndpoint</code>
+					is a WSGI application that an operator can mount at <code>POST /webhooks/&lt;source-id&gt;</code>. Each source requires an explicit repository allowlist and a distinct signing secret.</p>
+					<p>The handler authenticates and deduplicates events, then <code>WebhookIngestor</code>
+						applies normal clean-repository OpenSpec intake before creating a monitoring request. Alert text remains untrusted triage input and cannot directly execute commands or bypass approvals.</p>
+					<p>There is no built-in network listener, hosted relay, production CI/CD provider, or provider credential configuration.</p>
+					<p><code>DeliveryCoordinator</code>
+					accepts an injected <code>CIAdapter</code>
+					only after a human approves an unchanged review packet. Only an authoritative successful workflow result counts as delivery.</p>
+					<p>See the <a href="../README.md#webhooks-and-delivery-adapters">webhook and delivery adapter details</a>.</p>
+				</section>
+
+				<section class="doc-section" id="workflow">
+					<p class="section-kicker">08 · How it fits together</p>
+					<h2>The current workflow boundary</h2>
+					<p class="section-intro">The diagram separates the CLI behavior available today from the composed Python API workflow, which still requires an explicit caller or orchestration layer.</p>
+					<figure class="diagram-card">
+						<div class="diagram-scroll" role="region" aria-label="Scrollable workflow diagram" tabindex="0">
+							<svg class="workflow" viewBox="0 0 1500 790" role="img" aria-labelledby="workflow-title workflow-desc" xmlns="http://www.w3.org/2000/svg">
+								<title id="workflow-title">Cronos AI integration boundary</title>
+								<desc id="workflow-desc">The available CLI validates requests and queues them in SQLite; its controller processes human actions but does not automatically orchestrate the complete run. Authenticated webhook intake also creates queued requests. A separate composed API workflow requires explicit orchestration: triage selects actionable, specification-required, clarification-required, or parked work; planning and any required human plan approval lead to dependency scheduling, task worktrees, Pi workers, sandboxing, and integration. Merge conflicts require human resolution, task recovery is an API, and completed work proceeds through a verification packet and human review before an injected CI adapter can report delivery. Clarification, rejected plans, failed delivery, and remediation return work to human attention or scheduling.</desc>
+								<defs>
+									<marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#496a6a"/></marker>
+								</defs>
+								<rect x="20" y="22" width="1460" height="190" rx="16" class="region-cli"/>
+								<text x="44" y="53" class="node-title">Available CLI · request intake and human-action processing</text>
+								<rect x="48" y="82" width="155" height="82" rx="12" class="node cli"/>
+								<text x="125" y="111" text-anchor="middle" class="node-title">User</text>
+								<text x="125" y="135" text-anchor="middle" class="node-copy">cronos-ai init / run</text>
+								<rect x="260" y="82" width="170" height="82" rx="12" class="node cli"/>
+								<text x="345" y="111" text-anchor="middle" class="node-title">Validate intake</text>
+								<text x="345" y="135" text-anchor="middle" class="node-copy">Git · clean tree · OpenSpec</text>
+								<rect x="485" y="82" width="155" height="82" rx="12" class="node cli"/>
+								<text x="562" y="111" text-anchor="middle" class="node-title">Request queue</text>
+								<text x="562" y="135" text-anchor="middle" class="node-copy">SQLite</text>
+								<rect x="695" y="82" width="185" height="82" rx="12" class="node cli"/>
+								<text x="787" y="111" text-anchor="middle" class="node-title">Controller</text>
+								<text x="787" y="135" text-anchor="middle" class="node-copy">heartbeat + action processing</text>
+								<rect x="930" y="82" width="170" height="82" rx="12" class="node human"/>
+								<text x="1015" y="111" text-anchor="middle" class="node-title">Human attention</text>
+								<text x="1015" y="135" text-anchor="middle" class="node-copy">cronos-ai attention / action</text>
+								<rect x="1160" y="70" width="285" height="104" rx="12" class="node api"/>
+								<text x="1302" y="101" text-anchor="middle" class="node-title">Optional webhook API</text>
+								<text x="1302" y="125" text-anchor="middle" class="node-copy">authenticate · allowlist · deduplicate</text>
+								<text x="1302" y="147" text-anchor="middle" class="node-copy">normal intake → monitoring request</text>
+								<path d="M203 123H254" class="edge"/><path d="M430 123H479" class="edge"/><path d="M640 123H689" class="edge"/><path d="M880 123H924" class="edge"/>
+								<path d="M1160 158V190H562V170" class="edge"/>
+								<text x="822" y="186" class="edge-label">authenticated webhook request joins normal intake</text>
+
+								<rect x="20" y="242" width="1460" height="528" rx="16" class="region-api"/>
+								<text x="44" y="274" class="node-title">Composed Python API workflow · not automatically driven by the current CLI</text>
+								<rect x="42" y="322" width="150" height="82" rx="12" class="node api"/>
+								<text x="117" y="351" text-anchor="middle" class="node-title">Triage</text>
+								<text x="117" y="375" text-anchor="middle" class="node-copy">action · clarify · park</text>
+								<rect x="235" y="322" width="170" height="82" rx="12" class="node api"/>
+								<text x="320" y="351" text-anchor="middle" class="node-title">OpenSpec plan</text>
+								<text x="320" y="375" text-anchor="middle" class="node-copy">concise or detailed</text>
+								<rect x="450" y="322" width="170" height="82" rx="12" class="node human"/>
+								<text x="535" y="351" text-anchor="middle" class="node-title">Plan approval</text>
+								<text x="535" y="375" text-anchor="middle" class="node-copy">human gate when required</text>
+								<rect x="665" y="322" width="160" height="82" rx="12" class="node api"/>
+								<text x="745" y="351" text-anchor="middle" class="node-title">Scheduler</text>
+								<text x="745" y="375" text-anchor="middle" class="node-copy">dependency-aware</text>
+								<rect x="870" y="322" width="180" height="82" rx="12" class="node api"/>
+								<text x="960" y="351" text-anchor="middle" class="node-title">Task worktree + worker</text>
+								<text x="960" y="375" text-anchor="middle" class="node-copy">Pi RPC via Herdr</text>
+								<rect x="1090" y="322" width="160" height="82" rx="12" class="node api"/>
+								<text x="1170" y="351" text-anchor="middle" class="node-title">Sandbox</text>
+								<text x="1170" y="375" text-anchor="middle" class="node-copy">Docker · configured egress</text>
+								<rect x="1290" y="322" width="150" height="82" rx="12" class="node api"/>
+								<text x="1365" y="351" text-anchor="middle" class="node-title">Integration</text>
+								<text x="1365" y="375" text-anchor="middle" class="node-copy">merge task branches</text>
+								<path d="M192 363H229" class="edge"/><path d="M405 363H444" class="edge"/><path d="M620 363H659" class="edge"/><path d="M825 363H864" class="edge"/><path d="M1050 363H1084" class="edge"/><path d="M1250 363H1284" class="edge"/>
+								<text x="410" y="310" class="edge-label">spec-required work</text>
+								<text x="628" y="310" class="edge-label">approved / concise plan</text>
+
+								<rect x="1290" y="520" width="150" height="82" rx="12" class="node api"/>
+								<text x="1365" y="549" text-anchor="middle" class="node-title">Review packet</text>
+								<text x="1365" y="573" text-anchor="middle" class="node-copy">diff + verification</text>
+								<rect x="1045" y="520" width="175" height="82" rx="12" class="node human"/>
+								<text x="1132" y="549" text-anchor="middle" class="node-title">Human review</text>
+								<text x="1132" y="573" text-anchor="middle" class="node-copy">approve or remediate</text>
+								<rect x="800" y="520" width="175" height="82" rx="12" class="node api"/>
+								<text x="887" y="549" text-anchor="middle" class="node-title">CI adapter</text>
+								<text x="887" y="573" text-anchor="middle" class="node-copy">only after approval</text>
+								<rect x="550" y="520" width="180" height="82" rx="12" class="node cli"/>
+								<text x="640" y="549" text-anchor="middle" class="node-title">Delivered</text>
+								<text x="640" y="573" text-anchor="middle" class="node-copy">only on CI success</text>
+								<rect x="42" y="520" width="180" height="82" rx="12" class="node human"/>
+								<text x="132" y="549" text-anchor="middle" class="node-title">Human attention</text>
+								<text x="132" y="573" text-anchor="middle" class="node-copy">clarify · blocked · CI failure</text>
+								<path d="M1365 404V514" class="edge"/><path d="M1290 561H1226" class="edge"/><path d="M1045 561H981" class="edge"/><path d="M800 561H736" class="edge"/>
+								<path d="M1290 380H1272V684H1284" class="edge"/>
+								<rect x="1290" y="650" width="150" height="68" rx="12" class="node human"/>
+								<text x="1365" y="678" text-anchor="middle" class="node-title">Resolve conflict</text>
+								<text x="1365" y="700" text-anchor="middle" class="node-copy">human stages resolution</text>
+								<path d="M1440 684H1460V424H1446" class="edge"/>
+								<rect x="665" y="650" width="160" height="68" rx="12" class="node api"/>
+								<text x="745" y="678" text-anchor="middle" class="node-title">Task recovery API</text>
+								<text x="745" y="700" text-anchor="middle" class="node-copy">reschedule interrupted work</text>
+								<path d="M745 650V410" class="edge dashed"/>
+								<path d="M1045 582H1000V480H745V410" class="edge dashed"/>
+								<text x="827" y="472" class="edge-label">review rejection → remediation</text>
+								<path d="M800 580H760V740H132V608" class="edge dashed"/>
+								<path d="M42 560H20V452H117V410" class="edge dashed"/>
+								<text x="48" y="440" class="edge-label">clarification / rejected plan</text>
+								<path d="M562 164V218H117V316" class="edge dashed"/>
+								<text x="262" y="234" class="edge-label">explicit caller / API orchestration required</text>
+							</svg>
+						</div>
+						<figcaption class="diagram-note">Solid arrows show request and composed API handoffs. Dashed arrows mark the caller-driven CLI-to-API boundary, recovery and remediation loops, and human-attention paths. Scroll horizontally to inspect the diagram on narrow screens.</figcaption>
+					</figure>
+				</section>
+
+				<section class="doc-section" id="further-learning">
+					<p class="section-kicker">09 · Go deeper</p>
+					<h2>Further learning</h2>
+					<p>Read the project principles and the original high-level workflow source:</p>
+					<ul class="link-list">
+						<li><a href="../factory.md">Factory principles <span aria-hidden="true">↗</span></a></li>
+						<li><a href="../cronos_ai_workflow.mmd">Original workflow source <span aria-hidden="true">↗</span></a></li>
+					</ul>
+				</section>
+
+				<footer class="footer">
+					<p>Cronos AI · Documentation for the current local-first implementation.</p>
+					<p><a href="../README.md">Back to the repository README</a></p>
+				</footer>
+			</main>
+		</div>
+	</body>
+</html>
