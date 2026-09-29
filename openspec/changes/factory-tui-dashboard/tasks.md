@@ -10,8 +10,8 @@
 
 - [x] 2.1 Add failing storage tests for the activity-event migration, UTC identity/timestamp fields, run/task filtering, and bounded pagination; verify the new tests fail for the missing behavior before implementation.
 - [x] 2.2 Implement the additive SQLite migration and indexed event append/query APIs; verify the migration tests pass against both a new database and a database at the previous schema version.
-- [ ] 2.3 Add failing sanitization tests for provider-token formats, environment secrets, oversized summaries, and raw tool payload exclusion; verify they fail before implementing the sanitizer.
-- [ ] 2.4 Implement fail-closed summary sanitization and record concise task lifecycle and worker progress events at durable event boundaries; verify the sanitization tests pass and raw RPC/tool payloads are not persisted.
+- [x] 2.3 Add failing sanitization tests for provider-token formats, environment secrets, oversized summaries, and raw tool payload exclusion; verify they fail before implementing the sanitizer.
+- [x] 2.4 Implement fail-closed summary sanitization and record concise task lifecycle and worker progress events at durable event boundaries; verify the sanitization tests pass and raw RPC/tool payloads are not persisted.
 - [ ] 2.5 Commit the completed activity-history slice with a commitlint-valid Conventional Commit subject, and verify the commit contains only intended source/tests and no state database, logs, secrets, or temporary files.
 
 ## 3. Dashboard read model and progress derivation

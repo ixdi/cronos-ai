@@ -7,6 +7,13 @@ from typing import Any
 import pytest
 
 from cronos_ai.herdr import HerdrAdapter
+from cronos_ai.models import (
+    OpenSpecPlan,
+    PlanTask,
+    TaskRecord,
+    TaskState,
+    WorkRequest,
+)
 from cronos_ai.profiles import FactoryProfileRegistry
 from cronos_ai.sandbox import DockerSandboxAdapter
 from cronos_ai.storage import FactoryStore
@@ -168,6 +175,19 @@ def test_worker_task_runs_through_herdr_rpc_and_sandbox_end_to_end(
     task_worktree = task_manager.create(run_branch, "task-1", attempt_number=1)
     herdr_api = FakeHerdrSocket()
     store = FactoryStore(tmp_path / "factory.sqlite3")
+    store.create_run(
+        "run-1",
+        WorkRequest(
+            request_id="request-1",
+            description="Run the sandbox worker",
+            repo_path=repository,
+        ),
+        OpenSpecPlan(
+            change_name="worker-execution",
+            tasks=(PlanTask(task_id="task-1", description="Run worker"),),
+        ),
+        (TaskRecord(task_id="task-1", state=TaskState.READY),),
+    )
     herdr = HerdrAdapter(
         "software-factory",
         store,
@@ -224,6 +244,7 @@ def test_worker_task_runs_through_herdr_rpc_and_sandbox_end_to_end(
 
     result = executor.execute(
         task_worktree.path,
+        run_id="run-1",
         worker_id="worker-1",
         task_id="task-1",
         prompt="Implement one small isolated change",

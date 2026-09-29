@@ -335,6 +335,7 @@ def test_complete_webhook_to_delivery_workflow_with_fake_adapters(
             task_worktrees[assignment.task_id] = task_worktree
             return worker.execute(
                 task_worktree.path,
+                run_id=run_id,
                 worker_id=assignment.worker_id,
                 task_id=assignment.task_id,
                 prompt=f"task_id={assignment.task_id}; implement and verify",

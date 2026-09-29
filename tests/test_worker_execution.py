@@ -4,8 +4,16 @@ from typing import Any
 import pytest
 
 from cronos_ai.herdr import HerdrAdapter
-from cronos_ai.models import SpecialistProfile, WorkerStatus
-from cronos_ai.pi_rpc import PiProcessExited, PiProtocolError
+from cronos_ai.models import (
+    OpenSpecPlan,
+    PlanTask,
+    SpecialistProfile,
+    TaskRecord,
+    TaskState,
+    WorkerStatus,
+    WorkRequest,
+)
+from cronos_ai.pi_rpc import PiProcessExited, PiProtocolError, PiRunResult
 from cronos_ai.sandbox import DockerSandboxAdapter
 from cronos_ai.scheduler import TransientWorkerError
 from cronos_ai.storage import FactoryStore
@@ -86,6 +94,7 @@ def test_interrupted_pi_process_releases_slot_for_bounded_retry(
     with pytest.raises(TransientWorkerError, match="transient Pi worker failure"):
         executor.execute(
             worktree,
+            run_id="run-1",
             worker_id="worker-1",
             task_id="task-1",
             prompt="Implement the task",
@@ -113,6 +122,7 @@ def test_malformed_pi_protocol_blocks_worker_slot_for_attention(
     with pytest.raises(WorkerExecutionError, match="worker failed"):
         executor.execute(
             worktree,
+            run_id="run-1",
             worker_id="worker-1",
             task_id="task-1",
             prompt="Implement the task",
@@ -121,4 +131,79 @@ def test_malformed_pi_protocol_blocks_worker_slot_for_attention(
     slot = store.get_worker_slot("worker-1")
     assert slot.status is WorkerStatus.BLOCKED
     assert slot.active_task_id == "task-1"
+    store.close()
+
+
+def test_worker_progress_excludes_raw_tool_message_payloads() -> None:
+    event = {
+        "type": "message_end",
+        "message": {
+            "role": "tool",
+            "content": [{"type": "text", "text": "private tool output"}],
+        },
+    }
+
+    assert PiWorkerExecutor._progress_summary(event) is None
+
+
+def test_worker_persists_only_safe_progress_summaries(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "task-worktree"
+    worktree.mkdir()
+    monkeypatch.setenv("FACTORY_PROVIDER_KEY", "provider-secret-value-123456")
+    executor, store = make_executor(tmp_path, process_factory=None)
+    store.create_run(
+        "run-1",
+        WorkRequest(
+            request_id="request-1",
+            description="Inspect worker progress",
+            repo_path=tmp_path,
+        ),
+        OpenSpecPlan(
+            change_name="monitor-progress",
+            tasks=(PlanTask(task_id="task-1", description="Build dashboard"),),
+        ),
+        (TaskRecord(task_id="task-1", state=TaskState.READY),),
+    )
+
+    class FakeSupervisor:
+        def __init__(self, *args: object, event_handler=None, **kwargs: object) -> None:
+            self.event_handler = event_handler
+
+        def run_prompt(self, prompt: str, *, timeout: float) -> PiRunResult:
+            assert self.event_handler is not None
+            self.event_handler(
+                {"type": "tool_execution_start", "toolName": "read"}
+            )
+            self.event_handler(
+                {
+                    "type": "message_end",
+                    "message": {
+                        "role": "tool",
+                        "content": [
+                            {"type": "text", "text": "private tool response"}
+                        ],
+                    },
+                }
+            )
+            return PiRunResult(request_id="rpc-1", events=(), settled=True)
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("cronos_ai.worker_execution.PiRpcSupervisor", FakeSupervisor)
+
+    executor.execute(
+        worktree,
+        run_id="run-1",
+        worker_id="worker-1",
+        task_id="task-1",
+        prompt="Implement the task",
+    )
+
+    events = store.list_activity_events("run-1", task_id="task-1")
+    assert [event.summary for event in events] == ["Running read"]
+    assert "private tool response" not in str(events)
     store.close()

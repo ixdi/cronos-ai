@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
+from cronos_ai.activity import sanitize_activity_summary
 from cronos_ai.herdr import HerdrAdapter, HerdrTransportError
-from cronos_ai.models import SpecialistProfile, TaskState, WorkerSlot
+from cronos_ai.models import ActivityEvent, SpecialistProfile, TaskState, WorkerSlot
 from cronos_ai.pi_rpc import (
     PiProcessExited,
     PiRpcSupervisor,
@@ -64,7 +67,7 @@ class PiWorkerExecutor:
                 return f"Running {tool_name}"
         if event_type == "message_end":
             message = event.get("message")
-            if isinstance(message, dict):
+            if isinstance(message, dict) and message.get("role") == "assistant":
                 content = message.get("content")
                 if isinstance(content, list):
                     for block in content:
@@ -78,6 +81,7 @@ class PiWorkerExecutor:
         self,
         worktree: Path,
         *,
+        run_id: str,
         worker_id: str,
         task_id: str,
         prompt: str,
@@ -88,13 +92,27 @@ class PiWorkerExecutor:
 
         def report_progress(event: dict[str, object]) -> None:
             summary = self._progress_summary(event)
-            if summary is not None:
-                self.herdr.report_task_state(
-                    worker_id,
-                    task_id,
-                    TaskState.RUNNING,
-                    summary,
+            if summary is None:
+                return
+            safe_summary = sanitize_activity_summary(summary)
+            if safe_summary is None:
+                return
+            self.herdr.store.append_activity_event(
+                ActivityEvent(
+                    event_id=str(uuid4()),
+                    run_id=run_id,
+                    task_id=task_id,
+                    occurred_at=datetime.now(UTC),
+                    category="progress",
+                    summary=safe_summary,
                 )
+            )
+            self.herdr.report_task_state(
+                worker_id,
+                task_id,
+                TaskState.RUNNING,
+                safe_summary,
+            )
 
         supervisor: PiRpcSupervisor | None = None
         result: PiRunResult | None = None

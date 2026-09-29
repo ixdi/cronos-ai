@@ -11,7 +11,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
 from typing import cast
+from uuid import uuid4
 
+from cronos_ai.activity import sanitize_activity_summary
 from cronos_ai.models import (
     ActivityEvent,
     Attempt,
@@ -364,6 +366,16 @@ class FactoryStore:
                     )
                 for task in task_records:
                     self._write_task(connection, run_id, task)
+            self._insert_activity_event(
+                connection,
+                ActivityEvent(
+                    event_id=str(uuid4()),
+                    run_id=run_id,
+                    occurred_at=datetime.now(UTC),
+                    category="run-lifecycle",
+                    summary="Factory run created",
+                ),
+            )
 
     def get_run(self, run_id: str) -> tuple[WorkRequest, OpenSpecPlan] | None:
         """Load a run's request and plan, if it exists."""
@@ -428,6 +440,10 @@ class FactoryStore:
         run_id: str,
         task: TaskRecord,
     ) -> None:
+        previous = connection.execute(
+            "SELECT state FROM tasks WHERE run_id = ? AND task_id = ?",
+            (run_id, task.task_id),
+        ).fetchone()
         connection.execute(
             """
             INSERT INTO tasks (
@@ -448,6 +464,18 @@ class FactoryStore:
                 datetime.now(UTC).isoformat(),
             ),
         )
+        if previous is not None and previous["state"] != task.state.value:
+            self._insert_activity_event(
+                connection,
+                ActivityEvent(
+                    event_id=str(uuid4()),
+                    run_id=run_id,
+                    task_id=task.task_id,
+                    occurred_at=datetime.now(UTC),
+                    category="task-state",
+                    summary=f"Task entered {task.state.value} state",
+                ),
+            )
 
     def save_tasks(self, run_id: str, tasks: tuple[TaskRecord, ...]) -> None:
         """Atomically persist a batch of task lifecycle transitions."""
@@ -502,6 +530,17 @@ class FactoryStore:
                     attempt.model_dump_json(),
                 ),
             )
+            self._insert_activity_event(
+                connection,
+                ActivityEvent(
+                    event_id=str(uuid4()),
+                    run_id=run_id,
+                    task_id=attempt.task_id,
+                    occurred_at=datetime.now(UTC),
+                    category="attempt",
+                    summary=f"Attempt {attempt.attempt_number} {attempt.status.value}",
+                ),
+            )
 
     def finish_attempt(
         self,
@@ -540,6 +579,21 @@ class FactoryStore:
                 )
             if worker_slot_update is not None:
                 self._write_worker_slot(connection, worker_slot_update)
+            details = f": {attempt.reason}" if attempt.reason else ""
+            self._insert_activity_event(
+                connection,
+                ActivityEvent(
+                    event_id=str(uuid4()),
+                    run_id=run_id,
+                    task_id=attempt.task_id,
+                    occurred_at=datetime.now(UTC),
+                    category="attempt",
+                    summary=(
+                        f"Attempt {attempt.attempt_number} {attempt.status.value}"
+                        f"{details}"
+                    ),
+                ),
+            )
 
     def get_attempts(self, run_id: str, task_id: str) -> list[Attempt]:
         """Load a task's attempts in attempt-number order."""
@@ -553,24 +607,34 @@ class FactoryStore:
         )
         return [Attempt.model_validate_json(row["payload_json"]) for row in rows]
 
+    @staticmethod
+    def _insert_activity_event(
+        connection: sqlite3.Connection,
+        event: ActivityEvent,
+    ) -> None:
+        summary = sanitize_activity_summary(event.summary)
+        if summary is None:
+            return
+        connection.execute(
+            """
+            INSERT INTO factory_activity_events (
+                event_id, run_id, task_id, occurred_at, category, summary
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event.event_id,
+                event.run_id,
+                event.task_id,
+                event.occurred_at.isoformat(),
+                event.category,
+                summary,
+            ),
+        )
+
     def append_activity_event(self, event: ActivityEvent) -> None:
         """Append one sanitized run or task activity event."""
         with self._transaction() as connection:
-            connection.execute(
-                """
-                INSERT INTO factory_activity_events (
-                    event_id, run_id, task_id, occurred_at, category, summary
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    event.event_id,
-                    event.run_id,
-                    event.task_id,
-                    event.occurred_at.isoformat(),
-                    event.category,
-                    event.summary,
-                ),
-            )
+            self._insert_activity_event(connection, event)
 
     def list_activity_events(
         self,
