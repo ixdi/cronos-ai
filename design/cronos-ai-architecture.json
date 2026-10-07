@@ -1,0 +1,162 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Cronos AI — Supervised Software Factory",
+    "locale": "en",
+    "quality_profile": "showcase"
+  },
+  "layout": {
+    "mode": "grid",
+    "origin": [80, 110],
+    "cols": 5,
+    "gapX": 82,
+    "gapY": 190,
+    "cellW": 176,
+    "cellH": 72
+  },
+  "components": [
+    {
+      "id": "intake",
+      "row": 0,
+      "col": 0,
+      "type": "backend",
+      "label": "Loopback intake",
+      "sublabel": "Bun · POST /tasks",
+      "size": [176, 72]
+    },
+    {
+      "id": "storage",
+      "row": 0,
+      "col": 1,
+      "type": "database",
+      "label": "SQLite store",
+      "sublabel": "Queue · workflow · checkpoints",
+      "size": [176, 72]
+    },
+    {
+      "id": "core",
+      "row": 0,
+      "col": 2,
+      "type": "backend",
+      "label": "LangGraph core",
+      "sublabel": "One active task · human gate",
+      "size": [176, 72]
+    },
+    {
+      "id": "delivery",
+      "row": 0,
+      "col": 3,
+      "type": "backend",
+      "label": "Host delivery",
+      "sublabel": "Commit · scoped push · PR",
+      "size": [176, 72]
+    },
+    {
+      "id": "github",
+      "row": 0,
+      "col": 4,
+      "type": "external",
+      "label": "GitHub repository",
+      "sublabel": "Task branch · pull request",
+      "size": [176, 72]
+    },
+    {
+      "id": "workspace",
+      "row": 1,
+      "col": 1,
+      "type": "backend",
+      "label": "Workspace provider",
+      "sublabel": "Replaceable adapter",
+      "size": [176, 72]
+    },
+    {
+      "id": "runtime",
+      "row": 1,
+      "col": 2,
+      "type": "backend",
+      "label": "Docker + Herdr",
+      "sublabel": "Task worktree · panes on demand",
+      "size": [176, 72]
+    },
+    {
+      "id": "agents",
+      "row": 1,
+      "col": 3,
+      "type": "backend",
+      "label": "Pi CLI roles",
+      "sublabel": "Triage · code · checks",
+      "size": [176, 72]
+    }
+  ],
+  "connections": [
+    {
+      "id": "intake-to-storage",
+      "from": "intake",
+      "to": "storage",
+      "label": "enqueue"
+    },
+    {
+      "id": "storage-to-core",
+      "from": "storage",
+      "to": "core",
+      "label": "task state"
+    },
+    {
+      "id": "core-to-workspace",
+      "from": "core",
+      "to": "workspace",
+      "label": "provision · restore"
+    },
+    {
+      "id": "workspace-to-runtime",
+      "from": "workspace",
+      "to": "runtime"
+    },
+    {
+      "id": "runtime-to-agents",
+      "from": "runtime",
+      "to": "agents",
+      "label": "role execution"
+    },
+    {
+      "id": "core-to-delivery",
+      "from": "core",
+      "to": "delivery",
+      "label": "approved work"
+    },
+    {
+      "id": "delivery-to-github",
+      "from": "delivery",
+      "to": "github",
+      "label": "branch + PR",
+      "variant": "emphasis"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Human supervision",
+      "items": [
+        "The operator CLI exposes approval, rejection with feedback, and explicit resume.",
+        "Rejection repeats implementation and checks; approval gates documentation and delivery."
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Isolation and recovery",
+      "items": [
+        "Each task gets a Docker runtime and worktree; agents see shared Git metadata read-only.",
+        "SQLite checkpoints survive restart. Active tasks are interrupted, never auto-resumed."
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Controlled delivery",
+      "items": [
+        "The host owns commits and repository-scoped GitHub credentials; agents do not push.",
+        "Cronos records the PR and stops tracking; PR and CI monitoring are out of MVP scope."
+      ]
+    }
+  ]
+}
