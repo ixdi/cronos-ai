@@ -1,0 +1,79 @@
+flowchart TD
+    %% MVP: one active task, local intake, isolated execution, human gate, GitHub PR.
+    %% Dashed future branches are not executed in the MVP.
+
+    subgraph intake["Task intake (MVP)"]
+        request["Requirements / features / bugs / errors"]
+        api["Bun HTTP intake<br/>loopback only"]
+        queue["Queue helpers<br/>(cronos-queue)"]
+        request --> api --> queue
+    end
+
+    core["LangGraph orchestrator<br/>(cronos-core)<br/>one active task at a time"]
+    queue -- "next task" --> core
+
+    subgraph workflow["Auto-resolvable workflow (MVP)"]
+        triage["Triage<br/>Jev classifier"]
+        route{"Auto-resolvable?"}
+        implement["Implementation"]
+        review["Code review"]
+        verify["Verification"]
+        humanGate{"Human review"}
+        docs["Documentation"]
+        ready["ready_for_delivery<br/>LangGraph terminal result"]
+        createPR["Host stages/commits task changes,<br/>pushes branch, creates GitHub PR"]
+        delivered["Delivered<br/>stop tracking PR/CI"]
+        blocked["Blocked<br/>reason visible in CLI"]
+
+        triage --> route
+        route -- "yes" --> implement
+        route -- "needs clarification/specs" --> blocked
+        implement --> review --> verify --> humanGate
+        humanGate -- "reject / rework" --> implement
+        humanGate -- "approve" --> docs --> ready
+        ready --> createPR --> delivered
+    end
+
+    core --> triage
+    delivered -- "next queued task" --> queue
+
+    subgraph deferred["Deferred beyond MVP"]
+        clarify["Human clarification branch"]
+        specs["Specs creation and approval branch"]
+        tui["Full OpenTUI control panel"]
+    end
+    blocked -. "future support" .-> clarify
+    blocked -. "future support" .-> specs
+
+    subgraph execution["Per-task execution (MVP)"]
+        provider["WorkspaceProvider<br/>(replaceable boundary)"]
+        isolated["Docker runtime<br/>task worktree + read-only common Git metadata"]
+        herdr["Herdr workspace / space"]
+        pane["Pane created on demand<br/>closed after agent use"]
+        pi["Pi CLI agent<br/>configured chat model"]
+        provider --> isolated --> herdr --> pane --> pi
+    end
+    core -- "provision / suspend / restore / close workspace" --> provider
+    triage -. "role execution" .-> pi
+    implement -. "role execution" .-> pi
+    review -. "role execution" .-> pi
+    verify -. "role execution" .-> pi
+    docs -. "role execution" .-> pi
+    pi -. "progress and result" .-> core
+
+    human(("Human"))
+    cli["Operator CLI (MVP)<br/>inspect / approve / reject / resume"]
+    futurePanel["OpenTUI panel (later)"]
+    human --> cli
+    cli -. "status and review actions" .-> core
+    cli -. "approve / reject" .-> humanGate
+    cli -. "resume interrupted task" .-> core
+    futurePanel -. "replaces CLI surface later" .-> cli
+
+    interrupted["Interrupted<br/>runtime stopped; worktree/checkpoint retained"]
+    core -- "active task at restart; do not auto-resume" --> interrupted
+    interrupted -- "explicit resume; checkpoint + existing worktree required" --> core
+
+    storage[("cronos-storage<br/>SQLite only<br/>queue · workflow/checkpoints · agent status")]
+    queue <--> storage
+    core <--> storage
