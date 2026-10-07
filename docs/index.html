@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1">
+		<meta name="color-scheme" content="light">
+		<meta name="theme-color" content="#111827">
+		<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22%3E%3Ctext y=%22.9em%22 font-size=%2256%22%3E%E2%9C%B3%3C/text%3E%3C/svg%3E">
+		<meta name="description" content="Cronos AI user guide: configure the local software factory, submit tasks, review agent work, recover interrupted tasks, and deliver approved changes.">
+		<title>User Guide · Cronos AI</title>
+		<style>
+			:root {
+				color-scheme: light;
+				--ink: #172033;
+				--muted: #5a6577;
+				--soft-ink: #364258;
+				--paper: #E3E8E3;
+				--surface: #ffffff;
+				--line: #e1e6ec;
+				--navy: #111827;
+				--navy-2: #1c2940;
+				--mint: #baf3d2;
+				--mint-ink: #16583a;
+				--amber: #fff1cf;
+				--amber-ink: #754b09;
+				--blue: #edf4ff;
+				--blue-ink: #25477e;
+				--rose: #fff0ef;
+				--rose-ink: #8d332d;
+				--shadow: 0 18px 50px rgb(23 32 51 / 8%);
+				--radius: 18px;
+				font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+				font-synthesis: none;
+				text-rendering: optimizeLegibility;
+			}
+			
+			* { box-sizing: border-box; }
+			html { scroll-behavior: smooth; scroll-padding-top: 28px; }
+			body { margin: 0; background: var(--paper); color: var(--ink); line-height: 1.65; }
+			a { color: #28634b; text-decoration-thickness: .08em; text-underline-offset: .18em; }
+			a:hover { color: #143f2e; }
+			a:focus-visible, button:focus-visible { outline: 3px solid #f2b94b; outline-offset: 3px; border-radius: 5px; }
+			code, pre, kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+			code { font-size: .91em; }
+			p { margin: .7rem 0 1rem; }
+			h1, h2, h3 { line-height: 1.2; letter-spacing: -.025em; }
+			h2 { margin: 0 0 1.15rem; font-size: clamp(1.55rem, 2vw, 2rem); }
+			h3 { margin: 1.55rem 0 .55rem; font-size: 1.12rem; }
+			ul, ol { padding-left: 1.3rem; }
+			li { padding-left: .18rem; margin: .38rem 0; }
+			.skip-link { position: absolute; top: -60px; left: 16px; z-index: 20; padding: 10px 14px; background: #fff; color: var(--ink); border-radius: 8px; }
+			.skip-link:focus { top: 12px; }
+			
+			.topbar { position: sticky; z-index: 10; top: 0; background: #F2F2EB; color: #333; border-bottom: 1px solid rgb(255 255 255 / 10%); backdrop-filter: blur(12px); }
+			.topbar-inner { max-width: 1440px; height: 68px; margin: auto; padding: 0 28px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+			.wordmark { display: inline-flex; align-items: center; gap: 11px; color: #333; text-decoration: none; font-weight: 750; letter-spacing: -.02em; }
+			.wordmark:hover { color: #333; }
+			.mark { width: 31px; height: 31px; display: grid; place-items: center; border-radius: 10px; background: var(--mint); color: #102d20; font-size: 20px; }
+			.wordmark small { margin-left: 4px; color: #666; font-size: .68rem; font-weight: 650; letter-spacing: .12em; }
+			.top-actions { display: flex; align-items: center; gap: 16px; }
+			.top-actions a { color: #666; font-size: .9rem; text-decoration: none; }
+			.menu-toggle { display: none; padding: 8px 12px; color: #fff; background: transparent; border: 1px solid #526076; border-radius: 9px; font: inherit; cursor: pointer; }
+			
+			.layout { max-width: 1440px; margin: 0 auto; padding: 30px 28px 70px; display: grid; grid-template-columns: 238px minmax(0, 1fr); gap: 44px; align-items: start; }
+			.sidebar { position: sticky; top: 92px; max-height: calc(100vh - 112px); overflow: auto; padding: 17px 12px 20px 0; }
+			.sidebar-label { margin: 0 0 12px 12px; color: #7a8493; font-size: .7rem; font-weight: 750; letter-spacing: .14em; text-transform: uppercase; }
+			.sidebar nav { display: grid; gap: 3px; }
+			.sidebar a { display: block; padding: 8px 12px; border-left: 2px solid transparent; border-radius: 0 8px 8px 0; color: #515e72; font-size: .9rem; line-height: 1.35; text-decoration: none; }
+			.sidebar a:hover { background: #e9edf1; color: var(--ink); }
+			.sidebar a.active { border-left-color: #32966b; background: #e6f4eb; color: #1b5b3d; font-weight: 680; }
+			.sidebar-divider { height: 1px; margin: 14px 0; background: var(--line); }
+			.sidebar .external-link { color: #355d83; }
+			
+			main { min-width: 0; }
+			.hero { overflow: hidden; position: relative; min-height: 330px; display: grid; align-items: end; padding: clamp(26px, 5vw, 58px); border-radius: 24px; background: var(--navy); color: white; box-shadow: var(--shadow); isolation: isolate; }
+			.hero::before { content: ""; position: absolute; z-index: -2; inset: 0; background: url("../assets/banner.jpeg") center 44% / cover no-repeat; opacity: .76; }
+			.hero::after { content: ""; position: absolute; z-index: -1; inset: 0; background: linear-gradient(90deg, rgb(11 18 30 / 91%) 0%, rgb(11 18 30 / 70%) 48%, rgb(11 18 30 / 16%) 100%), linear-gradient(0deg, rgb(11 18 30 / 55%), transparent 70%); }
+			.hero-content { max-width: 720px; }
+			.eyebrow { display: inline-flex; align-items: center; gap: 8px; margin-bottom: 16px; color: #d0f6df; font-size: .77rem; font-weight: 750; letter-spacing: .15em; text-transform: uppercase; }
+			.eyebrow::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #9ae5ba; box-shadow: 0 0 0 4px rgb(154 229 186 / 18%); }
+			.hero h1 { max-width: 680px; margin: 0; font-size: clamp(2.25rem, 5vw, 4.2rem); letter-spacing: -.055em; }
+			.hero p { max-width: 650px; margin: 17px 0 0; color: #edf2f7; font-size: clamp(1rem, 1.55vw, 1.18rem); }
+			.hero-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 25px; }
+			.button { display: inline-flex; align-items: center; justify-content: center; min-height: 43px; padding: 9px 16px; border: 1px solid transparent; border-radius: 10px; background: var(--mint); color: #123b29; font-weight: 730; text-decoration: none; }
+			.button:hover { background: #d5f8e2; color: #123b29; }
+			.button.secondary { border-color: rgb(255 255 255 / 34%); background: rgb(17 24 39 / 38%); color: white; }
+			.button.secondary:hover { background: rgb(255 255 255 / 12%); }
+			
+			.quick-facts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 18px 0 22px; }
+			.fact { padding: 15px 17px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface); }
+			.fact strong { display: block; color: var(--soft-ink); font-size: .78rem; letter-spacing: .08em; text-transform: uppercase; }
+			.fact span { display: block; margin-top: 3px; font-size: .97rem; font-weight: 720; }
+			.callout { margin: 20px 0 30px; padding: 17px 19px; border: 1px solid #efd99c; border-left: 5px solid #d2972f; border-radius: 13px; background: var(--amber); color: #533a12; }
+			.callout strong { color: var(--amber-ink); }
+			.callout p { margin: 5px 0 0; }
+			.callout.info { border-color: #c9dcf5; border-left-color: #5485c5; background: var(--blue); color: #263b5c; }
+			.callout.info strong { color: var(--blue-ink); }
+			.callout.danger { border-color: #f1cbc7; border-left-color: #c95449; background: var(--rose); color: #572a27; }
+			.callout.danger strong { color: var(--rose-ink); }
+			
+			.section { scroll-margin-top: 92px; margin: 0 0 20px; padding: clamp(23px, 3.3vw, 38px); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: 0 5px 22px rgb(23 32 51 / 3%); }
+			.section-kicker { display: block; margin-bottom: 7px; color: #31815d; font-size: .72rem; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
+			.section > p:first-of-type { margin-top: 0; }
+			.lead { color: var(--muted); font-size: 1.05rem; }
+			.two-col { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 20px 0; }
+			.mini-card { min-width: 0; padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: #fbfcfd; }
+			.mini-card h3 { margin: 0 0 7px; }
+			.mini-card p { margin: 0; color: var(--muted); }
+			.step-list { list-style: none; counter-reset: step; padding: 0; margin: 20px 0; display: grid; gap: 12px; }
+			.step-list li { position: relative; min-height: 52px; margin: 0; padding: 4px 0 4px 59px; counter-increment: step; }
+			.step-list li::before { content: counter(step, decimal-leading-zero); position: absolute; left: 0; top: 0; display: grid; place-items: center; width: 42px; height: 42px; border-radius: 13px; background: #e6f4eb; color: #1b6845; font-size: .78rem; font-weight: 800; }
+			.step-list strong { display: block; margin-bottom: 3px; }
+			
+			.code-block { position: relative; margin: 14px 0 18px; overflow: hidden; border: 1px solid #202d43; border-radius: 13px; background: #111827; color: #e8edf4; }
+			.code-head { min-height: 40px; padding: 8px 12px 8px 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid #2b394f; color: #aebbd0; font-size: .76rem; }
+			.code-head span { font-weight: 700; letter-spacing: .04em; }
+			.copy-button { padding: 5px 9px; border: 1px solid #46556c; border-radius: 7px; background: #1b2940; color: #ecf3fa; font: inherit; font-size: .75rem; cursor: pointer; }
+			.copy-button:hover { background: #293953; }
+			pre { overflow: auto; margin: 0; padding: 16px; font-size: .84rem; line-height: 1.65; tab-size: 2; }
+			pre code { color: inherit; font-size: inherit; white-space: pre; }
+			.inline-code { padding: .12em .4em; border: 1px solid #e4e8ee; border-radius: 5px; background: #f3f5f7; color: #27354a; }
+			.muted { color: var(--muted); }
+			.small { font-size: .88rem; }
+			.architecture-link { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin: 20px 0 0; padding: 18px 20px; border: 1px solid #cfe0d5; border-radius: 14px; background: linear-gradient(110deg, #edf8f0, #f7fbf8); text-decoration: none; }
+			.architecture-link strong { display: block; color: #174a33; font-size: 1rem; }
+			.architecture-link span { display: block; margin-top: 3px; color: #526b5e; font-size: .88rem; }
+			.architecture-link b { flex: 0 0 auto; color: #1c7048; font-size: 1.4rem; }
+			
+			.table-wrap { overflow-x: auto; margin: 16px 0; border: 1px solid var(--line); border-radius: 12px; }
+			table { width: 100%; border-collapse: collapse; font-size: .91rem; }
+			th, td { padding: 12px 14px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+			th { background: #f5f7f9; color: #48556a; font-size: .76rem; letter-spacing: .08em; text-transform: uppercase; }
+			tr:last-child td { border-bottom: 0; }
+			td:first-child { white-space: nowrap; font-weight: 690; }
+			.status-pill { display: inline-block; padding: 2px 8px; border-radius: 999px; background: #edf1f5; color: #37465a; font-size: .77rem; font-weight: 750; }
+			.status-pill.green { background: #e1f4e8; color: #236340; }
+			.status-pill.amber { background: #fff0ce; color: #76500c; }
+			.status-pill.red { background: #ffe5e1; color: #8a3029; }
+			details { margin: 10px 0; border: 1px solid var(--line); border-radius: 11px; background: #fcfcfd; }
+			summary { padding: 13px 16px; color: var(--soft-ink); font-weight: 700; cursor: pointer; }
+			details[open] summary { border-bottom: 1px solid var(--line); }
+			details > div { padding: 2px 16px 13px; color: var(--muted); }
+			details p:last-child { margin-bottom: 0; }
+			.reference-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 0; list-style: none; }
+			.reference-list li { margin: 0; }
+			.reference-list a { display: block; height: 100%; padding: 13px 15px; border: 1px solid var(--line); border-radius: 11px; background: #fbfcfd; font-weight: 690; text-decoration: none; }
+			.reference-list a:hover { border-color: #a9cdb6; background: #f4faf6; }
+			.reference-list small { display: block; margin-top: 3px; color: var(--muted); font-weight: 450; }
+			.footer { padding: 22px 8px 8px; color: #6d7787; text-align: center; font-size: .84rem; }
+			.toast { position: fixed; z-index: 30; right: 22px; bottom: 22px; max-width: calc(100% - 44px); padding: 11px 15px; transform: translateY(18px); opacity: 0; border-radius: 10px; background: var(--navy); color: white; box-shadow: var(--shadow); pointer-events: none; transition: opacity .2s ease, transform .2s ease; }
+			.toast.show { transform: translateY(0); opacity: 1; }
+			
+			@media (max-width: 980px) {
+				.layout { grid-template-columns: 195px minmax(0, 1fr); gap: 24px; padding-inline: 20px; }
+				.topbar-inner { padding-inline: 20px; }
+				.hero { min-height: 300px; }
+			}
+			@media (max-width: 720px) {
+				html { scroll-padding-top: 78px; }
+				.topbar-inner { height: 60px; padding-inline: 16px; }
+				.wordmark small { display: none; }
+				.top-actions > a { display: none; }
+				.menu-toggle { display: inline-flex; }
+				.layout { display: block; padding: 16px 14px 42px; }
+				.sidebar { position: static; display: none; max-height: none; margin: 0 0 14px; padding: 13px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+				.sidebar.open { display: block; }
+				.sidebar-label { margin-left: 10px; }
+				.hero { min-height: 300px; padding: 27px 23px; border-radius: 18px; }
+				.hero::before { background-position: 56% center; }
+				.quick-facts { grid-template-columns: 1fr; gap: 8px; margin-top: 12px; }
+				.fact { padding: 12px 14px; }
+				.section { margin-bottom: 13px; padding: 23px 19px; border-radius: 15px; }
+				.two-col, .reference-list { grid-template-columns: minmax(0, 1fr); }
+				.architecture-link { align-items: flex-start; }
+				td:first-child { white-space: normal; }
+			}
+			@media (prefers-reduced-motion: reduce) {
+				*, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
+			}
+		</style>
+	</head>
+	<body>
+		<a class="skip-link" href="#main-content">Skip to guide</a>
+		<header class="topbar" id="top">
+			<div class="topbar-inner">
+				<a class="wordmark" href="#top" aria-label="Cronos AI user guide home">
+					<span class="mark" aria-hidden="true">✳</span>
+					<span>Cronos AI</span>
+					<small>USER GUIDE · MVP</small>
+				</a>
+				<div class="top-actions">
+					<a href="../README.md">Project overview</a>
+					<a href="../docs/github-app-setup.md">GitHub App setup</a>
+					<button class="menu-toggle" type="button" aria-expanded="false" aria-controls="contents">Contents</button>
+				</div>
+			</div>
+		</header>
+
+		<div class="layout">
+			<aside class="sidebar" id="contents" aria-label="Guide contents">
+				<p class="sidebar-label">On this page</p>
+				<nav>
+					<a href="#overview">Overview</a>
+					<a href="#workflow">How a task moves</a>
+					<a href="#requirements">Before you start</a>
+					<a href="#configuration">Configuration</a>
+					<a href="#submit">Submit local work</a>
+					<a href="#operator-cli">Operator commands</a>
+					<a href="#review">Review and rework</a>
+					<a href="#recovery">Restart and resume</a>
+					<a href="#delivery">GitHub delivery</a>
+					<a href="#security">Security basics</a>
+					<a href="#troubleshooting">Troubleshooting</a>
+					<a href="#references">More documentation</a>
+				</nav>
+				<div class="sidebar-divider"></div>
+				<a class="external-link" href="../design/cronos-ai-architecture.html" target="_blank" rel="noopener">Interactive architecture ↗</a>
+			</aside>
+
+			<main id="main-content">
+				<section class="hero" aria-labelledby="page-title">
+					<div class="hero-content">
+						<span class="eyebrow">A practical operator guide</span>
+						<h1 id="page-title">Software,<br>
+							manufactured by AI</h1>
+						<p>Keep engineering in control</p>
+						<div class="hero-actions">
+							<a class="button" href="#requirements">Get started</a>
+							<a class="button secondary" href="../design/cronos-ai-architecture.html" target="_blank" rel="noopener">Explore architecture ↗</a>
+						</div>
+					</div>
+				</section>
+
+				<div class="quick-facts" aria-label="MVP facts">
+					<div class="fact"><strong>Execution</strong><span>One active task at a time</span></div>
+					<div class="fact"><strong>State</strong><span>SQLite-backed and checkpointed</span></div>
+					<div class="fact"><strong>Control</strong><span>Human approval before delivery</span></div>
+				</div>
+
+				<aside class="callout" role="note">
+					<strong>MVP integration note</strong>
+					<p>This repository provides the intake server, workflow functions, runtime adapters, and operator CLI, but not a single bundled service/worker launcher. The intake example below only queues tasks; a host composition must also run reconciliation and the workflow worker before tasks execute. See <a href="../cronos-core/README.md">Core workflow</a>
+						for that boundary.</p>
+				</aside>
+
+				<section class="section" id="overview">
+					<span class="section-kicker">01 · Overview</span>
+					<h2>What Cronos does</h2>
+					<p class="lead">Cronos is a local-first, human-supervised software factory. It turns a task description into a traceable workflow rather than letting one agent make unreviewed changes directly in the shared repository.</p>
+					<div class="two-col">
+						<article class="mini-card">
+							<h3>Agents do the work</h3>
+							<p>Jev classifies requests. Pi coding roles implement, review, verify, and document work in an isolated task environment.</p>
+						</article>
+						<article class="mini-card">
+							<h3>People own decisions</h3>
+							<p>An operator inspects the result, approves it, or rejects it with feedback. Only approval advances the task to documentation and PR delivery.</p>
+						</article>
+					</div>
+					<p>Cronos persists queue entries, workflow status, agent events, workspace identity, and LangGraph checkpoints in SQLite. On restart, active work is marked <span class="status-pill amber">interrupted</span>; Cronos never resumes it automatically.</p>
+				</section>
+
+				<section class="section" id="workflow">
+					<span class="section-kicker">02 · The task lifecycle</span>
+					<h2>How a task moves through Cronos</h2>
+					<ol class="step-list">
+						<li><strong>Intake and queue</strong>A local client submits a JSON description to the loopback-only <code>POST /tasks</code>
+						endpoint. SQLite stores it as <code>queued</code>.</li>
+						<li><strong>Triage</strong>Jev classifies the request. Only <code>auto_resolvable</code>
+						continues in this MVP; clarification and specification paths are blocked with a reason.</li>
+						<li><strong>Isolated implementation</strong>The workspace provider creates a task-specific Git worktree and Docker runtime. Pi implementation tools modify task files, not shared Git history.</li>
+						<li><strong>Automated checks</strong>Code review and verification run with read-only tools. A failed quality gate stops the workflow and records the outcome.</li>
+						<li><strong>Human review</strong>The operator reads the result. Rejection sends feedback to implementation and repeats review and verification.</li>
+						<li><strong>Documentation and delivery</strong>Approval permits documentation. The host—not the agent—stages and commits changes, pushes a repository-scoped branch, creates a GitHub PR, and records the PR reference.</li>
+					</ol>
+					<a class="architecture-link" href="../design/cronos-ai-architecture.html" target="_blank" rel="noopener">
+						<span><strong>View the interactive architecture diagram</strong><span>Explore the components, isolation boundary, durable state, and delivery path.</span></span>
+						<b aria-hidden="true">↗</b>
+					</a>
+				</section>
+
+				<section class="section" id="requirements">
+					<span class="section-kicker">03 · Before you start</span>
+					<h2>Prepare your local environment</h2>
+					<p>For a real agent run, the Cronos host needs Bun, Git, Docker, and a working Herdr CLI/local service. The target source must be a Git repository with the configured base branch available.</p>
+					<p>The runtime image is supplied by the operator; Cronos does not build it. It must include <code>sh</code>, Git, Bun, Node.js 22.19 or newer, and Pi CLI. Pi uses a configured chat model. Jev is used only as the triage classifier through Pi's codemode tool.</p>
+					<div class="callout info" role="note">
+						<strong>Start with the repository checks</strong>
+						<p>From the repository root, install the locked workspace dependencies and run the tests before configuring any real credentials.</p>
+					</div>
+					<div class="code-block">
+						<div class="code-head"><span>Terminal · repository root</span><button class="copy-button" type="button" data-copy="setup-command">Copy</button></div>
+						<pre><code id="setup-command">bun install --frozen-lockfile
+bun test
+bun run --filter cronos-panel start -- --help</code></pre>
+					</div>
+					<p class="small muted">The regular test suite uses fake agents and providers. An opt-in Herdr/Docker integration test is documented in <a href="../cronos-runtime/README.md#development-and-tests">the runtime guide</a>; it does not make real model calls.</p>
+				</section>
+
+				<section class="section" id="configuration">
+					<span class="section-kicker">04 · Configuration</span>
+					<h2>Set the host environment</h2>
+					<p>Set deployment values in your shell or secret manager. Keep <code>CRONOS_RUNTIME_ROOT</code>
+						outside the source repository when possible, and never commit populated credentials.</p>
+					<div class="table-wrap">
+						<table>
+							<thead><tr><th>Variable</th><th>Required for</th><th>What it controls</th></tr></thead>
+							<tbody>
+								<tr><td><code>CRONOS_DB_PATH</code></td><td>CLI / host</td><td>SQLite database location; defaults to <code>./cronos.sqlite</code>.</td></tr>
+								<tr><td><code>CRONOS_REPOSITORY_PATH</code></td><td>Workflow actions</td><td>Host-side Git repository used for worktrees and delivery.</td></tr>
+								<tr><td><code>CRONOS_RUNTIME_ROOT</code></td><td>Workflow actions</td><td>Directory for task worktrees and host-owned temporary delivery clones.</td></tr>
+								<tr><td><code>CRONOS_RUNTIME_IMAGE</code></td><td>Workflow actions</td><td>Docker image with the agent runtime prerequisites.</td></tr>
+								<tr><td><code>CRONOS_PI_CHAT_MODEL</code></td><td>Agent roles</td><td>Pi chat model ID for coding, review, verification, and documentation.</td></tr>
+								<tr><td><code>CRONOS_RUNTIME_ENV</code></td><td>Agent roles</td><td>Optional comma-separated host variable <em>names</em>
+									to forward, such as <code>OPENAI_API_KEY,TYPESAFE_API_KEY</code>. Values are read from the host environment.</td></tr>
+								<tr><td><code>CRONOS_BASE_BRANCH</code></td><td>Delivery</td><td>GitHub target base branch; defaults to <code>main</code>.</td></tr>
+								<tr><td><code>HERDR_BINARY</code>, <code>DOCKER_BINARY</code>, <code>GIT_BINARY</code>, <code>PI_BINARY</code></td><td>Optional</td><td>Override executable paths when tools are not on the default <code>PATH</code>.</td></tr>
+							</tbody>
+						</table>
+					</div>
+					<p>The triage classifier requires Jev/TypeSafe credentials in the environment passed to the runtime. The selected chat provider may require its own key as well. Add only the names needed to <code>CRONOS_RUNTIME_ENV</code>; do not forward host credentials wholesale.</p>
+					<p>For approved GitHub delivery, configure <code>CRONOS_GITHUB_OWNER</code>, <code>CRONOS_GITHUB_REPOSITORY</code>, <code>CRONOS_GITHUB_APP_ID</code>, <code>CRONOS_GITHUB_INSTALLATION_ID</code>, <code>CRONOS_GITHUB_REPOSITORY_ID</code>, and <code>CRONOS_GITHUB_APP_PRIVATE_KEY</code>. Follow the <a href="../docs/github-app-setup.md">GitHub App setup instructions</a>; the App should have only Contents and Pull requests write permissions on the one target repository.</p>
+				</section>
+
+				<section class="section" id="submit">
+					<span class="section-kicker">05 · Intake</span>
+					<h2>Submit local work</h2>
+					<p>The intake server binds to <code>127.0.0.1</code>, accepts JSON with a non-empty <code>description</code>, and rejects bodies larger than 64 KiB. Run the following in a host process to open the API:</p>
+					<div class="code-block">
+						<div class="code-head"><span>Terminal · starts intake only</span><button class="copy-button" type="button" data-copy="intake-command">Copy</button></div>
+						<pre><code id="intake-command">bun -e '
+import { createIntakeServer } from "./cronos-core/src/intake-server.ts";
+import { openStorageDatabase } from "./cronos-storage/src/database.ts";
+
+const db = await openStorageDatabase(Bun.env.CRONOS_DB_PATH ?? "./cronos.sqlite");
+const port = Number(Bun.env.CRONOS_INTAKE_PORT ?? "3000");
+const server = createIntakeServer(db, port);
+console.log(`Cronos intake listening at ${server.url}`);
+'</code></pre>
+					</div>
+					<p>With the host process running, submit work from the same machine:</p>
+					<div class="code-block">
+						<div class="code-head"><span>Terminal · queue a task</span><button class="copy-button" type="button" data-copy="curl-command">Copy</button></div>
+						<pre><code id="curl-command">curl --fail-with-body \
+  -X POST http://127.0.0.1:3000/tasks \
+  -H 'content-type: application/json' \
+  -d '{"description":"Implement the first feature"}'</code></pre>
+					</div>
+					<p>A successful request returns HTTP <code>201</code>
+						with the new task ID and <code>queued</code>
+						status. Use the ID in the CLI commands below. The intake process alone only queues; the MVP currently has no packaged worker launcher to claim and execute that task.</p>
+					<div class="callout danger" role="note">
+						<strong>Keep intake private</strong>
+						<p>This endpoint has no network authentication or rate limiting. Do not bind it to a public interface, expose it through a reverse proxy, or port-forward it beyond the local machine.</p>
+					</div>
+				</section>
+
+				<section class="section" id="operator-cli">
+					<span class="section-kicker">06 · Operator CLI</span>
+					<h2>Inspect tasks and workflow results</h2>
+					<p>The <code>cronos-panel</code>
+						package is a JSON CLI. It reads the shared SQLite database and reports status, workflow stage, errors, agent history, and recent review/verification results.</p>
+					<div class="code-block">
+						<div class="code-head"><span>Terminal · inspect the queue</span><button class="copy-button" type="button" data-copy="inspect-command">Copy</button></div>
+						<pre><code id="inspect-command"># All tasks
+bun run --filter cronos-panel start -- --db ./cronos.sqlite list
+
+# Only interrupted work
+bun run --filter cronos-panel start -- --db ./cronos.sqlite list --status interrupted
+
+# Full details for one task
+bun run --filter cronos-panel start -- --db ./cronos.sqlite show &lt;task-id&gt;</code></pre>
+					</div>
+					<div class="table-wrap">
+						<table>
+							<thead><tr><th>Status</th><th>Meaning</th><th>Operator action</th></tr></thead>
+							<tbody>
+								<tr><td><span class="status-pill">queued</span></td><td>Accepted and waiting for a workflow to claim it.</td><td>Wait for a configured host worker.</td></tr>
+								<tr><td><span class="status-pill">active</span></td><td>A workflow currently owns the task.</td><td>Inspect; do not start a second task.</td></tr>
+								<tr><td><span class="status-pill amber">review_pending</span></td><td>Automated stages passed and a human decision is required.</td><td>Inspect, then approve or reject with feedback.</td></tr>
+								<tr><td><span class="status-pill amber">interrupted</span></td><td>Active work was stopped during restart reconciliation.</td><td>Inspect the reason; explicitly resume if safe.</td></tr>
+								<tr><td><span class="status-pill">blocked</span></td><td>Triage chose an unsupported clarification/specification route.</td><td>Read the stored reason; resolve manually or resubmit when supported.</td></tr>
+								<tr><td><span class="status-pill red">errored</span></td><td>A workflow or quality gate failed.</td><td>Read the failure and agent output before deciding next steps.</td></tr>
+								<tr><td><span class="status-pill green">delivered</span></td><td>GitHub confirmed PR creation and the reference is stored.</td><td>Continue PR review in GitHub; Cronos does not track later events.</td></tr>
+							</tbody>
+						</table>
+					</div>
+				</section>
+
+				<section class="section" id="review">
+					<span class="section-kicker">07 · Human decisions</span>
+					<h2>Approve or request rework</h2>
+					<p>Before approval, inspect <code>show &lt;task-id&gt;</code>
+						for the implementation summary, changed files, code-review output, verification output, and persisted workflow stage.</p>
+					<div class="two-col">
+						<article class="mini-card">
+							<h3>Approve</h3>
+							<p>Approval resumes the saved workflow through documentation and, with GitHub delivery configured, creates a task branch and pull request.</p>
+							<div class="code-block"><div class="code-head"><span>CLI</span><button class="copy-button" type="button" data-copy="approve-command">Copy</button></div><pre><code id="approve-command">bun run --filter cronos-panel start -- --db ./cronos.sqlite approve &lt;task-id&gt;</code></pre></div>
+						</article>
+						<article class="mini-card">
+							<h3>Reject with actionable feedback</h3>
+							<p>Rejection returns work to implementation and repeats review and verification. Be specific about expected behavior or missing cases.</p>
+							<div class="code-block"><div class="code-head"><span>CLI</span><button class="copy-button" type="button" data-copy="reject-command">Copy</button></div><pre><code id="reject-command">bun run --filter cronos-panel start -- --db ./cronos.sqlite reject &lt;task-id&gt; \
+  --feedback "Handle the empty input case"</code></pre></div>
+						</article>
+					</div>
+					<p>Approval is valid only for a task in <code>review_pending</code>. The CLI runs the workflow action in the host process; actions may take as long as the agent roles they start.</p>
+				</section>
+
+				<section class="section" id="recovery">
+					<span class="section-kicker">08 · Recovery</span>
+					<h2>Recover after a restart</h2>
+					<p>Startup reconciliation marks previously active tasks <code>interrupted</code>
+						and stops their runtime without deleting the task worktree or checkpoint. A task already awaiting human review remains <code>review_pending</code>.</p>
+					<ol>
+						<li>List interrupted tasks and inspect the error/stage with <code>show &lt;task-id&gt;</code>.</li>
+						<li>Confirm the repository and task worktree still exist and that resuming is appropriate.</li>
+						<li>Run explicit resume. Cronos requires both a matching persisted workspace handle and LangGraph checkpoint.</li>
+					</ol>
+					<div class="code-block">
+						<div class="code-head"><span>Terminal · explicit recovery</span><button class="copy-button" type="button" data-copy="resume-command">Copy</button></div>
+						<pre><code id="resume-command">bun run --filter cronos-panel start -- --db ./cronos.sqlite show &lt;task-id&gt;
+bun run --filter cronos-panel start -- --db ./cronos.sqlite resume &lt;task-id&gt;</code></pre>
+					</div>
+					<p>If the checkpoint or matching workspace is unavailable, the task remains interrupted and the CLI reports why. Resume does not create a fresh worktree silently.</p>
+				</section>
+
+				<section class="section" id="delivery">
+					<span class="section-kicker">09 · Pull requests</span>
+					<h2>Deliver approved changes to GitHub</h2>
+					<p>The delivery service creates a host-owned staging clone, commits the task output outside the agent container, pushes a branch, and opens a PR against <code>CRONOS_BASE_BRANCH</code>
+						(default <code>main</code>). SQLite records the PR number, URL, branch, and delivered status.</p>
+					<p>Use a GitHub App installed on only the target repository. Cronos requests short-lived installation tokens scoped to that repository with only Contents and Pull requests write permissions. The private key and push token stay on the host and are not passed into agent containers.</p>
+					<a class="architecture-link" href="../docs/github-app-setup.md">
+						<span><strong>Configure the GitHub App</strong><span>Permissions, installation, required environment variables, and disposable-repository verification.</span></span>
+						<b aria-hidden="true">→</b>
+					</a>
+					<p class="small muted">After PR creation, Cronos stops tracking the task. PR review, CI status, merge, and later changes happen in GitHub and are outside the current MVP.</p>
+				</section>
+
+				<section class="section" id="security">
+					<span class="section-kicker">10 · Safe operation</span>
+					<h2>Security basics for operators</h2>
+					<ul>
+						<li>Keep the intake bound to loopback; it is not an authenticated public API.</li>
+						<li>Forward only model-provider environment variable names that the runtime needs. Avoid broad host credentials.</li>
+						<li>Never forward GitHub App private keys or installation tokens into agent containers; the CLI rejects GitHub credential names in the runtime allowlist.</li>
+						<li>Agents can modify task files, but shared Git metadata is mounted read-only. The host owns staging, commits, pushes, and PR creation.</li>
+						<li>Docker isolation is not network-egress isolation. Treat repository content and model output as untrusted, and apply network controls separately if required.</li>
+						<li>Keep database files, runtime worktrees, and secret material out of public web roots and source control.</li>
+					</ul>
+				</section>
+
+				<section class="section" id="troubleshooting">
+					<span class="section-kicker">11 · Troubleshooting</span>
+					<h2>Common questions</h2>
+					<details>
+						<summary>My task is queued but no agent starts. Is Cronos stuck?</summary>
+						<div><p>Not necessarily. This MVP has no bundled always-on worker or one-command service launcher. The intake endpoint only saves the request. A host composition must call startup reconciliation and invoke the core workflow to claim and execute queued tasks.</p></div>
+					</details>
+					<details>
+						<summary>Why is a task blocked after triage?</summary>
+						<div><p>The classifier selected clarification or specification work. Those paths are intentionally blocked in this MVP. Inspect the stored reason with <code>show &lt;task-id&gt;</code>; do not expect implementation to start on an unsupported route.</p></div>
+					</details>
+					<details>
+						<summary>Why did resume fail?</summary>
+						<div><p>Resume requires the task's persisted workspace identity/path and matching LangGraph checkpoint. If either is missing or mismatched, Cronos fails closed and leaves the task interrupted. Inspect the reported reason; do not manually substitute a different worktree.</p></div>
+					</details>
+					<details>
+						<summary>Why can't I approve this task?</summary>
+						<div><p>Approval is accepted only for <code>review_pending</code>. Inspect the current status and workflow stage. An approval that reaches delivery also requires valid GitHub App settings and access to the configured repository.</p></div>
+					</details>
+					<details>
+						<summary>Does delivered mean merged or CI passed?</summary>
+						<div><p>No. <code>delivered</code>
+							means GitHub created the pull request and Cronos stored its reference. Cronos does not monitor PR reviews, CI, or merge status after that point.</p></div>
+					</details>
+				</section>
+
+				<section class="section" id="references">
+					<span class="section-kicker">12 · More documentation</span>
+					<h2>Continue exploring</h2>
+					<ul class="reference-list">
+						<li><a href="../README.md">Project overview<small>Goals, architecture, workspace setup, and MVP boundaries.</small></a></li>
+						<li><a href="../design/cronos-ai-architecture.html" target="_blank" rel="noopener">Interactive architecture<small>Explore the product components and delivery boundary.</small></a></li>
+						<li><a href="../docs/github-app-setup.md">GitHub App setup<small>Least-privilege permissions and secret configuration.</small></a></li>
+						<li><a href="../cronos-panel/README.md">Operator CLI reference<small>Commands, statuses, review, and resume behavior.</small></a></li>
+						<li><a href="../cronos-runtime/README.md">Runtime guide<small>Herdr, Docker, Pi roles, environment allowlisting, and integration tests.</small></a></li>
+						<li><a href="../cronos-core/README.md">Workflow and intake details<small>LangGraph stages, restart reconciliation, and host composition contract.</small></a></li>
+					</ul>
+				</section>
+
+				<footer class="footer">
+					<p>Cronos AI · User guide · MVP documentation</p>
+					<a href="#top">Back to top ↑</a>
+				</footer>
+			</main>
+		</div>
+		<div class="toast" role="status" aria-live="polite"></div>
+		<script>
+			const menuButton = document.querySelector(".menu-toggle");
+			const sidebar = document.querySelector(".sidebar");
+			menuButton?.addEventListener("click", () => {
+				const isOpen = sidebar.classList.toggle("open");
+				menuButton.setAttribute("aria-expanded", String(isOpen));
+			});
+		sidebar?.querySelectorAll("a[href^='#']").forEach((link) => {
+			link.addEventListener("click", () => {
+				sidebar.classList.remove("open");
+				menuButton?.setAttribute("aria-expanded", "false");
+			});
+	});
+
+const toast = document.querySelector(".toast");
+let toastTimer;
+document.querySelectorAll("[data-copy]").forEach((button) => {
+	button.addEventListener("click", async () => {
+		const code = document.getElementById(button.dataset.copy)?.textContent ?? "";
+		try {
+			await navigator.clipboard.writeText(code);
+			toast.textContent = "Copied to clipboard";
+		} catch {
+			const field = document.createElement("textarea");
+			field.value = code;
+			field.style.position = "fixed";
+			field.style.opacity = "0";
+			document.body.append(field);
+			field.select();
+			document.execCommand("copy");
+			field.remove();
+			toast.textContent = "Copied";
+		}
+		toast.classList.add("show");
+		clearTimeout(toastTimer);
+		toastTimer = setTimeout(() => toast.classList.remove("show"), 1800);
+	});
+});
+
+const sections = [...document.querySelectorAll("main section[id]")];
+const navLinks = [...document.querySelectorAll(".sidebar nav a")];
+const observer = new IntersectionObserver((entries) => {
+	const visible = entries.filter((entry) => entry.isIntersecting).sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+	if (!visible) return;
+	navLinks.forEach((link) => {
+		const active = link.hash === `#${visible.target.id}`;
+		if (active) link.setAttribute("aria-current", "location");
+		else link.removeAttribute("aria-current");
+		link.classList.toggle("active", active);
+	});
+}, { rootMargin: "-15% 0px -70% 0px", threshold: [0, .25, .5] });
+sections.forEach((section) => observer.observe(section));
+		</script>
+	</body>
+</html>
