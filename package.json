@@ -1,0 +1,14 @@
+{
+  "name": "cronos-ai",
+  "private": true,
+  "workspaces": [
+    "cronos-core",
+    "cronos-queue",
+    "cronos-runtime",
+    "cronos-panel",
+    "cronos-storage"
+  ],
+  "scripts": {
+    "check:workspaces": "bun pm ls"
+  }
+}

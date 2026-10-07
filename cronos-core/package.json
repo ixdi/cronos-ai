@@ -1,0 +1,23 @@
+{
+  "name": "cronos-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./task-workflow": "./src/task-workflow.ts",
+    "./intake-server": "./src/intake-server.ts",
+    "./github-app-token": "./src/github-app-token.ts",
+    "./github-delivery": "./src/github-delivery.ts"
+  },
+  "dependencies": {
+    "@langchain/langgraph": "1.4.19",
+    "@octokit/auth-app": "^8.3.1",
+    "@octokit/rest": "^22.0.1",
+    "cronos-queue": "workspace:*",
+    "cronos-runtime": "workspace:*",
+    "cronos-storage": "workspace:*"
+  },
+  "scripts": {
+    "test": "bun test"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "cronos-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./contracts": "./src/contracts.ts",
+    "./run-agent-in-pane": "./src/run-agent-in-pane.ts",
+    "./herdr-workspace-provider": "./src/herdr-workspace-provider.ts",
+    "./pi-cli-agent-runner": "./src/pi-cli-agent-runner.ts"
+  },
+  "scripts": {
+    "test": "bun test"
+  }
+}
