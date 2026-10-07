@@ -1,14 +1,33 @@
 <p align="center">
-  <img src="assets/banner.jpeg" alt="Cronos AI — an agent-oriented software factory" width="100%">
+  <img src="assets/banner.jpeg" alt="Cronos AI — an agent-oriented software factory" width="80%">
 </p>
 
 <h1 align="center">Cronos AI</h1>
 
 <p align="center">
-  A human-supervised software factory that turns local engineering work into isolated, reviewed, and verifiable task runs—and, when approved, a GitHub pull request.
+  Cronos AI is a local-first software factory that orchestrates autonomous AI agents to plan, architect, build, and validate production-ready applications.
 </p>
 
 ---
+
+<!--toc:start-->
+
+- [What is Cronos AI?](#what-is-cronos-ai)
+- [Why a software factory now?](#why-a-software-factory-now)
+- [Architecture](#architecture)
+  - [Main components](#main-components)
+  - [Workflow at a glance](#workflow-at-a-glance)
+- [Try it locally](#try-it-locally)
+  - [Requirements](#requirements)
+  - [Install, test, and inspect](#install-test-and-inspect)
+  - [Configuration](#configuration)
+  - [Queue local work](#queue-local-work)
+  - [Inspect and review tasks](#inspect-and-review-tasks)
+- [Safety and MVP boundaries](#safety-and-mvp-boundaries)
+- [Repository layout](#repository-layout)
+- [Further reading](#further-reading)
+
+<!--toc:end-->
 
 ## What is Cronos AI?
 
@@ -16,7 +35,8 @@ Cronos AI is an agent-oriented software factory. It gives software work a contro
 
 A task is triaged, worked on in its own isolated workspace, reviewed and verified by separate agent roles, and presented to a human before documentation and delivery. The human can approve it or send it back with feedback. After approval, Cronos creates a task branch and GitHub pull request and records the result in SQLite.
 
-The current MVP is intentionally narrow: local intake, one in-flight workflow, an operator CLI, explicit human approval, and GitHub PR creation. It is not a fully autonomous engineering organization, and it does not monitor a PR after creating it.
+> [!WARNING]
+> **Work in progress:** Cronos AI is actively evolving. The current MVP is intentionally narrow: local intake, one in-flight workflow, an operator CLI, explicit human approval. It is not a fully autonomous engineering organization.
 
 ## Why a software factory now?
 
@@ -69,13 +89,13 @@ The diagram summarizes the implemented MVP; the fuller workflow source is in [`d
 
 ### Main components
 
-| Component | Responsibility |
-| --- | --- |
-| `cronos-core` | LangGraph workflow, loopback-only task intake, human review/rework, restart reconciliation, and orchestration contracts. |
-| `cronos-queue` | Queue operations over the shared SQLite database. |
-| `cronos-runtime` | Replaceable workspace/agent interfaces plus Herdr, Docker, and Pi CLI adapters. |
-| `cronos-storage` | SQLite migrations, workflow/task state, event history, task inspection, and LangGraph checkpoints. |
-| `cronos-panel` | JSON operator CLI for listing, inspecting, resuming, approving, and rejecting tasks. |
+| Component        | Responsibility                                                                                                           |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `cronos-core`    | LangGraph workflow, loopback-only task intake, human review/rework, restart reconciliation, and orchestration contracts. |
+| `cronos-queue`   | Queue operations over the shared SQLite database.                                                                        |
+| `cronos-runtime` | Replaceable workspace/agent interfaces plus Herdr, Docker, and Pi CLI adapters.                                          |
+| `cronos-storage` | SQLite migrations, workflow/task state, event history, task inspection, and LangGraph checkpoints.                       |
+| `cronos-panel`   | JSON operator CLI for listing, inspecting, resuming, approving, and rejecting tasks.                                     |
 
 ### Workflow at a glance
 
@@ -118,15 +138,15 @@ The regular test suite uses fakes and does not make model calls. The Herdr/Docke
 
 Configure the following in the host process environment or a secret manager. Do not commit a populated `.env` file.
 
-| Setting | Purpose |
-| --- | --- |
-| `CRONOS_DB_PATH` | SQLite database path; defaults to `./cronos.sqlite`. |
-| `CRONOS_REPOSITORY_PATH` | Host-side Git repository used for task worktrees and delivery. |
-| `CRONOS_RUNTIME_ROOT` | Host directory for task worktrees and temporary delivery clones. Prefer a directory outside the source repository. |
-| `CRONOS_RUNTIME_IMAGE` | Image used for isolated agent execution. |
-| `CRONOS_PI_CHAT_MODEL` | Pi chat model ID used by coding, review, verification, and documentation roles. |
-| `CRONOS_RUNTIME_ENV` | Optional comma-separated **names** of host environment variables to allow into the task container, e.g. `OPENAI_API_KEY,TYPESAFE_API_KEY`. Pass names, never secret values. |
-| `CRONOS_BASE_BRANCH` | Target base branch; defaults to `main`. |
+| Setting                  | Purpose                                                                                                                                                                     |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CRONOS_DB_PATH`         | SQLite database path; defaults to `./cronos.sqlite`.                                                                                                                        |
+| `CRONOS_REPOSITORY_PATH` | Host-side Git repository used for task worktrees and delivery.                                                                                                              |
+| `CRONOS_RUNTIME_ROOT`    | Host directory for task worktrees and temporary delivery clones. Prefer a directory outside the source repository.                                                          |
+| `CRONOS_RUNTIME_IMAGE`   | Image used for isolated agent execution.                                                                                                                                    |
+| `CRONOS_PI_CHAT_MODEL`   | Pi chat model ID used by coding, review, verification, and documentation roles.                                                                                             |
+| `CRONOS_RUNTIME_ENV`     | Optional comma-separated **names** of host environment variables to allow into the task container, e.g. `OPENAI_API_KEY,TYPESAFE_API_KEY`. Pass names, never secret values. |
+| `CRONOS_BASE_BRANCH`     | Target base branch; defaults to `main`.                                                                                                                                     |
 
 Approved delivery additionally requires `CRONOS_GITHUB_OWNER`, `CRONOS_GITHUB_REPOSITORY`, `CRONOS_GITHUB_APP_ID`, `CRONOS_GITHUB_INSTALLATION_ID`, `CRONOS_GITHUB_REPOSITORY_ID`, and `CRONOS_GITHUB_APP_PRIVATE_KEY`. Keep the private key out of agent containers. Forward model-provider credentials only when required and narrowly scoped; GitHub delivery credentials are rejected from the runtime allowlist. Follow [`docs/github-app-setup.md`](docs/github-app-setup.md) for App permissions and configuration.
 
