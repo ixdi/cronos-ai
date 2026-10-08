@@ -12,7 +12,7 @@
 
 ## 3. Tool integration boundary
 
-- [ ] 3.1 Verify the actual Pi JSON/RPC and Herdr API operations needed to launch agents, collect results, and cancel running agents; record the supported contracts in integration documentation.
+- [x] 3.1 Verify the actual Pi JSON/RPC and Herdr API operations needed to launch agents, collect results, and cancel running agents; record the supported contracts in integration documentation.
 - [ ] 3.2 Implement replaceable adapters and startup tool preflight for Pi, Herdr, OpenSpec, and Git; add fake-adapter tests for missing-tool prompts, successful calls, failures, and cancellation, and document required tools.
 
 ## 4. Project dashboard and human controls
