@@ -13,7 +13,7 @@
 ## 3. Tool integration boundary
 
 - [x] 3.1 Verify the actual Pi JSON/RPC and Herdr API operations needed to launch agents, collect results, and cancel running agents; record the supported contracts in integration documentation.
-- [ ] 3.2 Implement the project-local Pi workflow extension, typed Rust task-state commands, and replaceable Herdr/OpenSpec/Git adapters with startup tool preflight; add fake-adapter tests for missing-tool prompts, successful calls, failures, and cancellation, and document the integration contracts.
+- [x] 3.2 Implement the project-local Pi workflow extension, typed Rust task-state commands, and replaceable Herdr/OpenSpec/Git adapters with startup tool preflight; add fake-adapter tests for missing-tool prompts, successful calls, failures, and cancellation, and document the integration contracts.
 
 ## 4. Project dashboard and human controls
 

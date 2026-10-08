@@ -19,6 +19,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    #[command(hide = true)]
+    Internal {
+        #[command(subcommand)]
+        action: InternalAction,
+    },
     Project {
         #[command(subcommand)]
         action: ProjectAction,
@@ -50,6 +55,19 @@ enum ProjectAction {
     Archive {
         id: String,
     },
+}
+
+#[derive(Subcommand)]
+enum InternalAction {
+    Task {
+        #[command(subcommand)]
+        action: InternalTaskAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum InternalTaskAction {
+    Get { project_id: String, task_id: String },
 }
 
 #[derive(Subcommand)]
@@ -94,12 +112,30 @@ impl From<PriorityArg> for Priority {
 pub fn run() -> Result<bool, Box<dyn Error>> {
     let cli = Cli::parse();
     let Some(command) = cli.command else {
+        let tools = crate::integrations::ToolCommands::default();
+        let stdin = std::io::stdin();
+        let stdout = std::io::stdout();
+        crate::integrations::require_tools(
+            || tools.missing_required_tools(),
+            &mut stdin.lock(),
+            &mut stdout.lock(),
+        )?;
         return Ok(false);
     };
     let root = cli.data_dir.unwrap_or(default_data_dir()?);
     let manager = ProjectManager::new(root)?;
 
     match command {
+        Command::Internal { action } => match action {
+            InternalAction::Task { action } => match action {
+                InternalTaskAction::Get {
+                    project_id,
+                    task_id,
+                } => print_json(
+                    &manager.get_task(parse_project_id(&project_id)?, parse_task_id(&task_id)?)?,
+                )?,
+            },
+        },
         Command::Project { action } => match action {
             ProjectAction::Create { name, description } => {
                 print_json(&manager.create_project(name, description)?)?;
@@ -215,6 +251,17 @@ mod tests {
                 "high",
                 "--depends-on",
                 "00000000-0000-0000-0000-000000000001,00000000-0000-0000-0000-000000000002",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "cronos-ai",
+                "internal",
+                "task",
+                "get",
+                "00000000-0000-0000-0000-000000000000",
+                "00000000-0000-0000-0000-000000000001",
             ])
             .is_ok()
         );

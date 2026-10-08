@@ -11,7 +11,7 @@ Pi is the workflow orchestrator for the active task. Start a long-lived process 
 - Inspect assistant `stopReason`; `error` and `aborted` are failures even when a JSON-mode process exits with status zero.
 - Cancel active work with RPC `abort`, which waits for idle. Close stdin for orderly process shutdown. If queued follow-ups exist, clear the queue before aborting when they must not run.
 
-The installed CLI advertises `--mode rpc` and `--no-session`; the protocol details above come from the installed Pi RPC documentation. A live model invocation remains an integration-test responsibility.
+The installed CLI advertises `--mode rpc` and `--no-session`; the protocol details above come from the installed Pi RPC documentation. `extensions/cronos-workflow.ts` registers a read-only `cronos_task_state` tool backed by `cronos-ai internal task get`; task status and step writes remain on the Rust host so a model cannot bypass approval gates. A live model invocation remains an integration-test responsibility.
 
 ## Herdr agent API
 
@@ -22,7 +22,7 @@ Herdr 0.9.3 exposes agent operations through its socket API and CLI. The install
 - Interrupt an active agent with `agent.send_keys` using `ctrl+c`, then observe the agent state. This is terminal-level cancellation and is best-effort; do not treat the key submission alone as proof that the agent stopped. Ignore late results after the workflow has entered Error.
 - Herdr controls the current Herdr-managed session and requires its caller context (`HERDR_ENV=1`). Startup preflight must not create or commandeer a user's panes silently.
 
-CLI help and the installed API schema confirm these command/parameter contracts. A live launch, prompt, output read, and cancellation test is not included here because it would start and interrupt an agent in the current Herdr session; test the adapter with fakes first, then validate live behavior in an explicitly isolated test session.
+CLI help and the installed API schema confirm these command/parameter contracts. The Rust adapter invokes Herdr with argument vectors (never a shell), validates agent names, and waits for a settled state after sending `ctrl+c`. Startup preflight checks `pi`, `herdr`, `openspec`, and `git` by running their version commands; if any are unavailable it prompts for manual installation and retries, but never installs tools or creates panes automatically. A live launch, prompt, output read, and cancellation test is not included here because it would start and interrupt an agent in the current Herdr session; test the adapter with fakes first, then validate live behavior in an explicitly isolated test session.
 
 ## Jev
 

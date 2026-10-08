@@ -21,6 +21,10 @@ pub enum ProjectError {
     UnknownDependency(TaskId),
     #[error(transparent)]
     Model(#[from] ModelError),
+    #[error("invalid task status transition: {from:?} -> {to:?}")]
+    InvalidStatusTransition { from: TaskStatus, to: TaskStatus },
+    #[error("cannot change workflow step while task status is {0:?}")]
+    TaskNotInProgress(TaskStatus),
     #[error("system clock is before the Unix epoch")]
     InvalidSystemTime,
 }
@@ -151,6 +155,51 @@ impl ProjectManager {
         Ok(self.store.list_tasks(project_id)?)
     }
 
+    pub fn get_task(&self, project_id: ProjectId, task_id: TaskId) -> Result<Task, ProjectError> {
+        Ok(self.store.load_task(project_id, task_id)?)
+    }
+
+    pub fn set_task_status(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        status: TaskStatus,
+    ) -> Result<Task, ProjectError> {
+        let mut task = self.store.load_task(project_id, task_id)?;
+        if task.status == status {
+            return Ok(task);
+        }
+        if !valid_status_transition(&task.status, &status) {
+            return Err(ProjectError::InvalidStatusTransition {
+                from: task.status,
+                to: status,
+            });
+        }
+        task.status = status;
+        task.updated_at_unix_secs = now_unix_secs()?;
+        self.store.save_task(&task)?;
+        Ok(task)
+    }
+
+    pub fn set_task_step(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        step: String,
+    ) -> Result<Task, ProjectError> {
+        let mut task = self.store.load_task(project_id, task_id)?;
+        if task.status != TaskStatus::InProgress {
+            return Err(ProjectError::TaskNotInProgress(task.status));
+        }
+        let now = now_unix_secs()?;
+        task.current_step = Some(step.clone());
+        task.step_started_at_unix_secs.insert(step, now);
+        task.updated_at_unix_secs = now;
+        task.validate()?;
+        self.store.save_task(&task)?;
+        Ok(task)
+    }
+
     pub fn ready_tasks(&self, project_id: ProjectId) -> Result<Vec<Task>, ProjectError> {
         let tasks = self.list_tasks(project_id)?;
         let completed: HashSet<_> = tasks
@@ -173,6 +222,22 @@ impl ProjectManager {
         });
         Ok(ready)
     }
+}
+
+fn valid_status_transition(from: &TaskStatus, to: &TaskStatus) -> bool {
+    matches!(
+        (from, to),
+        (
+            TaskStatus::Pending,
+            TaskStatus::InProgress | TaskStatus::Error | TaskStatus::Rejected
+        ) | (
+            TaskStatus::InProgress,
+            TaskStatus::Error | TaskStatus::Completed | TaskStatus::Rejected
+        ) | (
+            TaskStatus::Error,
+            TaskStatus::InProgress | TaskStatus::Rejected
+        )
+    )
 }
 
 fn priority_rank(priority: &Priority) -> u8 {
@@ -258,9 +323,12 @@ mod tests {
         assert!(ready.iter().any(|task| task.id == first.id));
         assert!(!ready.iter().any(|task| task.id == blocked.id));
 
-        let mut completed_first = manager.store.load_task(project.id, first.id).unwrap();
-        completed_first.status = TaskStatus::Completed;
-        manager.store.save_task(&completed_first).unwrap();
+        manager
+            .set_task_status(project.id, first.id, TaskStatus::InProgress)
+            .unwrap();
+        manager
+            .set_task_status(project.id, first.id, TaskStatus::Completed)
+            .unwrap();
         assert!(
             manager
                 .ready_tasks(project.id)
@@ -287,5 +355,54 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let manager = ProjectManager::new(root.path()).unwrap();
         assert!(manager.select_project(ProjectId::new()).is_err());
+    }
+
+    #[test]
+    fn task_state_commands_enforce_transitions_and_record_steps() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(root.path()).unwrap();
+        let project = manager.create_project("Factory".to_owned(), None).unwrap();
+        let task = manager
+            .create_task(
+                project.id,
+                "Implement workflow".to_owned(),
+                None,
+                Priority::Medium,
+                Vec::new(),
+            )
+            .unwrap();
+
+        assert!(matches!(
+            manager.set_task_step(project.id, task.id, "specs".to_owned()),
+            Err(ProjectError::TaskNotInProgress(TaskStatus::Pending))
+        ));
+        manager
+            .set_task_status(project.id, task.id, TaskStatus::InProgress)
+            .unwrap();
+        let in_step = manager
+            .set_task_step(project.id, task.id, "spec-generation".to_owned())
+            .unwrap();
+        assert_eq!(in_step.current_step.as_deref(), Some("spec-generation"));
+        assert!(
+            in_step
+                .step_started_at_unix_secs
+                .contains_key("spec-generation")
+        );
+        manager
+            .set_task_status(project.id, task.id, TaskStatus::Error)
+            .unwrap();
+        manager
+            .set_task_status(project.id, task.id, TaskStatus::InProgress)
+            .unwrap();
+        manager
+            .set_task_status(project.id, task.id, TaskStatus::Completed)
+            .unwrap();
+        assert!(matches!(
+            manager.set_task_status(project.id, task.id, TaskStatus::Error),
+            Err(ProjectError::InvalidStatusTransition {
+                from: TaskStatus::Completed,
+                to: TaskStatus::Error
+            })
+        ));
     }
 }
