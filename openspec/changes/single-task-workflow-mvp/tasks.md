@@ -17,7 +17,7 @@
 
 ## 4. Project dashboard and human controls
 
-- [ ] 4.1 Implement basic project/task TUI navigation and live task status, active step, and agent activity views; add UI-state tests and a short user guide for monitoring work.
+- [x] 4.1 Implement basic project/task TUI navigation and live task status, active step, and agent activity views; add UI-state tests and a short user guide for monitoring work.
 - [ ] 4.2 Implement human approval/rejection controls for specification and final-code gates, including revision-loop notes and terminal task abandonment; add tests that approval gates block progression and ordinary approval rejection leaves the task In Progress, and document the controls.
 
 ## 5. Workflow execution and recovery

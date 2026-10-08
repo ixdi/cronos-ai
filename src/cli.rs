@@ -108,9 +108,10 @@ impl From<PriorityArg> for Priority {
     }
 }
 
-/// Run CLI commands; return `false` when no command was supplied so the caller can start the TUI.
-pub fn run() -> Result<bool, Box<dyn Error>> {
+/// Run CLI commands; return the data directory when the caller should start the TUI.
+pub fn run() -> Result<Option<PathBuf>, Box<dyn Error>> {
     let cli = Cli::parse();
+    let root = cli.data_dir.unwrap_or(default_data_dir()?);
     let Some(command) = cli.command else {
         let tools = crate::integrations::ToolCommands::default();
         let stdin = std::io::stdin();
@@ -120,9 +121,8 @@ pub fn run() -> Result<bool, Box<dyn Error>> {
             &mut stdin.lock(),
             &mut stdout.lock(),
         )?;
-        return Ok(false);
+        return Ok(Some(root));
     };
-    let root = cli.data_dir.unwrap_or(default_data_dir()?);
     let manager = ProjectManager::new(root)?;
 
     match command {
@@ -187,7 +187,7 @@ pub fn run() -> Result<bool, Box<dyn Error>> {
         },
     }
 
-    Ok(true)
+    Ok(None)
 }
 
 fn default_data_dir() -> Result<PathBuf, Box<dyn Error>> {
