@@ -1,4 +1,7 @@
-use std::io::{self, stdout};
+use std::{
+    error::Error,
+    io::{self, stdout},
+};
 
 use crossterm::{
     event::{self, Event, KeyCode},
@@ -31,7 +34,21 @@ impl Drop for TerminalSession {
     }
 }
 
-fn main() -> io::Result<()> {
+fn main() {
+    if let Err(error) = run() {
+        eprintln!("error: {error}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<(), Box<dyn Error>> {
+    if !cronos_ai::cli::run()? {
+        run_tui()?;
+    }
+    Ok(())
+}
+
+fn run_tui() -> io::Result<()> {
     let _session = TerminalSession::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
 

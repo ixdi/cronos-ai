@@ -7,6 +7,7 @@ use std::{
 use serde::{Serialize, de::DeserializeOwned};
 use tempfile::NamedTempFile;
 use thiserror::Error;
+use uuid::Uuid;
 
 use crate::model::{ModelError, Project, ProjectId, Task, TaskId};
 
@@ -34,6 +35,8 @@ pub enum StoreError {
     TaskProjectMismatch,
     #[error("project does not list the requested task")]
     TaskNotRegistered,
+    #[error("project directory has an invalid ID: {0}")]
+    InvalidProjectDirectory(PathBuf),
 }
 
 pub struct ProjectStore {
@@ -74,6 +77,33 @@ impl ProjectStore {
             return Err(StoreError::ProjectIdMismatch);
         }
         Ok(project)
+    }
+
+    pub fn list_projects(&self) -> Result<Vec<Project>, StoreError> {
+        let directory = match self.checked_directory(&self.root.join("projects"), false) {
+            Ok(directory) => directory,
+            Err(StoreError::NotFound(_)) => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        };
+        let mut projects = Vec::new();
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            if file_type.is_symlink() {
+                return Err(StoreError::UnsafePath(entry.path()));
+            }
+            if !file_type.is_dir() {
+                continue;
+            }
+            let id = entry
+                .file_name()
+                .to_str()
+                .and_then(|name| Uuid::parse_str(name).ok())
+                .map(ProjectId)
+                .ok_or_else(|| StoreError::InvalidProjectDirectory(entry.path()))?;
+            projects.push(self.load_project(id)?);
+        }
+        Ok(projects)
     }
 
     pub fn save_task(&self, task: &Task) -> Result<(), StoreError> {
@@ -117,6 +147,15 @@ impl ProjectStore {
             return Err(StoreError::TaskProjectMismatch);
         }
         Ok(task)
+    }
+
+    pub fn list_tasks(&self, project_id: ProjectId) -> Result<Vec<Task>, StoreError> {
+        let project = self.load_project(project_id)?;
+        project
+            .task_ids
+            .into_iter()
+            .map(|task_id| self.load_task(project_id, task_id))
+            .collect()
     }
 
     fn project_directory(&self, id: ProjectId, create: bool) -> Result<PathBuf, StoreError> {
