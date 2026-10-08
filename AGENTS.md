@@ -4,6 +4,8 @@ Cronos-AI is a multi-agent architecture designed to create complete products fro
 
 Within a task, workflow steps run sequentially: the next step starts only after the current step is complete. Independent sub-agents assigned to the same step run in parallel. In the first implementation, tasks themselves are processed sequentially; running multiple tasks in parallel is planned for a later approach.
 
+If a sub-agent fails during a parallel step, cancel the other agents still running in that step, stop the workflow, and mark the task as Error. A human decides whether to retry or clarify the context.
+
 The file `design/design.md` provides a detailed description of the agents used in Cronos-AI, their roles, and how they interact within the system. Each agent is designed to perform specific tasks, contributing to the overall goal of building software products efficiently.
 
 Cronos-AI is developed with a focus on modularity, allowing it to handle new features easly for Cronos-AI, when required.

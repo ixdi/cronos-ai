@@ -13,7 +13,7 @@ tracked in the project JSON file, allowing for easy monitoring. The status are:
 - In Progress: The task is currently being processed.
 - Completed: The task has been successfully completed.
 - Rejected: The entire task has been explicitly abandoned and will not be processed further. Rejecting an approval step is not a task-level rejection; the task remains In Progress while it is revised.
-- Error: An error occurred during the processing of the task, and it requires attention.
+- Error: A failure stopped the task workflow; any sibling agents still running in that step are canceled, and a human must decide whether to retry or clarify the context.
 
 ## Technologies
 
@@ -109,7 +109,7 @@ The prompt is passed to the sub-agents extension, which creates the agents assig
 
 ### 3. Sub-agents workflow
 
-For each task, sub-agents handle the work assigned to each workflow step. Independent sub-agents within the same step operate concurrently and report their results before the workflow advances. In the first implementation, only one task is processed at a time; parallel execution across multiple tasks is planned for a later approach.
+For each task, sub-agents handle the work assigned to each workflow step. Independent sub-agents within the same step operate concurrently and report their results before the workflow advances. If a sub-agent fails, the workflow stops and cancels the other agents still running in that step; the task is marked Error for a human to choose whether to retry or clarify the context. In the first implementation, only one task is processed at a time; parallel execution across multiple tasks is planned for a later approach.
 
 Herdr is used to manage the sub-agents and review their activities. The Dashboard html page is updated in real-time to reflect the progress of each sub-agent, providing visibility into the overall workflow.
 
