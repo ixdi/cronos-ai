@@ -10,8 +10,9 @@ use thiserror::Error;
 use crate::{
     model::{
         AgentActivity, AgentStatus, ApprovalDecision, ApprovalGate, ApprovalRecord,
-        MAX_AGENT_EVENTS, MAX_APPROVAL_RECORDS, ModelError, Priority, Project, ProjectId,
-        ProjectStatus, Task, TaskId, TaskStatus, WorkflowStep,
+        MAX_AGENT_EVENTS, MAX_APPROVAL_RECORDS, MAX_RECOVERY_RECORDS, ModelError, Priority,
+        Project, ProjectId, ProjectStatus, RecoveryAction, RecoveryRecord, Task, TaskId,
+        TaskStatus, WorkflowStep,
     },
     storage::{ProjectStore, StoreError},
 };
@@ -47,6 +48,14 @@ pub enum ProjectError {
     UseCompleteTask,
     #[error("use abandon_task to reject a task")]
     UseAbandonTask,
+    #[error("Error tasks must be resumed through retry_task or clarify_task")]
+    UseRecoveryAction,
+    #[error("task recovery is only valid while status is Error, not {0:?}")]
+    TaskNotInError(TaskStatus),
+    #[error("clarifying a task requires nonblank context")]
+    ClarificationRequired,
+    #[error("task attempt counter overflowed")]
+    AttemptOverflow,
     #[error("task is waiting for human approval")]
     AwaitingHumanApproval,
     #[error("expected workflow step {expected:?}, found {actual:?}")]
@@ -179,6 +188,8 @@ impl ProjectManager {
             approval_history: Vec::new(),
             abandonment_note: None,
             worktree: None,
+            attempt: 1,
+            recovery_history: Vec::new(),
             created_at_unix_secs: now,
             updated_at_unix_secs: now,
         };
@@ -205,7 +216,9 @@ impl ProjectManager {
         task_id: TaskId,
     ) -> Result<std::path::PathBuf, ProjectError> {
         let task = self.store.load_task(project_id, task_id)?;
-        let expected = self.store.expected_task_worktree_path(project_id, task_id);
+        let expected = self
+            .store
+            .expected_task_worktree_path(project_id, task_id, task.attempt);
         if task.worktree.as_deref() != expected.to_str() {
             return Err(ProjectError::InvalidTaskWorktree);
         }
@@ -237,6 +250,9 @@ impl ProjectManager {
         }
         if status == TaskStatus::Rejected {
             return Err(ProjectError::UseAbandonTask);
+        }
+        if task.status == TaskStatus::Error && status == TaskStatus::InProgress {
+            return Err(ProjectError::UseRecoveryAction);
         }
         if !valid_status_transition(&task.status, &status) {
             return Err(ProjectError::InvalidStatusTransition {
@@ -312,6 +328,7 @@ impl ProjectManager {
                 .retain(|record| record.gate != ApprovalGate::FinalCode);
         }
         task.approval_history.push(ApprovalRecord {
+            attempt: task.attempt,
             gate,
             decision,
             note,
@@ -412,6 +429,72 @@ impl ProjectManager {
         }
     }
 
+    pub fn retry_task(&self, project_id: ProjectId, task_id: TaskId) -> Result<Task, ProjectError> {
+        self.recover_task(project_id, task_id, RecoveryAction::Retry, None)
+    }
+
+    pub fn clarify_task(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        context: String,
+    ) -> Result<Task, ProjectError> {
+        let context = context.trim().to_owned();
+        if context.is_empty() {
+            return Err(ProjectError::ClarificationRequired);
+        }
+        self.recover_task(project_id, task_id, RecoveryAction::Clarify, Some(context))
+    }
+
+    fn recover_task(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        action: RecoveryAction,
+        note: Option<String>,
+    ) -> Result<Task, ProjectError> {
+        let mut task = self.store.load_task(project_id, task_id)?;
+        if task.status != TaskStatus::Error {
+            return Err(ProjectError::TaskNotInError(task.status));
+        }
+        let attempt = task
+            .attempt
+            .checked_add(1)
+            .ok_or(ProjectError::AttemptOverflow)?;
+        let discarded_worktree = if task.worktree.is_some() {
+            Some(
+                self.validated_task_worktree_path(project_id, task_id)?
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+        } else {
+            None
+        };
+        let now = now_unix_secs()?;
+        task.attempt = attempt;
+        task.status = TaskStatus::InProgress;
+        task.current_step = Some(WorkflowStep::SpecificationGeneration.as_str().to_owned());
+        task.step_started_at_unix_secs.insert(
+            WorkflowStep::SpecificationGeneration.as_str().to_owned(),
+            now,
+        );
+        task.worktree = None;
+        task.recovery_history.push(RecoveryRecord {
+            attempt,
+            action,
+            note,
+            discarded_worktree,
+            resumed_at_unix_secs: now,
+        });
+        if task.recovery_history.len() > MAX_RECOVERY_RECORDS {
+            task.recovery_history.remove(0);
+        }
+        task.updated_at_unix_secs = now;
+        task.validate()?;
+        self.store.save_task(&task)?;
+        Ok(task)
+    }
+
     pub fn complete_task(
         &self,
         project_id: ProjectId,
@@ -448,6 +531,7 @@ impl ProjectManager {
         }
         let now = now_unix_secs()?;
         task.agent_activity.push(AgentActivity {
+            attempt: task.attempt,
             agent_name,
             step,
             status,
@@ -523,7 +607,7 @@ mod tests {
     use super::{ProjectError, ProjectManager};
     use crate::model::{
         AgentStatus, ApprovalDecision, ApprovalGate, MAX_AGENT_EVENTS, Priority, ProjectId,
-        ProjectStatus, TaskStatus, WorkflowStep,
+        ProjectStatus, RecoveryAction, TaskStatus, WorkflowStep,
     };
 
     fn complete_for_queue(
@@ -743,7 +827,7 @@ mod tests {
 
         let expected = manager
             .store
-            .expected_task_worktree_path(project.id, task.id);
+            .expected_task_worktree_path(project.id, task.id, task.attempt);
         std::fs::create_dir_all(&expected).unwrap();
         stored.worktree = Some(expected.to_string_lossy().into_owned());
         manager.store.save_task(&stored).unwrap();
@@ -752,6 +836,119 @@ mod tests {
                 .validated_task_worktree_path(project.id, task.id)
                 .unwrap(),
             expected
+        );
+    }
+
+    #[test]
+    fn retry_starts_a_new_attempt_and_does_not_reuse_the_old_worktree_or_approval() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(root.path()).unwrap();
+        let project = manager.create_project("Factory".to_owned(), None).unwrap();
+        let task = manager
+            .create_task(
+                project.id,
+                "Retry me".to_owned(),
+                None,
+                Priority::High,
+                Vec::new(),
+            )
+            .unwrap();
+        manager.start_next_task(project.id).unwrap();
+        manager
+            .complete_workflow_step(project.id, task.id, WorkflowStep::SpecificationGeneration)
+            .unwrap();
+        manager
+            .record_approval(
+                project.id,
+                task.id,
+                ApprovalGate::Specifications,
+                ApprovalDecision::Approved,
+                None,
+            )
+            .unwrap();
+        manager
+            .record_agent_activity(
+                project.id,
+                task.id,
+                "coder".to_owned(),
+                "code-generation".to_owned(),
+                AgentStatus::Running,
+                None,
+            )
+            .unwrap();
+        let old_worktree = manager
+            .store
+            .expected_task_worktree_path(project.id, task.id, 1);
+        std::fs::create_dir_all(&old_worktree).unwrap();
+        let mut stored = manager.get_task(project.id, task.id).unwrap();
+        stored.worktree = Some(old_worktree.to_string_lossy().into_owned());
+        manager.store.save_task(&stored).unwrap();
+        manager
+            .set_task_status(project.id, task.id, TaskStatus::Error)
+            .unwrap();
+        assert!(matches!(
+            manager.set_task_status(project.id, task.id, TaskStatus::InProgress),
+            Err(ProjectError::UseRecoveryAction)
+        ));
+
+        let resumed = manager.retry_task(project.id, task.id).unwrap();
+        assert_eq!(resumed.attempt, 2);
+        assert_eq!(resumed.status, TaskStatus::InProgress);
+        assert_eq!(
+            resumed.current_step.as_deref(),
+            Some("specification-generation")
+        );
+        assert!(resumed.worktree.is_none());
+        assert!(!resumed.is_approved(ApprovalGate::Specifications));
+        assert_eq!(resumed.agent_activity[0].attempt, 1);
+        assert_eq!(resumed.recovery_history[0].action, RecoveryAction::Retry);
+        assert_eq!(
+            resumed.recovery_history[0].discarded_worktree.as_deref(),
+            Some(old_worktree.to_str().unwrap())
+        );
+        assert_ne!(
+            manager
+                .store
+                .expected_task_worktree_path(project.id, task.id, resumed.attempt),
+            old_worktree
+        );
+    }
+
+    #[test]
+    fn clarification_recovery_requires_context_and_restarts_spec_generation() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(root.path()).unwrap();
+        let project = manager.create_project("Factory".to_owned(), None).unwrap();
+        let task = manager
+            .create_task(
+                project.id,
+                "Clarify me".to_owned(),
+                None,
+                Priority::Medium,
+                Vec::new(),
+            )
+            .unwrap();
+        manager.start_next_task(project.id).unwrap();
+        manager
+            .set_task_status(project.id, task.id, TaskStatus::Error)
+            .unwrap();
+        assert!(matches!(
+            manager.clarify_task(project.id, task.id, "  ".to_owned()),
+            Err(ProjectError::ClarificationRequired)
+        ));
+        let resumed = manager
+            .clarify_task(project.id, task.id, "Handle offline mode".to_owned())
+            .unwrap();
+        assert_eq!(resumed.status, TaskStatus::InProgress);
+        assert_eq!(resumed.attempt, 2);
+        assert_eq!(
+            resumed.current_step.as_deref(),
+            Some("specification-generation")
+        );
+        assert_eq!(resumed.recovery_history[0].action, RecoveryAction::Clarify);
+        assert_eq!(
+            resumed.recovery_history[0].note.as_deref(),
+            Some("Handle offline mode")
         );
     }
 
@@ -818,20 +1015,27 @@ mod tests {
             Err(ProjectError::UseCompleteTask)
         ));
         let in_step = manager
-            .set_task_step(project.id, task.id, "spec-generation".to_owned())
+            .set_task_step(project.id, task.id, "specification-generation".to_owned())
             .unwrap();
-        assert_eq!(in_step.current_step.as_deref(), Some("spec-generation"));
+        assert_eq!(
+            in_step.current_step.as_deref(),
+            Some("specification-generation")
+        );
         assert!(
             in_step
                 .step_started_at_unix_secs
-                .contains_key("spec-generation")
+                .contains_key("specification-generation")
         );
         manager
             .set_task_status(project.id, task.id, TaskStatus::Error)
             .unwrap();
-        manager
-            .set_task_status(project.id, task.id, TaskStatus::InProgress)
-            .unwrap();
+        let resumed = manager.retry_task(project.id, task.id).unwrap();
+        assert_eq!(resumed.status, TaskStatus::InProgress);
+        assert_eq!(resumed.attempt, 2);
+        assert_eq!(
+            resumed.current_step.as_deref(),
+            Some("specification-generation")
+        );
         assert!(matches!(
             manager.set_task_step(project.id, task.id, "code-generation".to_owned()),
             Err(ProjectError::ApprovalRequired(ApprovalGate::Specifications))

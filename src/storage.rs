@@ -48,11 +48,17 @@ impl ProjectStore {
         &self.root
     }
 
-    pub fn expected_task_worktree_path(&self, project_id: ProjectId, task_id: TaskId) -> PathBuf {
+    pub fn expected_task_worktree_path(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        attempt: u32,
+    ) -> PathBuf {
         self.root
             .join("worktrees")
             .join(project_id.0.to_string())
             .join(task_id.0.to_string())
+            .join(format!("attempt-{attempt}"))
     }
 
     pub fn worktrees_root(&self) -> PathBuf {
@@ -286,6 +292,8 @@ mod tests {
             approval_history: Vec::new(),
             abandonment_note: None,
             worktree: None,
+            attempt: 1,
+            recovery_history: Vec::new(),
             created_at_unix_secs: 2,
             updated_at_unix_secs: 2,
         }

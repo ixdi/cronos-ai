@@ -38,6 +38,7 @@ enum Screen {
 enum Dialog {
     None,
     Revision { gate: ApprovalGate, note: String },
+    Clarify { note: String },
     Abandon { note: String },
 }
 
@@ -139,6 +140,15 @@ impl Dashboard {
             self.should_quit = true;
             return;
         }
+        if key == KeyCode::Char('r')
+            && self.screen == Screen::TaskDetail
+            && self
+                .selected_task()
+                .is_some_and(|task| task.status == TaskStatus::Error)
+        {
+            self.retry_error_task();
+            return;
+        }
         if key == KeyCode::Char('r') {
             self.refresh_for_ui();
             return;
@@ -162,6 +172,7 @@ impl Dashboard {
             match key {
                 KeyCode::Char('y') => self.approve_active_gate(),
                 KeyCode::Char('n') => self.request_revision(),
+                KeyCode::Char('c') => self.open_clarify_dialog(),
                 KeyCode::Char('a') => self.open_abandon_dialog(),
                 _ => self.handle_navigation_key(key),
             }
@@ -257,6 +268,44 @@ impl Dashboard {
         };
     }
 
+    fn retry_error_task(&mut self) {
+        if self.workflow.is_some() {
+            self.error = Some("Wait for the Pi workflow to settle before retrying.".to_owned());
+            return;
+        }
+        let Some((project_id, task_id)) = self.selected_ids() else {
+            return;
+        };
+        match self.manager.retry_task(project_id, task_id) {
+            Ok(task) => {
+                self.workflow_status = Some(format!(
+                    "Retry scheduled for attempt {} at specification generation",
+                    task.attempt
+                ));
+                self.refresh_for_ui();
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
+    fn open_clarify_dialog(&mut self) {
+        if self.workflow.is_some() {
+            self.error = Some("Wait for the Pi workflow to settle before clarifying.".to_owned());
+            return;
+        }
+        if self
+            .selected_task()
+            .is_none_or(|task| task.status != TaskStatus::Error)
+        {
+            self.error = Some("Only Error tasks can be clarified.".to_owned());
+            return;
+        }
+        self.error = None;
+        self.dialog = Dialog::Clarify {
+            note: String::new(),
+        };
+    }
+
     fn open_abandon_dialog(&mut self) {
         if self.workflow.is_some() {
             self.error =
@@ -283,7 +332,9 @@ impl Dashboard {
         }
         if key == KeyCode::Backspace {
             match &mut self.dialog {
-                Dialog::Revision { note, .. } | Dialog::Abandon { note } => {
+                Dialog::Revision { note, .. }
+                | Dialog::Clarify { note }
+                | Dialog::Abandon { note } => {
                     note.pop();
                 }
                 Dialog::None => {}
@@ -292,7 +343,9 @@ impl Dashboard {
         }
         if let KeyCode::Char(character) = key {
             match &mut self.dialog {
-                Dialog::Revision { note, .. } | Dialog::Abandon { note }
+                Dialog::Revision { note, .. }
+                | Dialog::Clarify { note }
+                | Dialog::Abandon { note }
                     if !character.is_control() && note.chars().count() < 2_000 =>
                 {
                     note.push(character)
@@ -306,7 +359,9 @@ impl Dashboard {
         }
         if matches!(
             &self.dialog,
-            Dialog::Revision { note, .. } | Dialog::Abandon { note } if note.trim().is_empty()
+            Dialog::Revision { note, .. }
+            | Dialog::Clarify { note }
+            | Dialog::Abandon { note } if note.trim().is_empty()
         ) {
             self.error = Some("A nonblank note is required.".to_owned());
             return;
@@ -315,6 +370,20 @@ impl Dashboard {
         match dialog {
             Dialog::Revision { gate, note } if !note.trim().is_empty() => {
                 self.save_approval(gate, ApprovalDecision::Rejected, Some(note));
+            }
+            Dialog::Clarify { note } if !note.trim().is_empty() => {
+                if let Some((project_id, task_id)) = self.selected_ids() {
+                    match self.manager.clarify_task(project_id, task_id, note) {
+                        Ok(task) => {
+                            self.workflow_status = Some(format!(
+                                "Clarification saved for attempt {} at specification generation",
+                                task.attempt
+                            ));
+                            self.refresh_for_ui();
+                        }
+                        Err(error) => self.error = Some(error.to_string()),
+                    }
+                }
             }
             Dialog::Abandon { note } if !note.trim().is_empty() => {
                 if let Some((project_id, task_id)) = self.selected_ids() {
@@ -326,6 +395,9 @@ impl Dashboard {
             }
             Dialog::Revision { .. } => {
                 self.error = Some("A revision note is required.".to_owned());
+            }
+            Dialog::Clarify { .. } => {
+                self.error = Some("Clarification context is required.".to_owned());
             }
             Dialog::Abandon { .. } => {
                 self.error = Some("An abandonment reason is required.".to_owned());
@@ -583,6 +655,13 @@ fn draw(frame: &mut Frame, app: &Dashboard) {
         Screen::Tasks => {
             "↑/↓ select  Enter details  s start next ready task  Backspace projects  r refresh  q quit"
         }
+        Screen::TaskDetail
+            if app
+                .selected_task()
+                .is_some_and(|task| task.status == TaskStatus::Error) =>
+        {
+            "r retry from specs  c clarify context  a abandon  Backspace tasks  q quit"
+        }
         Screen::TaskDetail if app.active_approval_gate().is_some() => {
             "y approve  n request revision  a abandon  ↑/↓ activity  Backspace tasks  q quit"
         }
@@ -611,6 +690,11 @@ fn draw_dialog(frame: &mut Frame, app: &Dashboard) {
         Dialog::Revision { gate, note } => (
             format!("Request changes — {}", approval_gate_label(*gate)),
             "Describe the revision needed:",
+            note,
+        ),
+        Dialog::Clarify { note } => (
+            "Clarify task".to_owned(),
+            "Add context for replacement specifications:",
             note,
         ),
         Dialog::Abandon { note } => (
@@ -764,6 +848,7 @@ fn draw_task_detail(frame: &mut Frame, app: &Dashboard, area: ratatui::layout::R
             ),
             Span::raw(description),
         ]),
+        Line::from(format!("Attempt: {}", task.attempt)),
         Line::from(format!(
             "Specifications: {}  |  Final code: {}",
             approval_status(task, ApprovalGate::Specifications),
@@ -778,12 +863,19 @@ fn draw_task_detail(frame: &mut Frame, app: &Dashboard, area: ratatui::layout::R
     );
 
     let mut decisions = task
-        .approval_history
+        .recovery_history
         .iter()
         .rev()
         .take(3)
-        .map(approval_record_line)
+        .map(recovery_record_line)
         .collect::<Vec<_>>();
+    decisions.extend(
+        task.approval_history
+            .iter()
+            .rev()
+            .take(3)
+            .map(approval_record_line),
+    );
     if let Some(note) = task.abandonment_note.as_deref() {
         decisions.insert(0, Line::from(format!("Abandoned: {}", terminal_safe(note))));
     }
@@ -827,10 +919,23 @@ fn draw_task_detail(frame: &mut Frame, app: &Dashboard, area: ratatui::layout::R
     );
 }
 
+fn recovery_record_line(record: &crate::model::RecoveryRecord) -> Line<'static> {
+    let action = match record.action {
+        crate::model::RecoveryAction::Retry => "retry",
+        crate::model::RecoveryAction::Clarify => "clarification",
+    };
+    Line::from(format!(
+        "Attempt {} — {action}: {}",
+        record.attempt,
+        terminal_safe(record.note.as_deref().unwrap_or("")),
+    ))
+}
+
 fn approval_record_line(record: &crate::model::ApprovalRecord) -> Line<'static> {
     let note = record.note.as_deref().unwrap_or("");
     Line::from(format!(
-        "{} — {}  {}",
+        "Attempt {} — {}: {}  {}",
+        record.attempt,
         approval_gate_label(record.gate),
         approval_decision_label(record.decision),
         terminal_safe(note),
@@ -855,15 +960,16 @@ fn approval_status(task: &Task, gate: ApprovalGate) -> &'static str {
     task.approval_history
         .iter()
         .rev()
-        .find(|record| record.gate == gate)
+        .find(|record| record.attempt == task.attempt && record.gate == gate)
         .map_or("pending", |record| approval_decision_label(record.decision))
 }
 
 fn agent_activity_item(activity: &AgentActivity) -> ListItem<'static> {
     let detail = terminal_safe(activity.detail.as_deref().unwrap_or(""));
     ListItem::new(format!(
-        "{}  {} — {} / {}  {}",
+        "{}  attempt {}  {} — {} / {}  {}",
         activity.updated_at_unix_secs,
+        activity.attempt,
         terminal_safe(&activity.agent_name),
         terminal_safe(&activity.step),
         agent_status_label(&activity.status),
@@ -1099,6 +1205,59 @@ mod tests {
         assert_eq!(
             rejected.abandonment_note.as_deref(),
             Some("No longer needed")
+        );
+    }
+
+    #[test]
+    fn error_task_controls_retry_or_save_clarification_context() {
+        let root = tempfile::tempdir().unwrap();
+        let writer = ProjectManager::new(root.path()).unwrap();
+        let project = writer.create_project("Demo".to_owned(), None).unwrap();
+        let task = writer
+            .create_task(
+                project.id,
+                "Recover me".to_owned(),
+                None,
+                Priority::High,
+                Vec::new(),
+            )
+            .unwrap();
+        writer.start_next_task(project.id).unwrap();
+        writer
+            .set_task_status(project.id, task.id, TaskStatus::Error)
+            .unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+        app.handle_key(KeyCode::Enter);
+        app.handle_key(KeyCode::Enter);
+
+        app.handle_key(KeyCode::Char('r'));
+        let retried = writer.get_task(project.id, task.id).unwrap();
+        assert_eq!(retried.status, TaskStatus::InProgress);
+        assert_eq!(retried.attempt, 2);
+        assert_eq!(
+            retried.current_step.as_deref(),
+            Some("specification-generation")
+        );
+
+        writer
+            .set_task_status(project.id, task.id, TaskStatus::Error)
+            .unwrap();
+        app.refresh().unwrap();
+        app.handle_key(KeyCode::Char('c'));
+        for character in "Handle no network access".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Enter);
+        let clarified = writer.get_task(project.id, task.id).unwrap();
+        assert_eq!(clarified.status, TaskStatus::InProgress);
+        assert_eq!(clarified.attempt, 3);
+        assert_eq!(
+            clarified.current_step.as_deref(),
+            Some("specification-generation")
+        );
+        assert_eq!(
+            clarified.recovery_history.last().unwrap().note.as_deref(),
+            Some("Handle no network access")
         );
     }
 

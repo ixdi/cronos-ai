@@ -10,8 +10,10 @@ const MAX_STEP_NAME_CHARS: usize = 100;
 const MAX_AGENT_NAME_CHARS: usize = 100;
 const MAX_AGENT_DETAIL_CHARS: usize = 2_000;
 const MAX_APPROVAL_NOTE_CHARS: usize = 2_000;
+const MAX_WORKTREE_PATH_CHARS: usize = 4_096;
 pub const MAX_AGENT_EVENTS: usize = 100;
 pub const MAX_APPROVAL_RECORDS: usize = 100;
+pub const MAX_RECOVERY_RECORDS: usize = 50;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(transparent)]
@@ -105,6 +107,8 @@ pub enum AgentStatus {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct AgentActivity {
+    #[serde(default = "default_attempt")]
+    pub attempt: u32,
     pub agent_name: String,
     pub step: String,
     pub status: AgentStatus,
@@ -214,10 +218,28 @@ pub enum ApprovalDecision {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ApprovalRecord {
+    #[serde(default = "default_attempt")]
+    pub attempt: u32,
     pub gate: ApprovalGate,
     pub decision: ApprovalDecision,
     pub note: Option<String>,
     pub decided_at_unix_secs: u64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryAction {
+    Retry,
+    Clarify,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RecoveryRecord {
+    pub attempt: u32,
+    pub action: RecoveryAction,
+    pub note: Option<String>,
+    pub discarded_worktree: Option<String>,
+    pub resumed_at_unix_secs: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -240,6 +262,10 @@ pub struct Task {
     pub worktree: Option<String>,
     pub created_at_unix_secs: u64,
     pub updated_at_unix_secs: u64,
+    #[serde(default = "default_attempt")]
+    pub attempt: u32,
+    #[serde(default)]
+    pub recovery_history: Vec<RecoveryRecord>,
 }
 
 impl Task {
@@ -247,7 +273,7 @@ impl Task {
         self.approval_history
             .iter()
             .rev()
-            .find(|record| record.gate == gate)
+            .find(|record| record.attempt == self.attempt && record.gate == gate)
             .is_some_and(|record| record.decision == ApprovalDecision::Approved)
     }
 
@@ -287,10 +313,18 @@ impl Task {
         if self.approval_history.len() > MAX_APPROVAL_RECORDS {
             return Err(ModelError::TooManyApprovalRecords);
         }
+        if self.recovery_history.len() > MAX_RECOVERY_RECORDS {
+            return Err(ModelError::TooManyRecoveryRecords);
+        }
         validate_optional_text(
             "task abandonment note",
             self.abandonment_note.as_deref(),
             MAX_APPROVAL_NOTE_CHARS,
+        )?;
+        validate_optional_text(
+            "task worktree path",
+            self.worktree.as_deref(),
+            MAX_WORKTREE_PATH_CHARS,
         )?;
         for activity in &self.agent_activity {
             validate_required_text("agent name", &activity.agent_name, MAX_AGENT_NAME_CHARS)?;
@@ -299,6 +333,18 @@ impl Task {
                 "agent activity detail",
                 activity.detail.as_deref(),
                 MAX_AGENT_DETAIL_CHARS,
+            )?;
+        }
+        for recovery in &self.recovery_history {
+            validate_optional_text(
+                "recovery note",
+                recovery.note.as_deref(),
+                MAX_APPROVAL_NOTE_CHARS,
+            )?;
+            validate_optional_text(
+                "discarded worktree path",
+                recovery.discarded_worktree.as_deref(),
+                MAX_WORKTREE_PATH_CHARS,
             )?;
         }
         for approval in &self.approval_history {
@@ -341,6 +387,12 @@ pub enum ModelError {
     TooManyApprovalRecords,
     #[error("rejected approvals must include a revision note")]
     MissingApprovalNote,
+    #[error("task contains more than {MAX_RECOVERY_RECORDS} recovery records")]
+    TooManyRecoveryRecords,
+}
+
+fn default_attempt() -> u32 {
+    1
 }
 
 fn validate_required_text(
@@ -396,6 +448,8 @@ mod tests {
             approval_history: Vec::new(),
             abandonment_note: None,
             worktree: None,
+            attempt: 1,
+            recovery_history: Vec::new(),
             created_at_unix_secs: 0,
             updated_at_unix_secs: 0,
         }
@@ -444,6 +498,8 @@ mod tests {
         object.remove("agent_activity");
         object.remove("approval_history");
         object.remove("abandonment_note");
+        object.remove("attempt");
+        object.remove("recovery_history");
         let task: Task = serde_json::from_value(value).unwrap();
         assert!(task.agent_activity.is_empty());
     }

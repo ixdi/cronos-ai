@@ -21,10 +21,16 @@ function taskSnapshot(value: any) {
 		priority: value.priority,
 		dependencies: value.dependencies,
 		status: value.status,
+		attempt: value.attempt,
 		current_step: value.current_step,
 		step_started_at_unix_secs: value.step_started_at_unix_secs,
 		agent_activity: value.agent_activity?.slice(-8) ?? [],
 		approval_history: value.approval_history?.slice(-6) ?? [],
+		recovery_history: value.recovery_history?.slice(-5).map((record: any) => ({
+			attempt: record.attempt,
+			action: record.action,
+			note: record.note,
+		})) ?? [],
 		abandonment_note: value.abandonment_note,
 	};
 }
@@ -112,6 +118,7 @@ const runStepTool = defineTool({
 			const value = JSON.parse(stdout);
 			const snapshot = {
 				status: value.status,
+				attempt: value.attempt,
 				current_step: value.current_step,
 				agent_activity: value.agent_activity?.slice(-8) ?? [],
 			};
@@ -135,7 +142,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool(runStepTool);
 
 	pi.on("before_agent_start", (event) => ({
-		systemPrompt: `${event.systemPrompt}\n\nCronos-AI workflow instructions:\n- Read the assigned task using cronos_task_state before acting.\n- Run only the task's current agent step using cronos_run_step; Rust validates status, step order, approvals, and the task worktree.\n- Wait for each step tool call to finish before continuing. Do not bypass the specification or final-code approval gates; the human handles those in the Cronos TUI.\n- Do not modify task status, approval records, or worktree paths directly.`,
+		systemPrompt: `${event.systemPrompt}\n\nCronos-AI workflow instructions:\n- Read the assigned task using cronos_task_state before acting. On a clarified attempt, apply only the clarification note recorded for the current attempt; older attempts are history, not active instructions.\n- Run only the task's current agent step using cronos_run_step; Rust validates status, step order, approvals, and the task worktree.\n- Wait for each step tool call to finish before continuing. Do not bypass the specification or final-code approval gates; the human handles those in the Cronos TUI.\n- Do not modify task status, approval records, or worktree paths directly.`,
 	}));
 
 	pi.on("session_start", async () => {

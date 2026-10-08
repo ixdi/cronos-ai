@@ -454,7 +454,7 @@ mod tests {
             while !cancelled.contains(&agent.name) {
                 cancelled = self.ready.wait(cancelled).unwrap();
             }
-            Err("cancelled".to_owned())
+            Ok("late success must be ignored".to_owned())
         }
 
         fn cancel(&self, _task: &Task, _step: WorkflowStep, agent: &AgentPlan) {
@@ -559,6 +559,9 @@ mod tests {
         );
         assert!(stored.agent_activity.iter().any(|event| {
             event.agent_name == "worker" && event.status == crate::model::AgentStatus::Cancelled
+        }));
+        assert!(!stored.agent_activity.iter().any(|event| {
+            event.agent_name == "worker" && event.status == crate::model::AgentStatus::Completed
         }));
     }
 
