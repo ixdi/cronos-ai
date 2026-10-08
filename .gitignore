@@ -11,3 +11,5 @@ coverage/
 # Logs and OS files
 *.log
 .DS_Store
+
+/target

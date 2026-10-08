@@ -2,7 +2,7 @@
 
 ## 1. Application scaffold and quality gates
 
-- [ ] 1.1 Create the Rust CLI/TUI application shell with a minimal Ratatui screen; verify `cargo check` and `cargo test` succeed.
+- [x] 1.1 Create the Rust CLI/TUI application shell with a minimal Ratatui screen; verify `cargo check` and `cargo test` succeed.
 - [ ] 1.2 Configure automated formatting, lint, unit/integration/E2E test, and dependency-security checks; verify the full local quality command passes on the scaffold.
 
 ## 2. Project and task persistence
