@@ -4,7 +4,7 @@ Cronos-AI is a multi-agent architecture designed to create complete products fro
 
 Within a task, workflow steps run sequentially: the next step starts only after the current step is complete. Independent sub-agents assigned to the same step run in parallel. In the first implementation, tasks themselves are processed sequentially; running multiple tasks in parallel is planned for a later approach.
 
-If a sub-agent fails during a parallel step, cancel the other agents still running in that step, stop the workflow, and mark the task as Error. A human decides whether to retry or clarify the context.
+If a sub-agent fails during a parallel step, cancel the other agents still running in that step, stop the workflow, and mark the task as Error. A human may retry from spec generation, discarding outputs downstream of the specs from the previous attempt, or clarify the context, which creates or replaces the specs and requires human approval before the workflow continues. When the human decision resumes processing, the task returns to In Progress. Rejecting an approval step starts a revision loop and leaves the task In Progress; Rejected is reserved for abandoning the entire task.
 
 The file `design/design.md` provides a detailed description of the agents used in Cronos-AI, their roles, and how they interact within the system. Each agent is designed to perform specific tasks, contributing to the overall goal of building software products efficiently.
 

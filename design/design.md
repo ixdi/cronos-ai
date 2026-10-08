@@ -109,7 +109,9 @@ The prompt is passed to the sub-agents extension, which creates the agents assig
 
 ### 3. Sub-agents workflow
 
-For each task, sub-agents handle the work assigned to each workflow step. Independent sub-agents within the same step operate concurrently and report their results before the workflow advances. If a sub-agent fails, the workflow stops and cancels the other agents still running in that step; the task is marked Error for a human to choose whether to retry or clarify the context. In the first implementation, only one task is processed at a time; parallel execution across multiple tasks is planned for a later approach.
+For each task, sub-agents handle the work assigned to each workflow step. Independent sub-agents within the same step operate concurrently and report their results before the workflow advances. In the first implementation, only one task is processed at a time; parallel execution across multiple tasks is planned for a later approach.
+
+If a sub-agent fails, cancel the other agents still running in that step, stop the workflow, and mark the task Error. A human chooses whether to retry or clarify the context. Retrying starts again at spec generation; outputs downstream of the specs from the previous attempt are discarded and not reused. Clarifying the context creates or replaces the specs, which require human approval before the workflow continues to code generation. When the human decision resumes processing, the task status changes from Error to In Progress.
 
 Herdr is used to manage the sub-agents and review their activities. The Dashboard html page is updated in real-time to reflect the progress of each sub-agent, providing visibility into the overall workflow.
 
@@ -125,6 +127,8 @@ Openspec is used to generate the specifications.
 
 A human approval step is included to review and validate the generated specs before proceeding with task execution.
 This ensures that the tasks are aligned with the overall objectives and meet the necessary quality standards.
+
+If the human clarifies the context, specs are created or replaced using that context. The human must approve the resulting specs before the workflow continues to code generation.
 
 #### 3.3 Code generation
 
