@@ -20,9 +20,9 @@ See `proposal.md` for motivation and `specs/` for externally visible behavior. T
 
 ## Decisions
 
-### Rust CLI/TUI owns durable state and workflow control
+### Pi orchestrates tasks; Rust owns durable state and the TUI
 
-Use a Rust binary with `ratatui` for the interface. Keep project/task models, status transitions, the task queue, and workflow-step barriers in the application core; the TUI renders that state and sends user actions to it. This keeps state transitions testable without a terminal. A Pi-only workflow was considered, but would make durable project state and the Rust TUI depend on an agent session.
+Use a Rust binary with `ratatui` for project/task persistence, validated status transitions, the task queue, and human controls. For the active task, launch a long-lived Pi RPC process with a project-local workflow extension. Pi drives the task through its ordered steps and coordinates independent sub-agents through Herdr; the extension uses typed internal Rust commands to read and update persisted task state and to wait at human approval gates. Rust remains the source of truth, while Pi is the workflow orchestrator required by the project design. A Rust-only step runner was rejected because it would conflict with that role; Pi-owned project storage was rejected because it would make durable state depend on an agent session.
 
 ### JSON is the local source of truth
 
@@ -34,7 +34,7 @@ Keep Pi, Herdr, OpenSpec, and Git behind small adapters owned by the workflow co
 
 ### Execute steps serially and agents within a step concurrently
 
-The workflow runner processes one task at a time, selecting ready tasks by dependency readiness and priority using built-in deterministic ordering. It completes each task step before starting the next, while scheduling independent agents for the active step concurrently and joining their results at a barrier. On the first agent failure, request cancellation for the other running agents, stop advancing, persist Error, and wait for a human decision. Cancellation is best-effort at external process/API boundaries; late results are ignored and cannot advance the task. Jev-based prioritization is deferred to the future Pi extension.
+The Rust state layer selects one ready task at a time by dependency readiness and priority using built-in deterministic ordering; the Pi workflow extension orchestrates that task's steps. It completes each step before starting the next, schedules independent agents for the active step concurrently, and waits for their results at a barrier. On the first agent failure, Pi requests cancellation from Herdr for the other running agents, stops advancing, records Error through the Rust state interface, and waits for a human decision. Cancellation is best-effort at external process/API boundaries; late results are ignored and cannot advance the task. Jev-based prioritization is deferred to the future Pi extension.
 
 ### Human recovery starts a fresh specification-based attempt
 

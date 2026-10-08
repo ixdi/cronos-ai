@@ -4,7 +4,7 @@ This records the locally installed integration surfaces checked for the MVP (Pi 
 
 ## Pi RPC
 
-Start a long-lived worker with `pi --mode rpc --no-session` and an explicit task worktree as its working directory. Communicate through newline-delimited JSON on stdin/stdout; stdout is protocol-only and diagnostics go to stderr. Read stdout continuously and correlate command responses with request IDs.
+Pi is the workflow orchestrator for the active task. Start a long-lived process with `pi --mode rpc --no-session` and load the project-local workflow extension; Rust remains the source of truth for project/task state and human controls. Give Pi the explicit task worktree as its working directory. Communicate through newline-delimited JSON on stdin/stdout; stdout is protocol-only and diagnostics go to stderr. Read stdout continuously and correlate command responses with request IDs.
 
 - Submit work with `prompt`; a successful response means accepted/queued, not completed.
 - Subscribe to session events before prompting and wait for `agent_settled`, not only `agent_end`, before advancing the workflow. Use `get_last_assistant_text` (or the final message event) for the result.

@@ -13,7 +13,7 @@
 ## 3. Tool integration boundary
 
 - [x] 3.1 Verify the actual Pi JSON/RPC and Herdr API operations needed to launch agents, collect results, and cancel running agents; record the supported contracts in integration documentation.
-- [ ] 3.2 Implement replaceable adapters and startup tool preflight for Pi, Herdr, OpenSpec, and Git; add fake-adapter tests for missing-tool prompts, successful calls, failures, and cancellation, and document required tools.
+- [ ] 3.2 Implement the project-local Pi workflow extension, typed Rust task-state commands, and replaceable Herdr/OpenSpec/Git adapters with startup tool preflight; add fake-adapter tests for missing-tool prompts, successful calls, failures, and cancellation, and document the integration contracts.
 
 ## 4. Project dashboard and human controls
 
@@ -22,7 +22,7 @@
 
 ## 5. Workflow execution and recovery
 
-- [ ] 5.1 Implement the single-task workflow state machine with ordered steps, priority/dependency queue selection, and parallel independent agents within each step; add tests proving step barriers, task serialization, and within-step concurrency, and document the workflow states.
+- [ ] 5.1 Implement Pi-driven task orchestration with Rust queue/state support, ordered steps, priority/dependency selection, and parallel independent agents within each step; add tests proving step barriers, task serialization, and within-step concurrency, and document the workflow states.
 - [ ] 5.2 Implement failure cancellation, Error status, retry from specification generation with downstream outputs discarded, and clarification-driven spec replacement/approval; add tests for sibling cancellation, ignored late results, Error-to-In Progress transitions, and recovery behavior, and document the recovery flow.
 - [ ] 5.3 Implement per-task Git worktrees, documentation generation after final approval, and local merge without remote push; add tests for approval gating, successful local completion, merge conflicts, and absence of push calls, and document local completion and manual publishing.
 
