@@ -7,7 +7,7 @@
 
 ## 2. Project and task persistence
 
-- [ ] 2.1 Define project/task JSON models and atomic load/save behavior; add unit tests for persistence across reload, validation failures, and preserving invalid files, and document the format.
+- [x] 2.1 Define project/task JSON models and atomic load/save behavior; add unit tests for persistence across reload, validation failures, and preserving invalid files, and document the format.
 - [ ] 2.2 Implement project create/view/update/select/archive and task creation with priority, dependencies, unique IDs, and initial Pending status; add tests for valid operations, persistence, and blocked dependencies, and document the CLI/TUI actions.
 
 ## 3. Tool integration boundary
