@@ -12,7 +12,7 @@ tracked in the project JSON file, allowing for easy monitoring. The status are:
 - Pending: The task is waiting to be processed.
 - In Progress: The task is currently being processed.
 - Completed: The task has been successfully completed.
-- Rejected: The task has been rejected and will not be processed further.
+- Rejected: The entire task has been explicitly abandoned and will not be processed further. Rejecting an approval step is not a task-level rejection; the task remains In Progress while it is revised.
 - Error: An error occurred during the processing of the task, and it requires attention.
 
 ## Technologies
@@ -45,8 +45,7 @@ The tui shows some analytics about the tasks, including the number of tasks in e
 
 It also allows to click in each task to see the details of the task, including its specifications, code, diffs, and any associated resources. This provides a comprehensive view of each task and allows for easy access to the information needed for effective task management.
 
-It also allows to approve or reject the changes in the specified human approval steps, providing a streamlined
-process for validating the generated code and ensuring that it meets the necessary quality standards.
+It also allows humans to approve or reject work at specified approval steps. Rejecting an approval step sends the task through its revision loop without setting the task-level Rejected status; that status is reserved for abandoning the entire task.
 
 It allows to insert some notes, descriptions, or comments about the task, which can be used to provide additional
 context or information for the task. This ensures that all relevant information is captured and easily accessible for future reference if it is approved or it is used as a reference for the next loop when a step is rejected in a human approval step.
@@ -152,7 +151,7 @@ requirements and functions as intended. The following sub-agents are involved in
 After the verification steps, a final human approval is required to validate the code before deployment. This step
 ensures that the code meets the necessary quality standards and aligns with the overall objectives of the workflow.
 
-If human do not approve the code, the workflow returns to the code generation step to address any issues or concerns raised during the review process.
+If the human does not approve the code, the workflow returns to the code generation step to address the issues or concerns raised during review. The task remains In Progress while the code is revised and resubmitted for approval.
 
 The human can also request changes, notes, or others about the code, which will be addressed in the next iteration of the workflow. The inputs are introduced into the tui.
 
