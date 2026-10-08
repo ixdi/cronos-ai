@@ -114,6 +114,76 @@ pub struct AgentActivity {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+pub enum WorkflowStep {
+    SpecificationGeneration,
+    SpecificationApproval,
+    CodeGeneration,
+    CodeReview,
+    Verification,
+    FinalApproval,
+    Documentation,
+    LocalMerge,
+}
+
+impl WorkflowStep {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SpecificationGeneration => "specification-generation",
+            Self::SpecificationApproval => "specification-approval",
+            Self::CodeGeneration => "code-generation",
+            Self::CodeReview => "code-review",
+            Self::Verification => "verification",
+            Self::FinalApproval => "final-approval",
+            Self::Documentation => "documentation",
+            Self::LocalMerge => "local-merge",
+        }
+    }
+
+    pub fn parse(step: &str) -> Option<Self> {
+        Some(match step {
+            "specification-generation" => Self::SpecificationGeneration,
+            "specification-approval" => Self::SpecificationApproval,
+            "code-generation" => Self::CodeGeneration,
+            "code-review" => Self::CodeReview,
+            "verification" => Self::Verification,
+            "final-approval" => Self::FinalApproval,
+            "documentation" => Self::Documentation,
+            "local-merge" => Self::LocalMerge,
+            _ => return None,
+        })
+    }
+
+    pub fn next(self) -> Option<Self> {
+        Some(match self {
+            Self::SpecificationGeneration => Self::SpecificationApproval,
+            Self::SpecificationApproval => Self::CodeGeneration,
+            Self::CodeGeneration => Self::CodeReview,
+            Self::CodeReview => Self::Verification,
+            Self::Verification => Self::FinalApproval,
+            Self::FinalApproval => Self::Documentation,
+            Self::Documentation => Self::LocalMerge,
+            Self::LocalMerge => return None,
+        })
+    }
+
+    pub fn requires_human_approval(self) -> bool {
+        matches!(self, Self::SpecificationApproval | Self::FinalApproval)
+    }
+
+    pub fn runs_agents(self) -> bool {
+        matches!(
+            self,
+            Self::SpecificationGeneration
+                | Self::CodeGeneration
+                | Self::CodeReview
+                | Self::Verification
+                | Self::Documentation
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ApprovalGate {
     Specifications,
     FinalCode,

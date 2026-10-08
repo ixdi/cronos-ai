@@ -4,8 +4,9 @@ use clap::{Parser, Subcommand, ValueEnum};
 use uuid::Uuid;
 
 use crate::{
-    model::{Priority, ProjectId, TaskId},
+    model::{Priority, ProjectId, TaskId, WorkflowStep},
     project::ProjectManager,
+    workflow::{AgentPlan, HerdrAgentAdapter, WorkflowEngine},
 };
 
 #[derive(Parser)]
@@ -63,11 +64,25 @@ enum InternalAction {
         #[command(subcommand)]
         action: InternalTaskAction,
     },
+    Workflow {
+        #[command(subcommand)]
+        action: InternalWorkflowAction,
+    },
 }
 
 #[derive(Subcommand)]
 enum InternalTaskAction {
     Get { project_id: String, task_id: String },
+}
+
+#[derive(Subcommand)]
+enum InternalWorkflowAction {
+    RunStep {
+        project_id: String,
+        task_id: String,
+        step: String,
+        agents_json: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -134,6 +149,30 @@ pub fn run() -> Result<Option<PathBuf>, Box<dyn Error>> {
                 } => print_json(
                     &manager.get_task(parse_project_id(&project_id)?, parse_task_id(&task_id)?)?,
                 )?,
+            },
+            InternalAction::Workflow { action } => match action {
+                InternalWorkflowAction::RunStep {
+                    project_id,
+                    task_id,
+                    step,
+                    agents_json,
+                } => {
+                    let step = WorkflowStep::parse(&step).ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "unknown workflow step",
+                        )
+                    })?;
+                    let agents: Vec<AgentPlan> = serde_json::from_str(&agents_json)?;
+                    let task = WorkflowEngine::new(manager, HerdrAgentAdapter::default())
+                        .run_step(
+                            parse_project_id(&project_id)?,
+                            parse_task_id(&task_id)?,
+                            step,
+                            agents,
+                        )?;
+                    print_json(&task)?;
+                }
             },
         },
         Command::Project { action } => match action {
@@ -262,6 +301,19 @@ mod tests {
                 "get",
                 "00000000-0000-0000-0000-000000000000",
                 "00000000-0000-0000-0000-000000000001",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "cronos-ai",
+                "internal",
+                "workflow",
+                "run-step",
+                "00000000-0000-0000-0000-000000000000",
+                "00000000-0000-0000-0000-000000000001",
+                "specification-generation",
+                r#"[{"name":"spec-writer","prompt":"draft specs"}]"#,
             ])
             .is_ok()
         );

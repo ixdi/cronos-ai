@@ -1,5 +1,6 @@
 use std::{
     collections::HashSet,
+    fs,
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -10,7 +11,7 @@ use crate::{
     model::{
         AgentActivity, AgentStatus, ApprovalDecision, ApprovalGate, ApprovalRecord,
         MAX_AGENT_EVENTS, MAX_APPROVAL_RECORDS, ModelError, Priority, Project, ProjectId,
-        ProjectStatus, Task, TaskId, TaskStatus,
+        ProjectStatus, Task, TaskId, TaskStatus, WorkflowStep,
     },
     storage::{ProjectStore, StoreError},
 };
@@ -46,6 +47,17 @@ pub enum ProjectError {
     UseCompleteTask,
     #[error("use abandon_task to reject a task")]
     UseAbandonTask,
+    #[error("task is waiting for human approval")]
+    AwaitingHumanApproval,
+    #[error("expected workflow step {expected:?}, found {actual:?}")]
+    UnexpectedWorkflowStep {
+        expected: WorkflowStep,
+        actual: Option<String>,
+    },
+    #[error("task has an unknown workflow step: {0}")]
+    UnknownWorkflowStep(String),
+    #[error("task worktree is missing or outside its assigned directory")]
+    InvalidTaskWorktree,
     #[error("system clock is before the Unix epoch")]
     InvalidSystemTime,
 }
@@ -59,6 +71,10 @@ impl ProjectManager {
         Ok(Self {
             store: ProjectStore::new(root)?,
         })
+    }
+
+    pub fn data_dir(&self) -> &Path {
+        self.store.root()
     }
 
     pub fn create_project(
@@ -183,6 +199,29 @@ impl ProjectManager {
         Ok(self.store.load_task(project_id, task_id)?)
     }
 
+    pub fn validated_task_worktree_path(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> Result<std::path::PathBuf, ProjectError> {
+        let task = self.store.load_task(project_id, task_id)?;
+        let expected = self.store.expected_task_worktree_path(project_id, task_id);
+        if task.worktree.as_deref() != expected.to_str() {
+            return Err(ProjectError::InvalidTaskWorktree);
+        }
+        let root = self.store.worktrees_root();
+        let canonical_root = fs::canonicalize(&root).map_err(StoreError::Io)?;
+        let canonical_task = fs::canonicalize(&expected).map_err(StoreError::Io)?;
+        if canonical_root != root
+            || canonical_task != expected
+            || !canonical_task.starts_with(&canonical_root)
+            || !canonical_task.is_dir()
+        {
+            return Err(ProjectError::InvalidTaskWorktree);
+        }
+        Ok(canonical_task)
+    }
+
     pub fn set_task_status(
         &self,
         project_id: ProjectId,
@@ -211,7 +250,7 @@ impl ProjectManager {
         Ok(task)
     }
 
-    pub fn set_task_step(
+    fn set_task_step(
         &self,
         project_id: ProjectId,
         task_id: TaskId,
@@ -320,6 +359,57 @@ impl ProjectManager {
         task.validate()?;
         self.store.save_task(&task)?;
         Ok(task)
+    }
+
+    pub fn start_next_task(&self, project_id: ProjectId) -> Result<Option<Task>, ProjectError> {
+        if self
+            .list_tasks(project_id)?
+            .iter()
+            .any(|task| matches!(task.status, TaskStatus::InProgress | TaskStatus::Error))
+        {
+            return Ok(None);
+        }
+        let Some(task) = self.ready_tasks(project_id)?.into_iter().next() else {
+            return Ok(None);
+        };
+        self.set_task_status(project_id, task.id, TaskStatus::InProgress)?;
+        self.set_task_step(
+            project_id,
+            task.id,
+            WorkflowStep::SpecificationGeneration.as_str().to_owned(),
+        )
+        .map(Some)
+    }
+
+    pub fn complete_workflow_step(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        step: WorkflowStep,
+    ) -> Result<Task, ProjectError> {
+        let task = self.store.load_task(project_id, task_id)?;
+        if task.status != TaskStatus::InProgress {
+            return Err(ProjectError::TaskNotInProgress(task.status));
+        }
+        let Some(current_step) = task.current_step.as_deref() else {
+            return Err(ProjectError::UnexpectedWorkflowStep {
+                expected: step,
+                actual: None,
+            });
+        };
+        if current_step != step.as_str() {
+            return Err(ProjectError::UnexpectedWorkflowStep {
+                expected: step,
+                actual: Some(current_step.to_owned()),
+            });
+        }
+        if step.requires_human_approval() {
+            return Err(ProjectError::AwaitingHumanApproval);
+        }
+        match step.next() {
+            Some(next) => self.set_task_step(project_id, task_id, next.as_str().to_owned()),
+            None => self.complete_task(project_id, task_id),
+        }
     }
 
     pub fn complete_task(
@@ -433,7 +523,7 @@ mod tests {
     use super::{ProjectError, ProjectManager};
     use crate::model::{
         AgentStatus, ApprovalDecision, ApprovalGate, MAX_AGENT_EVENTS, Priority, ProjectId,
-        ProjectStatus, TaskStatus,
+        ProjectStatus, TaskStatus, WorkflowStep,
     };
 
     fn complete_for_queue(
@@ -441,11 +531,12 @@ mod tests {
         project_id: ProjectId,
         task_id: crate::model::TaskId,
     ) {
+        if manager.get_task(project_id, task_id).unwrap().status == TaskStatus::Pending {
+            let started = manager.start_next_task(project_id).unwrap().unwrap();
+            assert_eq!(started.id, task_id);
+        }
         manager
-            .set_task_status(project_id, task_id, TaskStatus::InProgress)
-            .unwrap();
-        manager
-            .set_task_step(project_id, task_id, "specification-approval".to_owned())
+            .complete_workflow_step(project_id, task_id, WorkflowStep::SpecificationGeneration)
             .unwrap();
         manager
             .record_approval(
@@ -457,13 +548,12 @@ mod tests {
             )
             .unwrap();
         for step in [
-            "code-generation",
-            "code-review",
-            "verification",
-            "final-approval",
+            WorkflowStep::CodeGeneration,
+            WorkflowStep::CodeReview,
+            WorkflowStep::Verification,
         ] {
             manager
-                .set_task_step(project_id, task_id, step.to_owned())
+                .complete_workflow_step(project_id, task_id, step)
                 .unwrap();
         }
         manager
@@ -476,9 +566,11 @@ mod tests {
             )
             .unwrap();
         manager
-            .set_task_step(project_id, task_id, "local-merge".to_owned())
+            .complete_workflow_step(project_id, task_id, WorkflowStep::Documentation)
             .unwrap();
-        manager.complete_task(project_id, task_id).unwrap();
+        manager
+            .complete_workflow_step(project_id, task_id, WorkflowStep::LocalMerge)
+            .unwrap();
     }
 
     #[test]
@@ -544,6 +636,10 @@ mod tests {
         assert!(ready.iter().any(|task| task.id == first.id));
         assert!(!ready.iter().any(|task| task.id == blocked.id));
 
+        let selected = manager.start_next_task(project.id).unwrap().unwrap();
+        assert_eq!(selected.id, ready_high.id);
+        assert!(manager.start_next_task(project.id).unwrap().is_none());
+        complete_for_queue(&manager, project.id, ready_high.id);
         complete_for_queue(&manager, project.id, first.id);
         assert!(
             manager
@@ -620,6 +716,42 @@ mod tests {
         assert_eq!(
             stored.agent_activity.last().unwrap().agent_name,
             "agent-100"
+        );
+    }
+
+    #[test]
+    fn task_worktree_must_match_its_assigned_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(root.path()).unwrap();
+        let project = manager.create_project("Factory".to_owned(), None).unwrap();
+        let task = manager
+            .create_task(
+                project.id,
+                "Worktree".to_owned(),
+                None,
+                Priority::Medium,
+                Vec::new(),
+            )
+            .unwrap();
+        let mut stored = manager.get_task(project.id, task.id).unwrap();
+        stored.worktree = Some(root.path().join("outside").to_string_lossy().into_owned());
+        manager.store.save_task(&stored).unwrap();
+        assert!(matches!(
+            manager.validated_task_worktree_path(project.id, task.id),
+            Err(ProjectError::InvalidTaskWorktree)
+        ));
+
+        let expected = manager
+            .store
+            .expected_task_worktree_path(project.id, task.id);
+        std::fs::create_dir_all(&expected).unwrap();
+        stored.worktree = Some(expected.to_string_lossy().into_owned());
+        manager.store.save_task(&stored).unwrap();
+        assert_eq!(
+            manager
+                .validated_task_worktree_path(project.id, task.id)
+                .unwrap(),
+            expected
         );
     }
 

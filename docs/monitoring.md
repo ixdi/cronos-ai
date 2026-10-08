@@ -5,7 +5,7 @@ Start `cronos-ai` without a subcommand to open the dashboard. The dashboard chec
 ## Navigation
 
 - **Projects:** use ↑/↓ to select a project and Enter to open its task list. Active and archived projects are shown so archived work remains inspectable.
-- **Tasks:** use ↑/↓ to select a task. Each row shows status, priority, and current workflow step. Press Enter for details.
+- **Tasks:** use ↑/↓ to select a task. Each row shows status, priority, and current workflow step. Press Enter for details. Press **s** to start the next priority/dependency-ready task; task execution requires a validated Git worktree and a Herdr-managed session.
 - **Task details:** the summary shows status, priority, description, and active step. Human decisions and revision notes appear above the agent activity panel; use ↑/↓ to select an activity update.
 - At the specification or final-code approval step, press **y** to approve or **n** to request revisions and enter a note. A revision returns the workflow to specification generation or code generation without changing the task from In Progress.
 - Press **a** in task details to abandon the task; enter a reason to mark it Rejected. Backspace/Esc cancels an open dialog or returns one level; **r** refreshes immediately and **q** exits.

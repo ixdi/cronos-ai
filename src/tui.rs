@@ -20,9 +20,10 @@ use ratatui::{
 };
 
 use crate::{
+    integrations::{PiRpcHandle, ToolCommands, herdr_session_available},
     model::{
         AgentActivity, AgentStatus, ApprovalDecision, ApprovalGate, Priority, Project,
-        ProjectStatus, Task, TaskStatus,
+        ProjectStatus, Task, TaskStatus, WorkflowStep,
     },
     project::{ProjectError, ProjectManager},
 };
@@ -51,6 +52,9 @@ struct Dashboard {
     should_quit: bool,
     error: Option<String>,
     dialog: Dialog,
+    workflow: Option<PiRpcHandle>,
+    workflow_task: Option<(crate::model::ProjectId, crate::model::TaskId)>,
+    workflow_status: Option<String>,
 }
 
 impl Dashboard {
@@ -66,6 +70,9 @@ impl Dashboard {
             should_quit: false,
             error: None,
             dialog: Dialog::None,
+            workflow: None,
+            workflow_task: None,
+            workflow_status: None,
         })
     }
 
@@ -195,6 +202,7 @@ impl Dashboard {
                     .map(|task| task.agent_activity.len().saturating_sub(1))
                     .unwrap_or(0);
             }
+            (Screen::Tasks, KeyCode::Char('s')) => self.start_next_workflow(),
             (Screen::TaskDetail, KeyCode::Up) => {
                 self.selected_activity = self.selected_activity.saturating_sub(1);
             }
@@ -221,6 +229,10 @@ impl Dashboard {
     }
 
     fn approve_active_gate(&mut self) {
+        if self.workflow.is_some() {
+            self.error = Some("Wait for the Pi workflow to settle before approving.".to_owned());
+            return;
+        }
         let Some(gate) = self.active_approval_gate() else {
             self.error = Some("No approval gate is active for this task.".to_owned());
             return;
@@ -229,6 +241,11 @@ impl Dashboard {
     }
 
     fn request_revision(&mut self) {
+        if self.workflow.is_some() {
+            self.error =
+                Some("Wait for the Pi workflow to settle before requesting revisions.".to_owned());
+            return;
+        }
         let Some(gate) = self.active_approval_gate() else {
             self.error = Some("No approval gate is active for this task.".to_owned());
             return;
@@ -241,6 +258,11 @@ impl Dashboard {
     }
 
     fn open_abandon_dialog(&mut self) {
+        if self.workflow.is_some() {
+            self.error =
+                Some("Wait for the Pi workflow to settle before abandoning the task.".to_owned());
+            return;
+        }
         if self
             .selected_task()
             .is_some_and(|task| matches!(task.status, TaskStatus::Completed | TaskStatus::Rejected))
@@ -325,13 +347,180 @@ impl Dashboard {
             .manager
             .record_approval(project_id, task_id, gate, decision, note)
         {
-            Ok(_) => self.refresh_for_ui(),
+            Ok(_) => {
+                self.refresh_for_ui();
+                if let Some((project_id, task_id)) = self.selected_ids()
+                    && self
+                        .manager
+                        .get_task(project_id, task_id)
+                        .is_ok_and(|task| task.worktree.is_some())
+                    && let Err(error) = self.launch_pi_for_task(project_id, task_id)
+                {
+                    let _ = self
+                        .manager
+                        .set_task_status(project_id, task_id, TaskStatus::Error);
+                    self.error = Some(error);
+                    self.refresh_for_ui();
+                }
+            }
             Err(error) => self.error = Some(error.to_string()),
         }
     }
 
     fn selected_ids(&self) -> Option<(crate::model::ProjectId, crate::model::TaskId)> {
         Some((self.selected_project()?.id, self.selected_task()?.id))
+    }
+
+    fn start_next_workflow(&mut self) {
+        if self.workflow.is_some() {
+            self.error = Some("A Pi workflow is already running.".to_owned());
+            return;
+        }
+        let Some(project_id) = self.selected_project().map(|project| project.id) else {
+            return;
+        };
+        let candidate = match self.manager.ready_tasks(project_id) {
+            Ok(tasks) => tasks.into_iter().next(),
+            Err(error) => {
+                self.error = Some(error.to_string());
+                return;
+            }
+        };
+        let Some(candidate) = candidate else {
+            self.error = Some("There is no ready task in this project.".to_owned());
+            return;
+        };
+        if !herdr_session_available() {
+            self.error =
+                Some("Start Cronos-AI inside a Herdr-managed pane to run tasks.".to_owned());
+            return;
+        }
+        if let Err(error) = self
+            .manager
+            .validated_task_worktree_path(project_id, candidate.id)
+        {
+            self.error = Some(error.to_string());
+            return;
+        }
+        match self.manager.start_next_task(project_id) {
+            Ok(Some(task)) => {
+                if let Err(error) = self.launch_pi_for_task(project_id, task.id) {
+                    let _ = self
+                        .manager
+                        .set_task_status(project_id, task.id, TaskStatus::Error);
+                    self.error = Some(error);
+                    self.refresh_for_ui();
+                }
+            }
+            Ok(None) => {
+                self.error = Some("The project queue is already active or blocked.".to_owned())
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
+    fn launch_pi_for_task(
+        &mut self,
+        project_id: crate::model::ProjectId,
+        task_id: crate::model::TaskId,
+    ) -> Result<(), String> {
+        if !herdr_session_available() {
+            return Err("Start Cronos-AI inside a Herdr-managed pane to run tasks.".to_owned());
+        }
+        let worktree = self
+            .manager
+            .validated_task_worktree_path(project_id, task_id)
+            .map_err(|error| error.to_string())?;
+        let extension = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("extensions")
+            .join("cronos-workflow.ts");
+        let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+        let commands = ToolCommands::default();
+        let command = commands
+            .pi_rpc_command(
+                &extension,
+                &worktree,
+                self.manager.data_dir(),
+                &executable,
+                project_id,
+                task_id,
+            )
+            .map_err(|error| error.to_string())?;
+        let handle = commands
+            .spawn_pi_rpc(command)
+            .map_err(|error| error.to_string())?;
+        self.workflow = Some(handle);
+        self.workflow_task = Some((project_id, task_id));
+        self.workflow_status = Some("Pi orchestrator started".to_owned());
+        self.error = None;
+        Ok(())
+    }
+
+    fn poll_workflow(&mut self) {
+        let Some(handle) = self.workflow.as_ref() else {
+            return;
+        };
+        while let Ok(event) = handle.events.try_recv() {
+            self.workflow_status = Some(terminal_safe(&event));
+        }
+        let finished = handle.finished.try_recv();
+        if matches!(finished, Err(std::sync::mpsc::TryRecvError::Empty)) {
+            return;
+        }
+        self.workflow = None;
+        let task_ids = self.workflow_task.take();
+        match finished {
+            Ok(Ok(())) => {
+                if let Some((project_id, task_id)) = task_ids {
+                    self.refresh_for_ui();
+                    if let Ok(task) = self.manager.get_task(project_id, task_id)
+                        && task.status == TaskStatus::InProgress
+                        && !task
+                            .current_step
+                            .as_deref()
+                            .and_then(WorkflowStep::parse)
+                            .is_some_and(WorkflowStep::requires_human_approval)
+                    {
+                        let _ =
+                            self.manager
+                                .set_task_status(project_id, task_id, TaskStatus::Error);
+                        self.error = Some(
+                            "Pi settled before completing the current workflow step.".to_owned(),
+                        );
+                        self.refresh_for_ui();
+                    }
+                }
+            }
+            Ok(Err(error)) => {
+                self.mark_workflow_error(task_ids);
+                self.error = Some(error);
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.mark_workflow_error(task_ids);
+                self.error = Some("Pi workflow monitor disconnected unexpectedly.".to_owned());
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+    }
+
+    fn mark_workflow_error(
+        &mut self,
+        task_ids: Option<(crate::model::ProjectId, crate::model::TaskId)>,
+    ) {
+        if let Some((project_id, task_id)) = task_ids {
+            if matches!(
+                self.manager.get_task(project_id, task_id),
+                Ok(Task {
+                    status: TaskStatus::InProgress,
+                    ..
+                })
+            ) {
+                let _ = self
+                    .manager
+                    .set_task_status(project_id, task_id, TaskStatus::Error);
+            }
+            self.refresh_for_ui();
+        }
     }
 }
 
@@ -343,6 +532,7 @@ pub fn run(data_dir: PathBuf) -> Result<(), Box<dyn Error>> {
     let mut last_refresh = Instant::now();
 
     while !app.should_quit {
+        app.poll_workflow();
         terminal.draw(|frame| draw(frame, &app))?;
         if event::poll(Duration::from_millis(200))? {
             match event::read()? {
@@ -390,16 +580,24 @@ fn draw(frame: &mut Frame, app: &Dashboard) {
     }
     let help = match app.screen {
         Screen::Projects => "↑/↓ select  Enter open  r refresh  q quit",
-        Screen::Tasks => "↑/↓ select  Enter details  Backspace projects  r refresh  q quit",
+        Screen::Tasks => {
+            "↑/↓ select  Enter details  s start next ready task  Backspace projects  r refresh  q quit"
+        }
         Screen::TaskDetail if app.active_approval_gate().is_some() => {
             "y approve  n request revision  a abandon  ↑/↓ activity  Backspace tasks  q quit"
         }
         Screen::TaskDetail => "a abandon  ↑/↓ activity  Backspace tasks  r refresh  q quit",
     };
-    let footer = app.error.as_deref().map_or_else(
-        || help.to_owned(),
-        |error| format!("{help}  |  Error: {}", terminal_safe(error)),
-    );
+    let footer = match (&app.workflow_status, &app.error) {
+        (Some(status), Some(error)) => format!(
+            "{help}  |  {}  |  Error: {}",
+            terminal_safe(status),
+            terminal_safe(error)
+        ),
+        (Some(status), None) => format!("{help}  |  {}", terminal_safe(status)),
+        (None, Some(error)) => format!("{help}  |  Error: {}", terminal_safe(error)),
+        (None, None) => help.to_owned(),
+    };
     frame.render_widget(
         Paragraph::new(footer).block(Block::default().borders(Borders::TOP)),
         areas[1],
@@ -720,7 +918,7 @@ fn agent_status_label(status: &AgentStatus) -> &'static str {
 mod tests {
     use super::{Dashboard, Dialog, Screen};
     use crate::{
-        model::{AgentStatus, ApprovalDecision, ApprovalGate, Priority, TaskStatus},
+        model::{AgentStatus, ApprovalDecision, ApprovalGate, Priority, TaskStatus, WorkflowStep},
         project::ProjectManager,
     };
     use crossterm::event::KeyCode;
@@ -788,11 +986,9 @@ mod tests {
                 Vec::new(),
             )
             .unwrap();
+        writer.start_next_task(project.id).unwrap().unwrap();
         writer
-            .set_task_status(project.id, task.id, TaskStatus::InProgress)
-            .unwrap();
-        writer
-            .set_task_step(project.id, task.id, "specification-approval".to_owned())
+            .complete_workflow_step(project.id, task.id, WorkflowStep::SpecificationGeneration)
             .unwrap();
         let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
         app.handle_key(KeyCode::Enter);
@@ -820,7 +1016,7 @@ mod tests {
         );
 
         writer
-            .set_task_step(project.id, task.id, "specification-approval".to_owned())
+            .complete_workflow_step(project.id, task.id, WorkflowStep::SpecificationGeneration)
             .unwrap();
         app.refresh().unwrap();
         app.handle_key(KeyCode::Char('y'));
@@ -828,9 +1024,13 @@ mod tests {
         assert_eq!(approved.current_step.as_deref(), Some("code-generation"));
         assert!(approved.is_approved(ApprovalGate::Specifications));
 
-        for step in ["code-review", "verification", "final-approval"] {
+        for step in [
+            WorkflowStep::CodeGeneration,
+            WorkflowStep::CodeReview,
+            WorkflowStep::Verification,
+        ] {
             writer
-                .set_task_step(project.id, task.id, step.to_owned())
+                .complete_workflow_step(project.id, task.id, step)
                 .unwrap();
         }
         app.refresh().unwrap();
@@ -851,9 +1051,13 @@ mod tests {
             ApprovalDecision::Rejected
         );
 
-        for step in ["code-review", "verification", "final-approval"] {
+        for step in [
+            WorkflowStep::CodeGeneration,
+            WorkflowStep::CodeReview,
+            WorkflowStep::Verification,
+        ] {
             writer
-                .set_task_step(project.id, task.id, step.to_owned())
+                .complete_workflow_step(project.id, task.id, step)
                 .unwrap();
         }
         app.refresh().unwrap();
@@ -899,6 +1103,29 @@ mod tests {
     }
 
     #[test]
+    fn starting_the_queue_does_not_claim_a_task_without_a_valid_worktree() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(root.path()).unwrap();
+        let project = manager.create_project("Demo".to_owned(), None).unwrap();
+        let task = manager
+            .create_task(
+                project.id,
+                "Needs worktree".to_owned(),
+                None,
+                Priority::Medium,
+                Vec::new(),
+            )
+            .unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+        app.handle_key(KeyCode::Enter);
+        app.handle_key(KeyCode::Char('s'));
+        assert_eq!(
+            manager.get_task(project.id, task.id).unwrap().status,
+            TaskStatus::Pending
+        );
+    }
+
+    #[test]
     fn refresh_reads_workflow_updates_from_the_shared_store() {
         let root = tempfile::tempdir().unwrap();
         let writer = ProjectManager::new(root.path()).unwrap();
@@ -914,18 +1141,13 @@ mod tests {
             .unwrap();
         let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
         app.handle_key(KeyCode::Enter);
-        writer
-            .set_task_status(project.id, task.id, TaskStatus::InProgress)
-            .unwrap();
-        writer
-            .set_task_step(project.id, task.id, "spec-generation".to_owned())
-            .unwrap();
+        writer.start_next_task(project.id).unwrap().unwrap();
         writer
             .record_agent_activity(
                 project.id,
                 task.id,
                 "spec-writer".to_owned(),
-                "spec-generation".to_owned(),
+                "specification-generation".to_owned(),
                 AgentStatus::Running,
                 Some("drafting proposal".to_owned()),
             )
@@ -933,7 +1155,10 @@ mod tests {
         app.refresh().unwrap();
         let task = app.selected_task().unwrap();
         assert_eq!(task.status, TaskStatus::InProgress);
-        assert_eq!(task.current_step.as_deref(), Some("spec-generation"));
+        assert_eq!(
+            task.current_step.as_deref(),
+            Some("specification-generation")
+        );
         assert_eq!(task.agent_activity.len(), 1);
         assert_eq!(app.selected_activity, 0);
 
@@ -942,7 +1167,7 @@ mod tests {
                 project.id,
                 task.id,
                 "spec-writer".to_owned(),
-                "spec-generation".to_owned(),
+                "specification-generation".to_owned(),
                 AgentStatus::Completed,
                 Some("draft ready".to_owned()),
             )

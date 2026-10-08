@@ -1,12 +1,16 @@
 use std::{
     env,
     ffi::OsStr,
-    io::{self, BufRead, Write},
+    io::{self, BufRead, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
+    sync::mpsc,
+    thread,
 };
 
 use thiserror::Error;
+
+use crate::model::{ProjectId, TaskId};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RequiredTool {
@@ -47,6 +51,25 @@ pub enum IntegrationError {
     InvalidAgentName,
     #[error("{0} path must be absolute")]
     RelativePath(&'static str),
+    #[error("Herdr returned an invalid pane-split response")]
+    InvalidHerdrResponse,
+}
+
+enum PiRpcInput {
+    Abort,
+    Shutdown,
+}
+
+pub struct PiRpcHandle {
+    pub events: mpsc::Receiver<String>,
+    pub finished: mpsc::Receiver<Result<(), String>>,
+    input: mpsc::Sender<PiRpcInput>,
+}
+
+impl PiRpcHandle {
+    pub fn abort(&self) {
+        let _ = self.input.send(PiRpcInput::Abort);
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -69,6 +92,109 @@ impl Default for ToolCommands {
 }
 
 impl ToolCommands {
+    pub fn spawn_pi_rpc(&self, mut command: Command) -> Result<PiRpcHandle, IntegrationError> {
+        let mut child = command
+            .spawn()
+            .map_err(|source| IntegrationError::Io { tool: "pi", source })?;
+        let stdin = child.stdin.take().ok_or_else(|| IntegrationError::Io {
+            tool: "pi",
+            source: io::Error::new(io::ErrorKind::BrokenPipe, "Pi stdin was not piped"),
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| IntegrationError::Io {
+            tool: "pi",
+            source: io::Error::new(io::ErrorKind::BrokenPipe, "Pi stdout was not piped"),
+        })?;
+        let stderr = child.stderr.take().ok_or_else(|| IntegrationError::Io {
+            tool: "pi",
+            source: io::Error::new(io::ErrorKind::BrokenPipe, "Pi stderr was not piped"),
+        })?;
+        let (input, input_rx) = mpsc::channel();
+        let (events_tx, events) = mpsc::channel();
+        let (finished_tx, finished) = mpsc::channel();
+        let input_from_reader = input.clone();
+
+        thread::spawn(move || {
+            let writer = thread::spawn(move || {
+                let mut stdin = BufWriter::new(stdin);
+                while let Ok(message) = input_rx.recv() {
+                    let command = match message {
+                        PiRpcInput::Abort => r#"{"type":"abort"}"#,
+                        PiRpcInput::Shutdown => break,
+                    };
+                    if writeln!(stdin, "{command}")
+                        .and_then(|()| stdin.flush())
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+            let stderr_reader = thread::spawn(move || {
+                let mut contents = String::new();
+                let _ = BufReader::new(stderr).read_to_string(&mut contents);
+                contents
+            });
+
+            let mut settled = false;
+            for line in BufReader::new(stdout).lines() {
+                let line = match line {
+                    Ok(line) => line,
+                    Err(error) => {
+                        let _ = events_tx.send(format!("Pi RPC stdout error: {error}"));
+                        break;
+                    }
+                };
+                let Ok(record) = serde_json::from_str::<serde_json::Value>(&line) else {
+                    let _ = events_tx.send("Pi RPC emitted invalid JSON".to_owned());
+                    continue;
+                };
+                match record.get("type").and_then(serde_json::Value::as_str) {
+                    Some("agent_settled") => {
+                        settled = true;
+                        let _ = events_tx.send("Pi workflow settled".to_owned());
+                        let _ = input_from_reader.send(PiRpcInput::Shutdown);
+                        break;
+                    }
+                    Some("extension_error") => {
+                        let message = record
+                            .get("error")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("Pi extension error");
+                        let _ = events_tx.send(message.to_owned());
+                    }
+                    Some("response")
+                        if record.get("success") == Some(&serde_json::Value::Bool(false)) =>
+                    {
+                        let message = record
+                            .get("error")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("Pi RPC command failed");
+                        let _ = events_tx.send(message.to_owned());
+                    }
+                    _ => {}
+                }
+            }
+            let _ = input_from_reader.send(PiRpcInput::Shutdown);
+            let _ = writer.join();
+            let stderr = stderr_reader.join().unwrap_or_default();
+            let result = match child.wait() {
+                Ok(status) if status.success() => Ok(()),
+                Ok(status) => Err(format!("Pi exited with {status}: {}", stderr.trim())),
+                Err(error) => Err(format!("could not wait for Pi: {error}")),
+            };
+            if !settled && result.is_ok() {
+                let _ = events_tx.send("Pi exited before the workflow settled".to_owned());
+            }
+            let _ = finished_tx.send(result);
+        });
+
+        Ok(PiRpcHandle {
+            events,
+            finished,
+            input,
+        })
+    }
+
     pub fn with_paths(pi: PathBuf, herdr: PathBuf, openspec: PathBuf, git: PathBuf) -> Self {
         Self {
             pi,
@@ -92,6 +218,8 @@ impl ToolCommands {
         worktree: &Path,
         data_dir: &Path,
         executable_path: &Path,
+        project_id: ProjectId,
+        task_id: TaskId,
     ) -> Result<Command, IntegrationError> {
         for (name, path) in [
             ("extension", extension),
@@ -109,16 +237,51 @@ impl ToolCommands {
                 OsStr::new("--mode"),
                 OsStr::new("rpc"),
                 OsStr::new("--no-session"),
+                OsStr::new("--no-extensions"),
+                OsStr::new("--no-builtin-tools"),
+                OsStr::new("--no-mcp"),
+                OsStr::new("--no-skills"),
+                OsStr::new("--no-context-files"),
             ])
             .arg("--extension")
             .arg(extension)
             .current_dir(worktree)
             .env("CRONOS_AI_BIN", executable_path)
             .env("CRONOS_AI_DATA_DIR", data_dir)
+            .env("CRONOS_PROJECT_ID", project_id.0.to_string())
+            .env("CRONOS_TASK_ID", task_id.0.to_string())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         Ok(command)
+    }
+
+    pub fn herdr_split_pane(&self, worktree: &Path) -> Result<String, IntegrationError> {
+        if !worktree.is_absolute() {
+            return Err(IntegrationError::RelativePath("worktree"));
+        }
+        let output = self.run(
+            RequiredTool::Herdr,
+            &[
+                OsStr::new("pane"),
+                OsStr::new("split"),
+                OsStr::new("--current"),
+                OsStr::new("--direction"),
+                OsStr::new("right"),
+                OsStr::new("--cwd"),
+                worktree.as_os_str(),
+                OsStr::new("--no-focus"),
+            ],
+        )?;
+        serde_json::from_slice::<serde_json::Value>(&output.stdout)
+            .ok()
+            .and_then(|response| {
+                response
+                    .pointer("/result/pane/pane_id")?
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .ok_or(IntegrationError::InvalidHerdrResponse)
     }
 
     pub fn herdr_start_pi_agent(
@@ -159,6 +322,21 @@ impl ToolCommands {
                 OsStr::new("120000"),
             ],
         )
+    }
+
+    pub fn herdr_agent_status(&self, name: &str) -> Result<String, IntegrationError> {
+        if !valid_agent_name(name) {
+            return Err(IntegrationError::InvalidAgentName);
+        }
+        let output = self.run(
+            RequiredTool::Herdr,
+            &[OsStr::new("agent"), OsStr::new("get"), OsStr::new(name)],
+        )?;
+        let response: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .map_err(|_| IntegrationError::InvalidHerdrResponse)?;
+        find_herdr_status(&response)
+            .map(str::to_owned)
+            .ok_or(IntegrationError::InvalidHerdrResponse)
     }
 
     pub fn herdr_cancel_agent(&self, name: &str) -> Result<Output, IntegrationError> {
@@ -300,6 +478,21 @@ pub fn prompt_to_install<R: BufRead, W: Write>(
     Ok(!response.trim().eq_ignore_ascii_case("q"))
 }
 
+fn find_herdr_status(value: &serde_json::Value) -> Option<&str> {
+    match value {
+        serde_json::Value::Object(object) => {
+            if let Some(status) = object.get("status").and_then(serde_json::Value::as_str)
+                && matches!(status, "idle" | "working" | "blocked" | "done" | "unknown")
+            {
+                return Some(status);
+            }
+            object.values().find_map(find_herdr_status)
+        }
+        serde_json::Value::Array(items) => items.iter().find_map(find_herdr_status),
+        _ => None,
+    }
+}
+
 fn valid_agent_name(name: &str) -> bool {
     let mut chars = name.chars();
     matches!(chars.next(), Some('a'..='z'))
@@ -313,7 +506,26 @@ mod tests {
         IntegrationError, RequiredTool, ToolCommands, missing_required_tools_with,
         prompt_to_install, require_tools,
     };
-    use std::{ffi::OsStr, fs, io::Cursor, os::unix::fs::PermissionsExt, path::PathBuf};
+    use std::{
+        ffi::OsStr,
+        fs,
+        io::Cursor,
+        os::unix::fs::PermissionsExt,
+        path::{Path, PathBuf},
+    };
+
+    fn fake_json_command(directory: &std::path::Path) -> PathBuf {
+        let path = directory.join("fake-json");
+        fs::write(
+            &path,
+            "#!/bin/sh\nprintf '%s' '{\"result\":{\"pane\":{\"pane_id\":\"w1:p9\"}}}'\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&path, permissions).unwrap();
+        path
+    }
 
     fn fake_command(directory: &std::path::Path, exit: i32) -> PathBuf {
         let path = directory.join(format!("fake-{exit}"));
@@ -412,6 +624,35 @@ mod tests {
     }
 
     #[test]
+    fn herdr_split_adapter_extracts_server_assigned_pane_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let commands = commands(fake_json_command(temp.path()));
+        assert_eq!(commands.herdr_split_pane(temp.path()).unwrap(), "w1:p9");
+        assert!(matches!(
+            commands.herdr_split_pane(Path::new("relative")),
+            Err(IntegrationError::RelativePath("worktree"))
+        ));
+    }
+
+    #[test]
+    fn herdr_status_adapter_recognizes_blocked_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("fake-status");
+        fs::write(
+            &path,
+            "#!/bin/sh\nprintf '%s' '{\"result\":{\"agent\":{\"status\":\"blocked\"}}}'\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&path, permissions).unwrap();
+        assert_eq!(
+            commands(path).herdr_agent_status("reviewer").unwrap(),
+            "blocked"
+        );
+    }
+
+    #[test]
     fn openspec_and_git_adapters_preserve_argument_boundaries() {
         let temp = tempfile::tempdir().unwrap();
         let fake = fake_command(temp.path(), 0);
@@ -431,6 +672,51 @@ mod tests {
     }
 
     #[test]
+    fn pi_rpc_host_drains_events_until_the_agent_settles() {
+        let temp = tempfile::tempdir().unwrap();
+        let fake = temp.path().join("fake-pi");
+        fs::write(
+            &fake,
+            "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"agent_settled\"}'\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&fake).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&fake, permissions).unwrap();
+        let tools = ToolCommands::with_paths(
+            fake,
+            PathBuf::from("herdr"),
+            PathBuf::from("openspec"),
+            PathBuf::from("git"),
+        );
+        let command = tools
+            .pi_rpc_command(
+                Path::new("/extension.ts"),
+                temp.path(),
+                temp.path(),
+                Path::new("/cronos-ai"),
+                crate::model::ProjectId::new(),
+                crate::model::TaskId::new(),
+            )
+            .unwrap();
+        let handle = tools.spawn_pi_rpc(command).unwrap();
+        assert_eq!(
+            handle
+                .events
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap(),
+            "Pi workflow settled"
+        );
+        assert!(
+            handle
+                .finished
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap()
+                .is_ok()
+        );
+    }
+
+    #[test]
     fn pi_rpc_command_uses_project_extension_without_shell() {
         let temp = tempfile::tempdir().unwrap();
         let pi = PathBuf::from("pi");
@@ -446,6 +732,8 @@ mod tests {
                 temp.path(),
                 PathBuf::from("/tmp/cronos data").as_path(),
                 PathBuf::from("/usr/bin/cronos-ai").as_path(),
+                crate::model::ProjectId::new(),
+                crate::model::TaskId::new(),
             )
             .unwrap();
         assert_eq!(command.get_program(), OsStr::new("pi"));
@@ -455,11 +743,16 @@ mod tests {
                 OsStr::new("--mode"),
                 OsStr::new("rpc"),
                 OsStr::new("--no-session"),
+                OsStr::new("--no-extensions"),
+                OsStr::new("--no-builtin-tools"),
+                OsStr::new("--no-mcp"),
+                OsStr::new("--no-skills"),
+                OsStr::new("--no-context-files"),
                 OsStr::new("--extension"),
                 OsStr::new("/project/extensions/workflow.ts"),
             ]
         );
         assert_eq!(command.get_current_dir(), Some(temp.path()));
-        assert_eq!(command.get_envs().count(), 2);
+        assert_eq!(command.get_envs().count(), 4);
     }
 }

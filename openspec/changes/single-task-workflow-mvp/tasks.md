@@ -22,7 +22,7 @@
 
 ## 5. Workflow execution and recovery
 
-- [ ] 5.1 Implement Pi-driven task orchestration with Rust queue/state support, ordered steps, priority/dependency selection, and parallel independent agents within each step; add tests proving step barriers, task serialization, and within-step concurrency, and document the workflow states.
+- [x] 5.1 Implement Pi-driven task orchestration with Rust queue/state support, ordered steps, priority/dependency selection, and parallel independent agents within each step; add tests proving step barriers, task serialization, and within-step concurrency, and document the workflow states.
 - [ ] 5.2 Implement failure cancellation, Error status, retry from specification generation with downstream outputs discarded, and clarification-driven spec replacement/approval; add tests for sibling cancellation, ignored late results, Error-to-In Progress transitions, and recovery behavior, and document the recovery flow.
 - [ ] 5.3 Implement per-task Git worktrees, documentation generation after final approval, and local merge without remote push; add tests for approval gating, successful local completion, merge conflicts, and absence of push calls, and document local completion and manual publishing.
 

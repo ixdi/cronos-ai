@@ -44,6 +44,21 @@ pub struct ProjectStore {
 }
 
 impl ProjectStore {
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn expected_task_worktree_path(&self, project_id: ProjectId, task_id: TaskId) -> PathBuf {
+        self.root
+            .join("worktrees")
+            .join(project_id.0.to_string())
+            .join(task_id.0.to_string())
+    }
+
+    pub fn worktrees_root(&self) -> PathBuf {
+        self.root.join("worktrees")
+    }
+
     pub fn new(root: impl AsRef<Path>) -> Result<Self, StoreError> {
         fs::create_dir_all(root.as_ref())?;
         let root = fs::canonicalize(root)?;
