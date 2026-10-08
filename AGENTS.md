@@ -2,6 +2,8 @@
 
 Cronos-AI is a multi-agent architecture designed to create complete products from scratch. It is based on the concept of "software factories" and uses a workflow supervised by humans as an execution environment to manage multiple agents working in parallel.
 
+Within a task, workflow steps run sequentially: the next step starts only after the current step is complete. Independent sub-agents assigned to the same step run in parallel. In the first implementation, tasks themselves are processed sequentially; running multiple tasks in parallel is planned for a later approach.
+
 The file `design/design.md` provides a detailed description of the agents used in Cronos-AI, their roles, and how they interact within the system. Each agent is designed to perform specific tasks, contributing to the overall goal of building software products efficiently.
 
 Cronos-AI is developed with a focus on modularity, allowing it to handle new features easly for Cronos-AI, when required.
@@ -18,6 +20,6 @@ Code security verification and code quality checks will be performed automatical
 
 The creation of Cronos-AI must specify or create the skills, extensions and mcp definitions required for the agents to perform their tasks effectively. These definitions will serve as a blueprint for the agents, guiding their behavior and interactions within the system.
 
-This first implementation will allow users to create a project, create its tasks and store them, initiate a task and its workflow agents, monitor agent activities, and manage the overall task development process following the defined steps.
+This first implementation will allow users to create a project, create its tasks and store them, initiate a task and its workflow agents, monitor agent activities, and manage the overall task development process following the defined steps. For each task, those steps run sequentially, while independent sub-agents within a step run in parallel.
 
-The next approach will allow to run multiple tasks in parallel, enabling the system to handle complex projects with multiple agents working simultaneously on different tasks of a product.
+A later approach will allow multiple tasks to run in parallel, enabling the system to handle complex projects with agents working simultaneously on different tasks. This does not change the sequential order of steps within each task.

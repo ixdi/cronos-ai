@@ -1,10 +1,10 @@
 # Cronos-AI - AI Software Factory
 
-It is a pi-mono workflow that processes tasks in a sequential manner.
+It is a pi-mono workflow that processes each task through an ordered sequence of steps.
 
-It is an opinionated framework to create projects and process its tasks in a sequential manner.
+It is an opinionated framework to create projects and process their tasks. In the first implementation, tasks are handled one at a time. Within each task, workflow steps run sequentially: a step starts only after the preceding step is complete. Independent sub-agents assigned to the same step run in parallel, and the workflow advances after they finish.
 
-Each project consists of several tasks, and each task follows a workflow steps, that allows to process tasks efficiently and effectively, ensuring that each task is completed accurately.
+Each project consists of several tasks, and each task follows the defined workflow steps, allowing tasks to be processed efficiently and accurately.
 
 Each project and each task have a status, which is updated as the workflow progresses. The status of each task is
 tracked in the project JSON file, allowing for easy monitoring. The status are:
@@ -23,8 +23,8 @@ tracked in the project JSON file, allowing for easy monitoring. The status are:
 - herdr to review what is happening in the workflow and to manage the sub-agents.
 - jev to prioritize the tasks and manage the dependencies between them.
 - openspec to generate the specifications for each task.
-- sub-agents pi extension to create sub-agents for each task, allowing for parallel processing and improved task management. Following the defined steps, the sub-agents will execute their assigned tasks and report back the results.
-  - sub-agents follows the workflow defined in the steps, including prompt generation, code generation, code review, verification, and human approval. The workflow is defined as a pi workflow and is executed by the sub-agents in a sequential manner, ensuring that each task is completed accurately and efficiently.
+- sub-agents pi extension to create sub-agents for each task step, allowing independent work within a step to run in parallel. The workflow advances to the next step only after the current step's sub-agents have reported their results.
+  - Each task follows the defined steps, including prompt generation, code generation, code review, verification, and human approval. Those steps run sequentially; independent sub-agents within a step run in parallel.
 - Each step agent type can have its own specific model, allowing for flexibility and adaptability in the workflow.
   - Each agent also has its own blueprint context, with extensions, mcp servers and skills, allowing for better understanding and execution of the tasks.
 - A project is attached to a github repository. The commits after the human approval follow the commitlint and are uniquely and well-defined, allowing for easy tracking and management of the codebase.
@@ -80,7 +80,7 @@ A project can be archived, which means that it is no longer active and will not 
 
 ## Steps for each project
 
-Each step needs its own model, context, and skills, which is used to process the tasks and execute the workflow. The steps are defined in a sequential manner, ensuring that each task is completed accurately and efficiently.
+Each step needs its own model, context, and skills to process tasks and execute the workflow. Within a task, steps run in their defined order, and the next step waits until the current step is complete. Independent sub-agents within a step run in parallel. The first implementation processes one task at a time; parallel execution of multiple tasks is a later approach.
 
 ### 1. Tasks Collection
 
@@ -104,14 +104,13 @@ Jev model is used in this step.
 
 ### 3. Prompt Generation
 
-Once the next tasks selected, a prompt is generated for the task, providing clear instructions and context for the agent responsible for executing them.
+Once the next task is selected, a prompt is generated for it, providing clear instructions and context for the agent responsible for execution.
 
-The prompt is passed to the sub-agents extension. It is used to create sub-agents for each task, allowing for parallel processing and improved task management.
+The prompt is passed to the sub-agents extension, which creates the agents assigned to the task's current step. Independent agents in that step may run in parallel; the workflow waits for the step to finish before starting the next one.
 
 ### 3. Sub-agents workflow
 
-For each task, a sub-agent is created to handle its execution. The sub-agents operate independently, allowing for
-concurrent processing of multiple tasks. Each sub-agent is responsible for executing its assigned task and reporting back the results.
+For each task, sub-agents handle the work assigned to each workflow step. Independent sub-agents within the same step operate concurrently and report their results before the workflow advances. In the first implementation, only one task is processed at a time; parallel execution across multiple tasks is planned for a later approach.
 
 Herdr is used to manage the sub-agents and review their activities. The Dashboard html page is updated in real-time to reflect the progress of each sub-agent, providing visibility into the overall workflow.
 
@@ -134,7 +133,7 @@ Once the specs are approved, code is generated for the task. This may involve wr
 
 #### 3.4 Code Review
 
-After the code is generated, a review process is conducted to ensure many steps that run in parallel. Each step runs in a different sub-agent.
+After the code is generated, independent code-review agents run in parallel within this step. The workflow proceeds to verification only after all review agents have reported their results.
 
 - Code quality checks are conducted to ensure that the code adheres to best practices and coding standards.
 - Performance optimization is carried out to enhance the efficiency and speed of the code.
