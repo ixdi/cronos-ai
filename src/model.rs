@@ -7,6 +7,9 @@ use uuid::Uuid;
 const MAX_NAME_CHARS: usize = 200;
 const MAX_DESCRIPTION_CHARS: usize = 10_000;
 const MAX_STEP_NAME_CHARS: usize = 100;
+const MAX_AGENT_NAME_CHARS: usize = 100;
+const MAX_AGENT_DETAIL_CHARS: usize = 2_000;
+pub const MAX_AGENT_EVENTS: usize = 100;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(transparent)]
@@ -87,6 +90,27 @@ impl Project {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentStatus {
+    Starting,
+    Running,
+    Waiting,
+    Completed,
+    Failed,
+    Cancelled,
+    Blocked,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AgentActivity {
+    pub agent_name: String,
+    pub step: String,
+    pub status: AgentStatus,
+    pub detail: Option<String>,
+    pub updated_at_unix_secs: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Task {
     pub id: TaskId,
     pub project_id: ProjectId,
@@ -97,6 +121,8 @@ pub struct Task {
     pub status: TaskStatus,
     pub current_step: Option<String>,
     pub step_started_at_unix_secs: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub agent_activity: Vec<AgentActivity>,
     pub worktree: Option<String>,
     pub created_at_unix_secs: u64,
     pub updated_at_unix_secs: u64,
@@ -133,6 +159,18 @@ impl Task {
         {
             return Err(ModelError::InvalidStepName);
         }
+        if self.agent_activity.len() > MAX_AGENT_EVENTS {
+            return Err(ModelError::TooManyAgentEvents);
+        }
+        for activity in &self.agent_activity {
+            validate_required_text("agent name", &activity.agent_name, MAX_AGENT_NAME_CHARS)?;
+            validate_required_text("agent step", &activity.step, MAX_STEP_NAME_CHARS)?;
+            validate_optional_text(
+                "agent activity detail",
+                activity.detail.as_deref(),
+                MAX_AGENT_DETAIL_CHARS,
+            )?;
+        }
 
         Ok(())
     }
@@ -152,6 +190,8 @@ pub enum ModelError {
     DuplicateDependency,
     #[error("workflow step names must be nonblank and at most {MAX_STEP_NAME_CHARS} characters")]
     InvalidStepName,
+    #[error("task contains more than {MAX_AGENT_EVENTS} agent activity events")]
+    TooManyAgentEvents,
 }
 
 fn validate_required_text(
@@ -203,6 +243,7 @@ mod tests {
             status: TaskStatus::Pending,
             current_step: None,
             step_started_at_unix_secs: BTreeMap::new(),
+            agent_activity: Vec::new(),
             worktree: None,
             created_at_unix_secs: 0,
             updated_at_unix_secs: 0,
@@ -243,6 +284,14 @@ mod tests {
             task(TaskId::new(), vec![dependency, dependency]).validate(),
             Err(ModelError::DuplicateDependency)
         );
+    }
+
+    #[test]
+    fn legacy_task_without_agent_activity_deserializes_with_empty_activity() {
+        let mut value = serde_json::to_value(task(TaskId::new(), Vec::new())).unwrap();
+        value.as_object_mut().unwrap().remove("agent_activity");
+        let task: Task = serde_json::from_value(value).unwrap();
+        assert!(task.agent_activity.is_empty());
     }
 
     #[test]

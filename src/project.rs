@@ -7,7 +7,10 @@ use std::{
 use thiserror::Error;
 
 use crate::{
-    model::{ModelError, Priority, Project, ProjectId, ProjectStatus, Task, TaskId, TaskStatus},
+    model::{
+        AgentActivity, AgentStatus, MAX_AGENT_EVENTS, ModelError, Priority, Project, ProjectId,
+        ProjectStatus, Task, TaskId, TaskStatus,
+    },
     storage::{ProjectStore, StoreError},
 };
 
@@ -138,6 +141,7 @@ impl ProjectManager {
             status: TaskStatus::Pending,
             current_step: None,
             step_started_at_unix_secs: Default::default(),
+            agent_activity: Vec::new(),
             worktree: None,
             created_at_unix_secs: now,
             updated_at_unix_secs: now,
@@ -194,6 +198,36 @@ impl ProjectManager {
         let now = now_unix_secs()?;
         task.current_step = Some(step.clone());
         task.step_started_at_unix_secs.insert(step, now);
+        task.updated_at_unix_secs = now;
+        task.validate()?;
+        self.store.save_task(&task)?;
+        Ok(task)
+    }
+
+    pub fn record_agent_activity(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        agent_name: String,
+        step: String,
+        status: AgentStatus,
+        detail: Option<String>,
+    ) -> Result<Task, ProjectError> {
+        let mut task = self.store.load_task(project_id, task_id)?;
+        if task.status != TaskStatus::InProgress {
+            return Err(ProjectError::TaskNotInProgress(task.status));
+        }
+        let now = now_unix_secs()?;
+        task.agent_activity.push(AgentActivity {
+            agent_name,
+            step,
+            status,
+            detail,
+            updated_at_unix_secs: now,
+        });
+        if task.agent_activity.len() > MAX_AGENT_EVENTS {
+            task.agent_activity.remove(0);
+        }
         task.updated_at_unix_secs = now;
         task.validate()?;
         self.store.save_task(&task)?;
@@ -258,7 +292,9 @@ fn now_unix_secs() -> Result<u64, ProjectError> {
 #[cfg(test)]
 mod tests {
     use super::{ProjectError, ProjectManager};
-    use crate::model::{Priority, ProjectId, ProjectStatus, TaskStatus};
+    use crate::model::{
+        AgentStatus, MAX_AGENT_EVENTS, Priority, ProjectId, ProjectStatus, TaskStatus,
+    };
 
     #[test]
     fn project_crud_and_archive_persist() {
@@ -355,6 +391,56 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let manager = ProjectManager::new(root.path()).unwrap();
         assert!(manager.select_project(ProjectId::new()).is_err());
+    }
+
+    #[test]
+    fn agent_activity_is_persisted_only_for_running_tasks_and_bounded() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(root.path()).unwrap();
+        let project = manager.create_project("Factory".to_owned(), None).unwrap();
+        let task = manager
+            .create_task(
+                project.id,
+                "Monitor workers".to_owned(),
+                None,
+                Priority::Medium,
+                Vec::new(),
+            )
+            .unwrap();
+        assert!(matches!(
+            manager.record_agent_activity(
+                project.id,
+                task.id,
+                "coder".to_owned(),
+                "code-generation".to_owned(),
+                AgentStatus::Running,
+                None,
+            ),
+            Err(ProjectError::TaskNotInProgress(TaskStatus::Pending))
+        ));
+        manager
+            .set_task_status(project.id, task.id, TaskStatus::InProgress)
+            .unwrap();
+
+        for index in 0..=MAX_AGENT_EVENTS {
+            manager
+                .record_agent_activity(
+                    project.id,
+                    task.id,
+                    format!("agent-{index}"),
+                    "code-generation".to_owned(),
+                    AgentStatus::Running,
+                    Some("working".to_owned()),
+                )
+                .unwrap();
+        }
+        let stored = manager.get_task(project.id, task.id).unwrap();
+        assert_eq!(stored.agent_activity.len(), MAX_AGENT_EVENTS);
+        assert_eq!(stored.agent_activity[0].agent_name, "agent-1");
+        assert_eq!(
+            stored.agent_activity.last().unwrap().agent_name,
+            "agent-100"
+        );
     }
 
     #[test]

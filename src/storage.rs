@@ -267,6 +267,7 @@ mod tests {
             status: TaskStatus::Pending,
             current_step: None,
             step_started_at_unix_secs: BTreeMap::new(),
+            agent_activity: Vec::new(),
             worktree: None,
             created_at_unix_secs: 2,
             updated_at_unix_secs: 2,
