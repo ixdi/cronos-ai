@@ -38,7 +38,7 @@ The Rust state layer selects one ready task at a time by dependency readiness an
 
 ### Human recovery starts a fresh specification-based attempt
 
-On retry, restart at specification generation and discard outputs downstream of the specifications from the previous attempt rather than reusing them. Keep attempt/status metadata for task history, but do not retain prior downstream outputs as active task artifacts. For clarification, create or replace the specifications from the updated context and require approval before continuing to code generation. Once the human's choice resumes processing, transition Error to In Progress. Approval-step rejection follows its revision loop and does not set the terminal task status Rejected.
+Persist each human approval/revision decision with its gate, note, and timestamp. Specification approval is required before code generation; final-code approval is required before documentation and local merge. A rejected gate requires a revision note, returns to its generation step, and leaves the task In Progress. Only the explicit task-abandon action records a reason and sets Rejected. On retry, restart at specification generation and discard outputs downstream of the specifications from the previous attempt rather than reusing them. Keep attempt/status metadata for task history, but do not retain prior downstream outputs as active task artifacts. For clarification, create or replace the specifications from the updated context and require approval before continuing to code generation. Once the human's choice resumes processing, transition Error to In Progress.
 
 ### Keep work local after approval
 

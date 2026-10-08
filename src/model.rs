@@ -9,7 +9,9 @@ const MAX_DESCRIPTION_CHARS: usize = 10_000;
 const MAX_STEP_NAME_CHARS: usize = 100;
 const MAX_AGENT_NAME_CHARS: usize = 100;
 const MAX_AGENT_DETAIL_CHARS: usize = 2_000;
+const MAX_APPROVAL_NOTE_CHARS: usize = 2_000;
 pub const MAX_AGENT_EVENTS: usize = 100;
+pub const MAX_APPROVAL_RECORDS: usize = 100;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(transparent)]
@@ -110,6 +112,44 @@ pub struct AgentActivity {
     pub updated_at_unix_secs: u64,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalGate {
+    Specifications,
+    FinalCode,
+}
+
+impl ApprovalGate {
+    pub fn approval_step(self) -> &'static str {
+        match self {
+            Self::Specifications => "specification-approval",
+            Self::FinalCode => "final-approval",
+        }
+    }
+
+    pub fn revision_step(self) -> &'static str {
+        match self {
+            Self::Specifications => "specification-generation",
+            Self::FinalCode => "code-generation",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalDecision {
+    Approved,
+    Rejected,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ApprovalRecord {
+    pub gate: ApprovalGate,
+    pub decision: ApprovalDecision,
+    pub note: Option<String>,
+    pub decided_at_unix_secs: u64,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Task {
     pub id: TaskId,
@@ -123,12 +163,24 @@ pub struct Task {
     pub step_started_at_unix_secs: BTreeMap<String, u64>,
     #[serde(default)]
     pub agent_activity: Vec<AgentActivity>,
+    #[serde(default)]
+    pub approval_history: Vec<ApprovalRecord>,
+    #[serde(default)]
+    pub abandonment_note: Option<String>,
     pub worktree: Option<String>,
     pub created_at_unix_secs: u64,
     pub updated_at_unix_secs: u64,
 }
 
 impl Task {
+    pub fn is_approved(&self, gate: ApprovalGate) -> bool {
+        self.approval_history
+            .iter()
+            .rev()
+            .find(|record| record.gate == gate)
+            .is_some_and(|record| record.decision == ApprovalDecision::Approved)
+    }
+
     pub fn validate(&self) -> Result<(), ModelError> {
         validate_required_text("task title", &self.title, MAX_NAME_CHARS)?;
         validate_optional_text(
@@ -162,6 +214,14 @@ impl Task {
         if self.agent_activity.len() > MAX_AGENT_EVENTS {
             return Err(ModelError::TooManyAgentEvents);
         }
+        if self.approval_history.len() > MAX_APPROVAL_RECORDS {
+            return Err(ModelError::TooManyApprovalRecords);
+        }
+        validate_optional_text(
+            "task abandonment note",
+            self.abandonment_note.as_deref(),
+            MAX_APPROVAL_NOTE_CHARS,
+        )?;
         for activity in &self.agent_activity {
             validate_required_text("agent name", &activity.agent_name, MAX_AGENT_NAME_CHARS)?;
             validate_required_text("agent step", &activity.step, MAX_STEP_NAME_CHARS)?;
@@ -170,6 +230,21 @@ impl Task {
                 activity.detail.as_deref(),
                 MAX_AGENT_DETAIL_CHARS,
             )?;
+        }
+        for approval in &self.approval_history {
+            validate_optional_text(
+                "approval note",
+                approval.note.as_deref(),
+                MAX_APPROVAL_NOTE_CHARS,
+            )?;
+            if approval.decision == ApprovalDecision::Rejected
+                && approval
+                    .note
+                    .as_deref()
+                    .is_none_or(|note| note.trim().is_empty())
+            {
+                return Err(ModelError::MissingApprovalNote);
+            }
         }
 
         Ok(())
@@ -192,6 +267,10 @@ pub enum ModelError {
     InvalidStepName,
     #[error("task contains more than {MAX_AGENT_EVENTS} agent activity events")]
     TooManyAgentEvents,
+    #[error("task contains more than {MAX_APPROVAL_RECORDS} approval records")]
+    TooManyApprovalRecords,
+    #[error("rejected approvals must include a revision note")]
+    MissingApprovalNote,
 }
 
 fn validate_required_text(
@@ -244,6 +323,8 @@ mod tests {
             current_step: None,
             step_started_at_unix_secs: BTreeMap::new(),
             agent_activity: Vec::new(),
+            approval_history: Vec::new(),
+            abandonment_note: None,
             worktree: None,
             created_at_unix_secs: 0,
             updated_at_unix_secs: 0,
@@ -289,7 +370,10 @@ mod tests {
     #[test]
     fn legacy_task_without_agent_activity_deserializes_with_empty_activity() {
         let mut value = serde_json::to_value(task(TaskId::new(), Vec::new())).unwrap();
-        value.as_object_mut().unwrap().remove("agent_activity");
+        let object = value.as_object_mut().unwrap();
+        object.remove("agent_activity");
+        object.remove("approval_history");
+        object.remove("abandonment_note");
         let task: Task = serde_json::from_value(value).unwrap();
         assert!(task.agent_activity.is_empty());
     }

@@ -16,11 +16,14 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 
 use crate::{
-    model::{AgentActivity, AgentStatus, Priority, Project, ProjectStatus, Task, TaskStatus},
+    model::{
+        AgentActivity, AgentStatus, ApprovalDecision, ApprovalGate, Priority, Project,
+        ProjectStatus, Task, TaskStatus,
+    },
     project::{ProjectError, ProjectManager},
 };
 
@@ -29,6 +32,12 @@ enum Screen {
     Projects,
     Tasks,
     TaskDetail,
+}
+
+enum Dialog {
+    None,
+    Revision { gate: ApprovalGate, note: String },
+    Abandon { note: String },
 }
 
 struct Dashboard {
@@ -41,6 +50,7 @@ struct Dashboard {
     selected_activity: usize,
     should_quit: bool,
     error: Option<String>,
+    dialog: Dialog,
 }
 
 impl Dashboard {
@@ -55,6 +65,7 @@ impl Dashboard {
             selected_activity: 0,
             should_quit: false,
             error: None,
+            dialog: Dialog::None,
         })
     }
 
@@ -113,6 +124,10 @@ impl Dashboard {
     }
 
     fn handle_key(&mut self, key: KeyCode) {
+        if !matches!(&self.dialog, Dialog::None) {
+            self.handle_dialog_key(key);
+            return;
+        }
         if key == KeyCode::Char('q') {
             self.should_quit = true;
             return;
@@ -136,6 +151,19 @@ impl Dashboard {
             return;
         }
 
+        if self.screen == Screen::TaskDetail {
+            match key {
+                KeyCode::Char('y') => self.approve_active_gate(),
+                KeyCode::Char('n') => self.request_revision(),
+                KeyCode::Char('a') => self.open_abandon_dialog(),
+                _ => self.handle_navigation_key(key),
+            }
+            return;
+        }
+        self.handle_navigation_key(key);
+    }
+
+    fn handle_navigation_key(&mut self, key: KeyCode) {
         match (self.screen, key) {
             (Screen::Projects, KeyCode::Up) => {
                 self.selected_project = self.selected_project.saturating_sub(1);
@@ -182,6 +210,128 @@ impl Dashboard {
             }
             _ => {}
         }
+    }
+
+    fn active_approval_gate(&self) -> Option<ApprovalGate> {
+        match self.selected_task()?.current_step.as_deref()? {
+            "specification-approval" => Some(ApprovalGate::Specifications),
+            "final-approval" => Some(ApprovalGate::FinalCode),
+            _ => None,
+        }
+    }
+
+    fn approve_active_gate(&mut self) {
+        let Some(gate) = self.active_approval_gate() else {
+            self.error = Some("No approval gate is active for this task.".to_owned());
+            return;
+        };
+        self.save_approval(gate, ApprovalDecision::Approved, None);
+    }
+
+    fn request_revision(&mut self) {
+        let Some(gate) = self.active_approval_gate() else {
+            self.error = Some("No approval gate is active for this task.".to_owned());
+            return;
+        };
+        self.error = None;
+        self.dialog = Dialog::Revision {
+            gate,
+            note: String::new(),
+        };
+    }
+
+    fn open_abandon_dialog(&mut self) {
+        if self
+            .selected_task()
+            .is_some_and(|task| matches!(task.status, TaskStatus::Completed | TaskStatus::Rejected))
+        {
+            self.error = Some("This task is already terminal.".to_owned());
+            return;
+        }
+        self.error = None;
+        self.dialog = Dialog::Abandon {
+            note: String::new(),
+        };
+    }
+
+    fn handle_dialog_key(&mut self, key: KeyCode) {
+        if key == KeyCode::Esc {
+            self.dialog = Dialog::None;
+            return;
+        }
+        if key == KeyCode::Backspace {
+            match &mut self.dialog {
+                Dialog::Revision { note, .. } | Dialog::Abandon { note } => {
+                    note.pop();
+                }
+                Dialog::None => {}
+            }
+            return;
+        }
+        if let KeyCode::Char(character) = key {
+            match &mut self.dialog {
+                Dialog::Revision { note, .. } | Dialog::Abandon { note }
+                    if !character.is_control() && note.chars().count() < 2_000 =>
+                {
+                    note.push(character)
+                }
+                _ => {}
+            }
+            return;
+        }
+        if key != KeyCode::Enter {
+            return;
+        }
+        if matches!(
+            &self.dialog,
+            Dialog::Revision { note, .. } | Dialog::Abandon { note } if note.trim().is_empty()
+        ) {
+            self.error = Some("A nonblank note is required.".to_owned());
+            return;
+        }
+        let dialog = std::mem::replace(&mut self.dialog, Dialog::None);
+        match dialog {
+            Dialog::Revision { gate, note } if !note.trim().is_empty() => {
+                self.save_approval(gate, ApprovalDecision::Rejected, Some(note));
+            }
+            Dialog::Abandon { note } if !note.trim().is_empty() => {
+                if let Some((project_id, task_id)) = self.selected_ids() {
+                    match self.manager.abandon_task(project_id, task_id, note) {
+                        Ok(_) => self.refresh_for_ui(),
+                        Err(error) => self.error = Some(error.to_string()),
+                    }
+                }
+            }
+            Dialog::Revision { .. } => {
+                self.error = Some("A revision note is required.".to_owned());
+            }
+            Dialog::Abandon { .. } => {
+                self.error = Some("An abandonment reason is required.".to_owned());
+            }
+            Dialog::None => {}
+        }
+    }
+
+    fn save_approval(
+        &mut self,
+        gate: ApprovalGate,
+        decision: ApprovalDecision,
+        note: Option<String>,
+    ) {
+        let Some((project_id, task_id)) = self.selected_ids() else {
+            return;
+        };
+        match self
+            .manager
+            .record_approval(project_id, task_id, gate, decision, note)
+        {
+            Ok(_) => self.refresh_for_ui(),
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
+    fn selected_ids(&self) -> Option<(crate::model::ProjectId, crate::model::TaskId)> {
+        Some((self.selected_project()?.id, self.selected_task()?.id))
     }
 }
 
@@ -241,7 +391,10 @@ fn draw(frame: &mut Frame, app: &Dashboard) {
     let help = match app.screen {
         Screen::Projects => "↑/↓ select  Enter open  r refresh  q quit",
         Screen::Tasks => "↑/↓ select  Enter details  Backspace projects  r refresh  q quit",
-        Screen::TaskDetail => "↑/↓ activity  Backspace tasks  r refresh  q quit",
+        Screen::TaskDetail if app.active_approval_gate().is_some() => {
+            "y approve  n request revision  a abandon  ↑/↓ activity  Backspace tasks  q quit"
+        }
+        Screen::TaskDetail => "a abandon  ↑/↓ activity  Backspace tasks  r refresh  q quit",
     };
     let footer = app.error.as_deref().map_or_else(
         || help.to_owned(),
@@ -251,6 +404,53 @@ fn draw(frame: &mut Frame, app: &Dashboard) {
         Paragraph::new(footer).block(Block::default().borders(Borders::TOP)),
         areas[1],
     );
+    draw_dialog(frame, app);
+}
+
+fn draw_dialog(frame: &mut Frame, app: &Dashboard) {
+    let (title, prompt, note) = match &app.dialog {
+        Dialog::None => return,
+        Dialog::Revision { gate, note } => (
+            format!("Request changes — {}", approval_gate_label(*gate)),
+            "Describe the revision needed:",
+            note,
+        ),
+        Dialog::Abandon { note } => (
+            "Abandon task".to_owned(),
+            "This marks the task Rejected. Enter the reason:",
+            note,
+        ),
+    };
+    let area = centered_rect(70, 35, frame.area());
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(format!(
+            "{prompt}\n\n> {}_\n\nEnter save  Esc cancel",
+            terminal_safe(note)
+        ))
+        .wrap(Wrap { trim: true })
+        .block(Block::default().borders(Borders::ALL).title(title)),
+        area,
+    );
+}
+
+fn centered_rect(width: u16, height: u16, area: ratatui::layout::Rect) -> ratatui::layout::Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - height) / 2),
+            Constraint::Percentage(height),
+            Constraint::Percentage((100 - height) / 2),
+        ])
+        .split(area);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - width) / 2),
+            Constraint::Percentage(width),
+            Constraint::Percentage((100 - width) / 2),
+        ])
+        .split(vertical[1])[1]
 }
 
 fn draw_projects(frame: &mut Frame, app: &Dashboard, area: ratatui::layout::Rect) {
@@ -334,7 +534,11 @@ fn draw_task_detail(frame: &mut Frame, app: &Dashboard, area: ratatui::layout::R
     };
     let areas = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(7), Constraint::Min(3)])
+        .constraints([
+            Constraint::Length(9),
+            Constraint::Length(6),
+            Constraint::Min(2),
+        ])
         .split(area);
     let description = terminal_safe(task.description.as_deref().unwrap_or("No description."));
     let current_step = terminal_safe(task.current_step.as_deref().unwrap_or("Not started"));
@@ -362,12 +566,41 @@ fn draw_task_detail(frame: &mut Frame, app: &Dashboard, area: ratatui::layout::R
             ),
             Span::raw(description),
         ]),
+        Line::from(format!(
+            "Specifications: {}  |  Final code: {}",
+            approval_status(task, ApprovalGate::Specifications),
+            approval_status(task, ApprovalGate::FinalCode),
+        )),
     ]);
     frame.render_widget(
         Paragraph::new(summary)
             .wrap(Wrap { trim: true })
             .block(Block::default().borders(Borders::ALL).title(title)),
         areas[0],
+    );
+
+    let mut decisions = task
+        .approval_history
+        .iter()
+        .rev()
+        .take(3)
+        .map(approval_record_line)
+        .collect::<Vec<_>>();
+    if let Some(note) = task.abandonment_note.as_deref() {
+        decisions.insert(0, Line::from(format!("Abandoned: {}", terminal_safe(note))));
+    }
+    if decisions.is_empty() {
+        decisions.push(Line::from("No human decisions recorded."));
+    }
+    frame.render_widget(
+        Paragraph::new(Text::from(decisions))
+            .wrap(Wrap { trim: true })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Human decisions and revision notes"),
+            ),
+        areas[1],
     );
 
     let items = if task.agent_activity.is_empty() {
@@ -391,9 +624,41 @@ fn draw_task_detail(frame: &mut Frame, app: &Dashboard, area: ratatui::layout::R
             )
             .highlight_symbol("▶ ")
             .highlight_style(Style::default().fg(Color::Yellow)),
-        areas[1],
+        areas[2],
         &mut state,
     );
+}
+
+fn approval_record_line(record: &crate::model::ApprovalRecord) -> Line<'static> {
+    let note = record.note.as_deref().unwrap_or("");
+    Line::from(format!(
+        "{} — {}  {}",
+        approval_gate_label(record.gate),
+        approval_decision_label(record.decision),
+        terminal_safe(note),
+    ))
+}
+
+fn approval_gate_label(gate: ApprovalGate) -> &'static str {
+    match gate {
+        ApprovalGate::Specifications => "specifications",
+        ApprovalGate::FinalCode => "final code",
+    }
+}
+
+fn approval_decision_label(decision: ApprovalDecision) -> &'static str {
+    match decision {
+        ApprovalDecision::Approved => "approved",
+        ApprovalDecision::Rejected => "revision requested",
+    }
+}
+
+fn approval_status(task: &Task, gate: ApprovalGate) -> &'static str {
+    task.approval_history
+        .iter()
+        .rev()
+        .find(|record| record.gate == gate)
+        .map_or("pending", |record| approval_decision_label(record.decision))
 }
 
 fn agent_activity_item(activity: &AgentActivity) -> ListItem<'static> {
@@ -453,9 +718,9 @@ fn agent_status_label(status: &AgentStatus) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{Dashboard, Screen};
+    use super::{Dashboard, Dialog, Screen};
     use crate::{
-        model::{AgentStatus, Priority, TaskStatus},
+        model::{AgentStatus, ApprovalDecision, ApprovalGate, Priority, TaskStatus},
         project::ProjectManager,
     };
     use crossterm::event::KeyCode;
@@ -507,6 +772,130 @@ mod tests {
         assert_eq!(app.screen, Screen::Projects);
         app.handle_key(KeyCode::Char('q'));
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn approval_controls_record_revision_notes_and_keep_task_in_progress() {
+        let root = tempfile::tempdir().unwrap();
+        let writer = ProjectManager::new(root.path()).unwrap();
+        let project = writer.create_project("Demo".to_owned(), None).unwrap();
+        let task = writer
+            .create_task(
+                project.id,
+                "Approve specs".to_owned(),
+                None,
+                Priority::Medium,
+                Vec::new(),
+            )
+            .unwrap();
+        writer
+            .set_task_status(project.id, task.id, TaskStatus::InProgress)
+            .unwrap();
+        writer
+            .set_task_step(project.id, task.id, "specification-approval".to_owned())
+            .unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+        app.handle_key(KeyCode::Enter);
+        app.handle_key(KeyCode::Enter);
+
+        app.handle_key(KeyCode::Char('n'));
+        assert!(matches!(&app.dialog, Dialog::Revision { .. }));
+        for character in "Add acceptance criteria".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Enter);
+        let revised = writer.get_task(project.id, task.id).unwrap();
+        assert_eq!(revised.status, TaskStatus::InProgress);
+        assert_eq!(
+            revised.current_step.as_deref(),
+            Some("specification-generation")
+        );
+        assert_eq!(
+            revised.approval_history[0].decision,
+            ApprovalDecision::Rejected
+        );
+        assert_eq!(
+            revised.approval_history[0].note.as_deref(),
+            Some("Add acceptance criteria")
+        );
+
+        writer
+            .set_task_step(project.id, task.id, "specification-approval".to_owned())
+            .unwrap();
+        app.refresh().unwrap();
+        app.handle_key(KeyCode::Char('y'));
+        let approved = writer.get_task(project.id, task.id).unwrap();
+        assert_eq!(approved.current_step.as_deref(), Some("code-generation"));
+        assert!(approved.is_approved(ApprovalGate::Specifications));
+
+        for step in ["code-review", "verification", "final-approval"] {
+            writer
+                .set_task_step(project.id, task.id, step.to_owned())
+                .unwrap();
+        }
+        app.refresh().unwrap();
+        app.handle_key(KeyCode::Char('n'));
+        for character in "Fix the failing test".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Enter);
+        let revised = writer.get_task(project.id, task.id).unwrap();
+        assert_eq!(revised.status, TaskStatus::InProgress);
+        assert_eq!(revised.current_step.as_deref(), Some("code-generation"));
+        assert_eq!(
+            revised.approval_history.last().unwrap().gate,
+            ApprovalGate::FinalCode
+        );
+        assert_eq!(
+            revised.approval_history.last().unwrap().decision,
+            ApprovalDecision::Rejected
+        );
+
+        for step in ["code-review", "verification", "final-approval"] {
+            writer
+                .set_task_step(project.id, task.id, step.to_owned())
+                .unwrap();
+        }
+        app.refresh().unwrap();
+        app.handle_key(KeyCode::Char('y'));
+        let final_approved = writer.get_task(project.id, task.id).unwrap();
+        assert_eq!(
+            final_approved.current_step.as_deref(),
+            Some("documentation")
+        );
+        assert!(final_approved.is_approved(ApprovalGate::FinalCode));
+    }
+
+    #[test]
+    fn abandonment_dialog_requires_a_reason_and_marks_task_rejected() {
+        let root = tempfile::tempdir().unwrap();
+        let writer = ProjectManager::new(root.path()).unwrap();
+        let project = writer.create_project("Demo".to_owned(), None).unwrap();
+        let task = writer
+            .create_task(
+                project.id,
+                "Abandon task".to_owned(),
+                None,
+                Priority::Low,
+                Vec::new(),
+            )
+            .unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+        app.handle_key(KeyCode::Enter);
+        app.handle_key(KeyCode::Enter);
+        app.handle_key(KeyCode::Char('a'));
+        app.handle_key(KeyCode::Enter);
+        assert!(matches!(&app.dialog, Dialog::Abandon { .. }));
+        for character in "No longer needed".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Enter);
+        let rejected = writer.get_task(project.id, task.id).unwrap();
+        assert_eq!(rejected.status, TaskStatus::Rejected);
+        assert_eq!(
+            rejected.abandonment_note.as_deref(),
+            Some("No longer needed")
+        );
     }
 
     #[test]

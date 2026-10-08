@@ -8,7 +8,8 @@ use thiserror::Error;
 
 use crate::{
     model::{
-        AgentActivity, AgentStatus, MAX_AGENT_EVENTS, ModelError, Priority, Project, ProjectId,
+        AgentActivity, AgentStatus, ApprovalDecision, ApprovalGate, ApprovalRecord,
+        MAX_AGENT_EVENTS, MAX_APPROVAL_RECORDS, ModelError, Priority, Project, ProjectId,
         ProjectStatus, Task, TaskId, TaskStatus,
     },
     storage::{ProjectStore, StoreError},
@@ -28,6 +29,23 @@ pub enum ProjectError {
     InvalidStatusTransition { from: TaskStatus, to: TaskStatus },
     #[error("cannot change workflow step while task status is {0:?}")]
     TaskNotInProgress(TaskStatus),
+    #[error("approval for {gate:?} is only valid at step {step}")]
+    InvalidApprovalStage {
+        gate: ApprovalGate,
+        step: &'static str,
+    },
+    #[error("approval for {0:?} is required before advancing")]
+    ApprovalRequired(ApprovalGate),
+    #[error("a rejection must include a revision note")]
+    ApprovalNoteRequired,
+    #[error("abandoning a task requires a reason")]
+    AbandonmentNoteRequired,
+    #[error("completed status requires final approval and local merge")]
+    CompletionNotReady,
+    #[error("use complete_task to mark a task completed")]
+    UseCompleteTask,
+    #[error("use abandon_task to reject a task")]
+    UseAbandonTask,
     #[error("system clock is before the Unix epoch")]
     InvalidSystemTime,
 }
@@ -142,6 +160,8 @@ impl ProjectManager {
             current_step: None,
             step_started_at_unix_secs: Default::default(),
             agent_activity: Vec::new(),
+            approval_history: Vec::new(),
+            abandonment_note: None,
             worktree: None,
             created_at_unix_secs: now,
             updated_at_unix_secs: now,
@@ -173,6 +193,12 @@ impl ProjectManager {
         if task.status == status {
             return Ok(task);
         }
+        if status == TaskStatus::Completed {
+            return Err(ProjectError::UseCompleteTask);
+        }
+        if status == TaskStatus::Rejected {
+            return Err(ProjectError::UseAbandonTask);
+        }
         if !valid_status_transition(&task.status, &status) {
             return Err(ProjectError::InvalidStatusTransition {
                 from: task.status,
@@ -195,10 +221,123 @@ impl ProjectManager {
         if task.status != TaskStatus::InProgress {
             return Err(ProjectError::TaskNotInProgress(task.status));
         }
+        if matches!(
+            step.as_str(),
+            "code-generation" | "code-review" | "verification" | "final-approval"
+        ) && !task.is_approved(ApprovalGate::Specifications)
+        {
+            return Err(ProjectError::ApprovalRequired(ApprovalGate::Specifications));
+        }
+        if matches!(step.as_str(), "documentation" | "local-merge")
+            && !task.is_approved(ApprovalGate::FinalCode)
+        {
+            return Err(ProjectError::ApprovalRequired(ApprovalGate::FinalCode));
+        }
         let now = now_unix_secs()?;
         task.current_step = Some(step.clone());
         task.step_started_at_unix_secs.insert(step, now);
         task.updated_at_unix_secs = now;
+        task.validate()?;
+        self.store.save_task(&task)?;
+        Ok(task)
+    }
+
+    pub fn record_approval(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        gate: ApprovalGate,
+        decision: ApprovalDecision,
+        note: Option<String>,
+    ) -> Result<Task, ProjectError> {
+        let mut task = self.store.load_task(project_id, task_id)?;
+        if task.status != TaskStatus::InProgress {
+            return Err(ProjectError::TaskNotInProgress(task.status));
+        }
+        if task.current_step.as_deref() != Some(gate.approval_step()) {
+            return Err(ProjectError::InvalidApprovalStage {
+                gate,
+                step: gate.approval_step(),
+            });
+        }
+        let note = note
+            .map(|note| note.trim().to_owned())
+            .filter(|note| !note.is_empty());
+        if decision == ApprovalDecision::Rejected && note.is_none() {
+            return Err(ProjectError::ApprovalNoteRequired);
+        }
+
+        let now = now_unix_secs()?;
+        if gate == ApprovalGate::Specifications {
+            task.approval_history
+                .retain(|record| record.gate != ApprovalGate::FinalCode);
+        }
+        task.approval_history.push(ApprovalRecord {
+            gate,
+            decision,
+            note,
+            decided_at_unix_secs: now,
+        });
+        if task.approval_history.len() > MAX_APPROVAL_RECORDS {
+            task.approval_history.remove(0);
+        }
+        let next_step = match decision {
+            ApprovalDecision::Approved => match gate {
+                ApprovalGate::Specifications => "code-generation",
+                ApprovalGate::FinalCode => "documentation",
+            },
+            ApprovalDecision::Rejected => gate.revision_step(),
+        };
+        task.current_step = Some(next_step.to_owned());
+        task.step_started_at_unix_secs
+            .insert(next_step.to_owned(), now);
+        task.updated_at_unix_secs = now;
+        task.validate()?;
+        self.store.save_task(&task)?;
+        Ok(task)
+    }
+
+    pub fn abandon_task(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        reason: String,
+    ) -> Result<Task, ProjectError> {
+        let reason = reason.trim().to_owned();
+        if reason.is_empty() {
+            return Err(ProjectError::AbandonmentNoteRequired);
+        }
+        let mut task = self.store.load_task(project_id, task_id)?;
+        if !valid_status_transition(&task.status, &TaskStatus::Rejected) {
+            return Err(ProjectError::InvalidStatusTransition {
+                from: task.status,
+                to: TaskStatus::Rejected,
+            });
+        }
+        task.status = TaskStatus::Rejected;
+        task.abandonment_note = Some(reason);
+        task.updated_at_unix_secs = now_unix_secs()?;
+        task.validate()?;
+        self.store.save_task(&task)?;
+        Ok(task)
+    }
+
+    pub fn complete_task(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> Result<Task, ProjectError> {
+        let mut task = self.store.load_task(project_id, task_id)?;
+        if task.status != TaskStatus::InProgress {
+            return Err(ProjectError::TaskNotInProgress(task.status));
+        }
+        if !task.is_approved(ApprovalGate::FinalCode)
+            || task.current_step.as_deref() != Some("local-merge")
+        {
+            return Err(ProjectError::CompletionNotReady);
+        }
+        task.status = TaskStatus::Completed;
+        task.updated_at_unix_secs = now_unix_secs()?;
         task.validate()?;
         self.store.save_task(&task)?;
         Ok(task)
@@ -293,8 +432,54 @@ fn now_unix_secs() -> Result<u64, ProjectError> {
 mod tests {
     use super::{ProjectError, ProjectManager};
     use crate::model::{
-        AgentStatus, MAX_AGENT_EVENTS, Priority, ProjectId, ProjectStatus, TaskStatus,
+        AgentStatus, ApprovalDecision, ApprovalGate, MAX_AGENT_EVENTS, Priority, ProjectId,
+        ProjectStatus, TaskStatus,
     };
+
+    fn complete_for_queue(
+        manager: &ProjectManager,
+        project_id: ProjectId,
+        task_id: crate::model::TaskId,
+    ) {
+        manager
+            .set_task_status(project_id, task_id, TaskStatus::InProgress)
+            .unwrap();
+        manager
+            .set_task_step(project_id, task_id, "specification-approval".to_owned())
+            .unwrap();
+        manager
+            .record_approval(
+                project_id,
+                task_id,
+                ApprovalGate::Specifications,
+                ApprovalDecision::Approved,
+                None,
+            )
+            .unwrap();
+        for step in [
+            "code-generation",
+            "code-review",
+            "verification",
+            "final-approval",
+        ] {
+            manager
+                .set_task_step(project_id, task_id, step.to_owned())
+                .unwrap();
+        }
+        manager
+            .record_approval(
+                project_id,
+                task_id,
+                ApprovalGate::FinalCode,
+                ApprovalDecision::Approved,
+                None,
+            )
+            .unwrap();
+        manager
+            .set_task_step(project_id, task_id, "local-merge".to_owned())
+            .unwrap();
+        manager.complete_task(project_id, task_id).unwrap();
+    }
 
     #[test]
     fn project_crud_and_archive_persist() {
@@ -359,12 +544,7 @@ mod tests {
         assert!(ready.iter().any(|task| task.id == first.id));
         assert!(!ready.iter().any(|task| task.id == blocked.id));
 
-        manager
-            .set_task_status(project.id, first.id, TaskStatus::InProgress)
-            .unwrap();
-        manager
-            .set_task_status(project.id, first.id, TaskStatus::Completed)
-            .unwrap();
+        complete_for_queue(&manager, project.id, first.id);
         assert!(
             manager
                 .ready_tasks(project.id)
@@ -444,6 +624,38 @@ mod tests {
     }
 
     #[test]
+    fn task_abandonment_is_terminal_and_requires_a_reason() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(root.path()).unwrap();
+        let project = manager.create_project("Factory".to_owned(), None).unwrap();
+        let task = manager
+            .create_task(
+                project.id,
+                "Abandon me".to_owned(),
+                None,
+                Priority::Low,
+                Vec::new(),
+            )
+            .unwrap();
+        assert!(matches!(
+            manager.abandon_task(project.id, task.id, "  ".to_owned()),
+            Err(ProjectError::AbandonmentNoteRequired)
+        ));
+        assert!(matches!(
+            manager.set_task_status(project.id, task.id, TaskStatus::Rejected),
+            Err(ProjectError::UseAbandonTask)
+        ));
+        let rejected = manager
+            .abandon_task(project.id, task.id, "No longer needed".to_owned())
+            .unwrap();
+        assert_eq!(rejected.status, TaskStatus::Rejected);
+        assert_eq!(
+            rejected.abandonment_note.as_deref(),
+            Some("No longer needed")
+        );
+    }
+
+    #[test]
     fn task_state_commands_enforce_transitions_and_record_steps() {
         let root = tempfile::tempdir().unwrap();
         let manager = ProjectManager::new(root.path()).unwrap();
@@ -465,6 +677,14 @@ mod tests {
         manager
             .set_task_status(project.id, task.id, TaskStatus::InProgress)
             .unwrap();
+        assert!(matches!(
+            manager.complete_task(project.id, task.id),
+            Err(ProjectError::CompletionNotReady)
+        ));
+        assert!(matches!(
+            manager.set_task_status(project.id, task.id, TaskStatus::Completed),
+            Err(ProjectError::UseCompleteTask)
+        ));
         let in_step = manager
             .set_task_step(project.id, task.id, "spec-generation".to_owned())
             .unwrap();
@@ -480,9 +700,97 @@ mod tests {
         manager
             .set_task_status(project.id, task.id, TaskStatus::InProgress)
             .unwrap();
+        assert!(matches!(
+            manager.set_task_step(project.id, task.id, "code-generation".to_owned()),
+            Err(ProjectError::ApprovalRequired(ApprovalGate::Specifications))
+        ));
         manager
-            .set_task_status(project.id, task.id, TaskStatus::Completed)
+            .set_task_step(project.id, task.id, "specification-approval".to_owned())
             .unwrap();
+        assert!(matches!(
+            manager.record_approval(
+                project.id,
+                task.id,
+                ApprovalGate::Specifications,
+                ApprovalDecision::Rejected,
+                None,
+            ),
+            Err(ProjectError::ApprovalNoteRequired)
+        ));
+        let revised = manager
+            .record_approval(
+                project.id,
+                task.id,
+                ApprovalGate::Specifications,
+                ApprovalDecision::Rejected,
+                Some("Add an explicit acceptance criterion".to_owned()),
+            )
+            .unwrap();
+        assert_eq!(revised.status, TaskStatus::InProgress);
+        assert_eq!(
+            revised.current_step.as_deref(),
+            Some("specification-generation")
+        );
+        assert_eq!(
+            revised.approval_history.last().unwrap().note.as_deref(),
+            Some("Add an explicit acceptance criterion")
+        );
+
+        manager
+            .set_task_step(project.id, task.id, "specification-approval".to_owned())
+            .unwrap();
+        manager
+            .record_approval(
+                project.id,
+                task.id,
+                ApprovalGate::Specifications,
+                ApprovalDecision::Approved,
+                None,
+            )
+            .unwrap();
+        assert!(matches!(
+            manager.set_task_step(project.id, task.id, "documentation".to_owned()),
+            Err(ProjectError::ApprovalRequired(ApprovalGate::FinalCode))
+        ));
+        for step in ["code-review", "verification", "final-approval"] {
+            manager
+                .set_task_step(project.id, task.id, step.to_owned())
+                .unwrap();
+        }
+        let revised = manager
+            .record_approval(
+                project.id,
+                task.id,
+                ApprovalGate::FinalCode,
+                ApprovalDecision::Rejected,
+                Some("Fix the failed integration test".to_owned()),
+            )
+            .unwrap();
+        assert_eq!(revised.status, TaskStatus::InProgress);
+        assert_eq!(revised.current_step.as_deref(), Some("code-generation"));
+        assert!(!revised.is_approved(ApprovalGate::FinalCode));
+        manager
+            .set_task_step(project.id, task.id, "code-generation".to_owned())
+            .unwrap();
+        for step in ["code-review", "verification", "final-approval"] {
+            manager
+                .set_task_step(project.id, task.id, step.to_owned())
+                .unwrap();
+        }
+        manager
+            .record_approval(
+                project.id,
+                task.id,
+                ApprovalGate::FinalCode,
+                ApprovalDecision::Approved,
+                None,
+            )
+            .unwrap();
+        manager
+            .set_task_step(project.id, task.id, "local-merge".to_owned())
+            .unwrap();
+        let completed = manager.complete_task(project.id, task.id).unwrap();
+        assert_eq!(completed.status, TaskStatus::Completed);
         assert!(matches!(
             manager.set_task_status(project.id, task.id, TaskStatus::Error),
             Err(ProjectError::InvalidStatusTransition {
