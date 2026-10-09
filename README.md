@@ -1,5 +1,7 @@
 # Cronos-AI
 
+![Cronos-AI — supervised software factory](assets/cronos-ai-banner.svg)
+
 Cronos-AI is a supervised software factory for taking a project task through a structured, agent-assisted workflow. It is a Rust CLI/TUI: Rust owns persisted task state and human approval gates, Pi orchestrates workflow steps, and Herdr manages the agents that work in parallel within a step.
 
 ## What it does
