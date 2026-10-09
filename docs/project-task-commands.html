@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1">
+		<meta name="color-scheme" content="light">
+		<meta name="description" content="Create and manage projects and tasks from the CLI or TUI.">
+		<title>Cronos-AI · Project and task commands</title>
+		<link rel="stylesheet" href="guide.css">
+	</head>
+	<body>
+		<a class="skip-link" href="#main">Skip to content</a>
+		<header class="topbar">
+			<div class="topbar-inner">
+				<a class="brand" href="index.html">CRONOS-AI <span class="muted">· User guide</span></a>
+				<nav class="nav" aria-label="Guide navigation">
+					<a href="index.html">← Back to the user guide</a>
+				</nav>
+			</div>
+		</header>
+		<main id="main" class="reference-main">
+			<div class="hero">
+				<div class="hero-copy">
+					<div class="eyebrow">Cronos-AI · Reference</div>
+					<h1>Project and task commands</h1>
+					<p class="lead">Create and manage projects and tasks from the CLI or TUI.</p>
+				</div>
+			</div>
+			<article class="reference-content">
+<p>Cronos-AI starts the TUI when invoked without a subcommand. Project and task management is also available from the CLI:</p>
+<pre class="text"><code>cronos-ai [--data-dir DIR] project create &lt;name&gt; [--description &lt;text&gt;] [--repository &lt;PATH&gt;]
+cronos-ai [--data-dir DIR] project set-repository &lt;project-id&gt; --repository &lt;PATH&gt;
+cronos-ai [--data-dir DIR] project list
+cronos-ai [--data-dir DIR] project select &lt;project-id&gt;
+cronos-ai [--data-dir DIR] project update &lt;project-id&gt; [--name &lt;name&gt;] [--description &lt;text&gt;]
+cronos-ai [--data-dir DIR] project archive &lt;project-id&gt;
+cronos-ai [--data-dir DIR] task create &lt;project-id&gt; &lt;title&gt; [--description &lt;text&gt;] [--priority low|medium|high] [--depends-on &lt;task-id[,task-id...]&gt;]
+cronos-ai [--data-dir DIR] task list &lt;project-id&gt;
+cronos-ai [--data-dir DIR] task ready &lt;project-id&gt;</code></pre>
+<p>Commands print the affected record or result as JSON. <code>project select</code> prints an active project for the current command; it does not persist a global selection. Archived projects remain visible in <code>project list</code> but cannot be selected for active work or receive new tasks. A task dependency must refer to another task in the same project. <code>task ready</code> returns pending tasks whose dependencies are all completed, ordered by priority (high first) and then creation time.</p>
+<h2 id="create-a-project-from-the-tui">Create a project from the TUI</h2>
+<p>On the project list, press <strong>n</strong> to open the project form. Enter a name; description and a local Git repository path are optional. Use <strong>Tab</strong> or <strong>Shift+Tab</strong> to move between fields, <strong>Enter</strong> to create the project, or <strong>Esc</strong> to cancel. A successful project is saved as active and selected. Validation errors leave the form open with its values so they can be corrected; cancelling creates nothing.</p>
+<h2 id="create-a-task-from-the-tui">Create a task from the TUI</h2>
+<p>Open an active project's task list and press <strong>n</strong>. Enter a title and optional description. Priority defaults to <strong>Medium</strong>; use <strong>Tab</strong> to focus it and <strong>←/→</strong> to change it. In the dependencies field, use <strong>↑/↓</strong> to choose same-project tasks and <strong>Space</strong> to toggle them. Press <strong>Enter</strong> to create the task or <strong>Esc</strong> to cancel. The new task is <strong>Pending</strong> and is not started automatically; press <strong>s</strong> separately to start the next ready task. Archived projects cannot receive tasks.</p>
+<p>Configure a local Git repository when creating a project, or use <code>project set-repository</code> before starting work. Cronos-AI resolves and stores the repository root. Existing projects with only pending/error tasks and no active worktrees may be configured later.</p>
+<p>Starting a task creates a Git worktree at <code>worktrees/&lt;project-id&gt;/&lt;task-id&gt;/attempt-&lt;n&gt;</code> under the Cronos data directory and uses a task/attempt-specific local branch. A retry or clarification removes the failed attempt's worktree and branch before creating a fresh attempt. After final-code approval, documentation runs in that worktree; Rust performs the local merge only after Pi settles. Cronos-AI never pushes. Publishing remains a manual Git operation for the user. Merge conflicts are aborted so the base worktree is left unchanged and the task is marked Error.</p>
+<h2 id="end-to-end-workflow">End-to-end workflow</h2>
+<ol type="1">
+<li>Start with a clean local Git repository and configure <code>user.name</code>/<code>user.email</code> so the documentation agent can commit the task output.</li>
+<li>Run <code>cronos-ai project create demo --repository /path/to/repo</code>, then create a task with <code>cronos-ai task create &lt;project-id&gt; "Build the feature"</code>. The JSON results contain the IDs.</li>
+<li>Start <code>cronos-ai</code> inside a Herdr-managed pane. Select the project with <strong>Enter</strong>; press <strong>n</strong> on its task list to create a task, or <strong>s</strong> to start the highest-priority ready task. Open a task with <strong>Enter</strong> to follow its activity.</li>
+<li>At specification and final-code approval gates, review the output and press <strong>y</strong> to approve. Press <strong>n</strong> to request a revision and supply a nonblank note. If an attempt fails, <strong>r</strong> discards and retries from specifications; <strong>c</strong> supplies clarification and regenerates them.</li>
+<li>After final-code approval, agents generate and commit documentation. Cronos-AI verifies that the base repository and task worktree are clean, merges the task branch locally, and marks the task Completed. It does not push; publish manually if desired.</li>
+</ol>
+<p>The full temporary-repository path (including a failed parallel-agent attempt, recovery, approvals, documentation commit, and local merge) is exercised by <code>cargo test --test workflow_e2e</code>. If <code>--data-dir</code> is omitted, Cronos-AI uses <code>CRONOS_AI_DATA_DIR</code>, then the platform's user data directory (<code>XDG_DATA_HOME</code> or <code>~/.local/share</code> on Unix-like systems, <code>APPDATA</code> on Windows), under <code>cronos-ai</code>.</p>
+			</article>
+			<div class="hero-actions reference-actions">
+				<a class="button secondary" href="index.html">Return to the user guide</a>
+			</div>
+		</main>
+		<footer>
+			<p><strong>Cronos-AI</strong> · Supervised, local-first agent workflows for developers.</p>
+			<p><a href="index.html">Return to the user guide</a></p>
+		</footer>
+	</body>
+</html>

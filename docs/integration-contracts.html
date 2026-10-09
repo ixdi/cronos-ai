@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1">
+		<meta name="color-scheme" content="light">
+		<meta name="description" content="Understand how Cronos-AI coordinates Pi, Herdr, Git, and local state.">
+		<title>Cronos-AI · Agent integration contracts</title>
+		<link rel="stylesheet" href="guide.css">
+	</head>
+	<body>
+		<a class="skip-link" href="#main">Skip to content</a>
+		<header class="topbar">
+			<div class="topbar-inner">
+				<a class="brand" href="index.html">CRONOS-AI <span class="muted">· User guide</span></a>
+				<nav class="nav" aria-label="Guide navigation">
+					<a href="index.html">← Back to the user guide</a>
+				</nav>
+			</div>
+		</header>
+		<main id="main" class="reference-main">
+			<div class="hero">
+				<div class="hero-copy">
+					<div class="eyebrow">Cronos-AI · Reference</div>
+					<h1>Agent integration contracts</h1>
+					<p class="lead">Understand how Cronos-AI coordinates Pi, Herdr, Git, and local state.</p>
+				</div>
+			</div>
+			<article class="reference-content">
+<p>This records the locally installed integration surfaces checked for the MVP (Pi 1.1.0 and Herdr 0.9.3; Herdr API schema protocol 22). No live agent was started during this check.</p>
+<h2 id="pi-rpc">Pi RPC</h2>
+<p>Pi is the workflow orchestrator for the active task. Start a long-lived <code>pi --mode rpc --no-session</code> process with only the project-local workflow extension; disable extension discovery, built-in tools, MCP, skills, and project context files so the model sees only the explicit Cronos tools. Rust remains the source of truth for project/task state and human controls. Give Pi the validated task worktree as its working directory. Communicate through newline-delimited JSON on stdin/stdout; stdout is protocol-only and diagnostics go to stderr. Read stdout continuously and correlate command responses with request IDs.</p>
+<ul>
+<li>Submit work with <code>prompt</code>; a successful response means accepted/queued, not completed.</li>
+<li>Subscribe to session events before prompting and wait for <code>agent_settled</code>, not only <code>agent_end</code>, before advancing the workflow. Use <code>get_last_assistant_text</code> (or the final message event) for the result.</li>
+<li>Inspect assistant <code>stopReason</code>; <code>error</code> and <code>aborted</code> are failures even when a JSON-mode process exits with status zero.</li>
+<li>Cancel active work with RPC <code>abort</code>, which waits for idle. Close stdin for orderly process shutdown. If queued follow-ups exist, clear the queue before aborting when they must not run.</li>
+</ul>
+<p>The installed CLI advertises <code>--mode rpc</code>, <code>--no-session</code>, and the isolation flags used by the launcher; the protocol details above come from the installed Pi RPC documentation. <code>extensions/cronos-workflow.ts</code> exposes read-only <code>cronos_task_state</code> and <code>cronos_run_step</code>. The latter passes the Pi-created agent plan to <code>cronos-ai internal workflow run-step</code>; Rust validates status, step order, approvals, agent inputs, and the task worktree before Herdr starts agents. The extension's <code>session_start</code> handler submits the assigned task prompt when the host supplies <code>CRONOS_PROJECT_ID</code> and <code>CRONOS_TASK_ID</code>. Task status and approval writes remain on the Rust host so a model cannot bypass gates. A live model invocation remains an integration-test responsibility.</p>
+<h2 id="herdr-agent-api">Herdr agent API</h2>
+<p>Herdr 0.9.3 exposes agent operations through its socket API and CLI. The installed API schema advertises <code>agent.start</code>, <code>agent.prompt</code>, <code>agent.wait</code>, <code>agent.read</code>, and <code>agent.send_keys</code>.</p>
+<ul>
+<li><code>agent.start</code> requires a supported agent kind and an existing pane at an interactive shell prompt. For Pi, use kind <code>pi</code>; readiness is reported only after Herdr detects the expected agent in that pane.</li>
+<li><code>agent.prompt</code> submits work; <code>agent.wait</code> can observe <code>working</code>, <code>idle</code>, <code>blocked</code>, or <code>done</code>; <code>agent.read</code> retrieves terminal output.</li>
+<li>Interrupt an active agent with <code>agent.send_keys</code> using <code>ctrl+c</code>, then observe the agent state. This is terminal-level cancellation and is best-effort; do not treat the key submission alone as proof that the agent stopped. Ignore late results after the workflow has entered Error.</li>
+<li>Workflow-time agent operations run in a Herdr-managed pane with caller context (<code>HERDR_ENV=1</code>). Direct TUI startup does not create panes. The explicit <code>scripts/cronos-ai</code> launcher is the opt-in exception: outside Herdr it creates a dedicated workspace and pane in the named <code>cronos-ai</code> session, runs Cronos-AI there, and never replaces or targets unrelated panes; inside Herdr it uses the current pane.</li>
+<li>The orchestrator calls <code>cronos_agent_profiles</code> to discover user-configured profile IDs allowed for the current step; <code>cronos_run_step</code> can assign one profile per agent. Rust validates those assignments before recording activity, and Herdr forwards explicit skill/extension/MCP config arguments to each Pi worker without shell interpolation. See <a href="agent-profiles.html">workflow-agent profiles</a> for setup.</li>
+</ul>
+<p>CLI help and the installed API schema confirm these command/parameter contracts. The Rust adapter invokes Herdr with argument vectors (never a shell), validates agent names, parses pane IDs from Herdr responses, and waits for a settled state after sending <code>ctrl+c</code>. A workflow step creates no-focus sibling panes only after explicit task start, and only in the task's validated worktree under the Cronos data directory. Startup preflight checks <code>pi</code>, <code>herdr</code>, <code>openspec</code>, and <code>git</code> by running their version commands; if any are unavailable it prompts for manual installation and retries, but never installs tools. Only the explicit <code>scripts/cronos-ai</code> launcher creates its dedicated Herdr workspace, avoiding existing user panes. Automated launcher tests use fake Herdr commands; live pane/agent launch, prompt, output, and cancellation checks must run in an explicitly isolated test session, not the current user session.</p>
+<h2 id="git-worktrees-and-local-merge">Git worktrees and local merge</h2>
+<p>Projects store the canonical root of a user-selected local Git repository. When a task is started, Rust creates an isolated worktree under the Cronos data directory and a branch named <code>cronos-ai/&lt;task-id&gt;/attempt-&lt;n&gt;</code>. Recovery removes the exact validated prior-attempt worktree and branch before assigning a fresh attempt. Final-code approval gates the documentation step, which commits all implementation and documentation changes; after Pi settles, Rust requires both the base repository and task worktree to be clean and performs a local <code>git merge --no-ff --no-edit</code>. On conflict, Rust aborts the merge so the base worktree remains unchanged and marks the task Error. There is no remote-push operation in the adapter; users publish manually.</p>
+<h2 id="jev">Jev</h2>
+<p>Jev is not installed and is not required by this release. Use the built-in priority/dependency ordering for the MVP. A later change will create a Pi extension that integrates Jev.</p>
+			</article>
+			<div class="hero-actions reference-actions">
+				<a class="button secondary" href="index.html">Return to the user guide</a>
+			</div>
+		</main>
+		<footer>
+			<p><strong>Cronos-AI</strong> · Supervised, local-first agent workflows for developers.</p>
+			<p><a href="index.html">Return to the user guide</a></p>
+		</footer>
+	</body>
+</html>

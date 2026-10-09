@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1">
+		<meta name="color-scheme" content="light">
+		<meta name="description" content="Learn where project and task records live and how Cronos-AI protects them.">
+		<title>Cronos-AI · Local storage format</title>
+		<link rel="stylesheet" href="guide.css">
+	</head>
+	<body>
+		<a class="skip-link" href="#main">Skip to content</a>
+		<header class="topbar">
+			<div class="topbar-inner">
+				<a class="brand" href="index.html">CRONOS-AI <span class="muted">· User guide</span></a>
+				<nav class="nav" aria-label="Guide navigation">
+					<a href="index.html">← Back to the user guide</a>
+				</nav>
+			</div>
+		</header>
+		<main id="main" class="reference-main">
+			<div class="hero">
+				<div class="hero-copy">
+					<div class="eyebrow">Cronos-AI · Reference</div>
+					<h1>Local storage format</h1>
+					<p class="lead">Learn where project and task records live and how Cronos-AI protects them.</p>
+				</div>
+			</div>
+			<article class="reference-content">
+<p>Cronos-AI stores each project under the storage root supplied to <code>ProjectStore</code>:</p>
+<pre class="text"><code>&lt;root&gt;/projects/&lt;project-uuid&gt;/project.json
+&lt;root&gt;/projects/&lt;project-uuid&gt;/tasks/&lt;task-uuid&gt;.json</code></pre>
+<p><code>project.json</code> contains the project ID, name, optional description, optional canonical local Git repository root, active/archived status, task IDs, and creation/update timestamps. Each task file contains its task and project IDs, title, optional description, priority, dependency IDs, workflow status, current step, step timestamps, attempt number, recent agent activity (bounded to the latest 100 events and tagged by attempt), human approval/revision history (bounded to the latest 100 decisions and tagged by attempt), recovery history (bounded to 50 decisions), an optional abandonment reason, optional active worktree reference, and creation/update timestamps. Worktrees are assigned per attempt under <code>worktrees/&lt;project-id&gt;/&lt;task-id&gt;/attempt-&lt;n&gt;</code> with a corresponding <code>cronos-ai/&lt;task-uuid&gt;/attempt-&lt;n&gt;</code> local branch. Retry/clarification removes the failed worktree and branch; the removed path is retained in recovery history for audit. Older task files without activity, approval, recovery, abandonment, or attempt fields load with empty/default values. IDs are UUIDs; timestamps are seconds since the Unix epoch. Enum values are serialized in <code>snake_case</code>. Older project records without a repository field load as unconfigured and must be assigned a Git repository before task execution.</p>
+<p>Project and task text is validated before saving and after loading. Individual JSON files are limited to 1 MiB. Writes use a temporary file in the destination directory and atomically replace the destination. Invalid, oversized, symlinked, or identity-mismatched records are rejected; a failed update does not overwrite the existing record.</p>
+<p>Task source code is kept in its Git worktree, not in JSON. The stored worktree reference is metadata and must be validated against the task's allowed worktree root before any later destructive filesystem operation.</p>
+			</article>
+			<div class="hero-actions reference-actions">
+				<a class="button secondary" href="index.html">Return to the user guide</a>
+			</div>
+		</main>
+		<footer>
+			<p><strong>Cronos-AI</strong> · Supervised, local-first agent workflows for developers.</p>
+			<p><a href="index.html">Return to the user guide</a></p>
+		</footer>
+	</body>
+</html>

@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1">
+		<meta name="color-scheme" content="light">
+		<meta name="description" content="Navigate the dashboard, review approvals, and recover or abandon tasks.">
+		<title>Cronos-AI · Monitoring Cronos-AI work</title>
+		<link rel="stylesheet" href="guide.css">
+	</head>
+	<body>
+		<a class="skip-link" href="#main">Skip to content</a>
+		<header class="topbar">
+			<div class="topbar-inner">
+				<a class="brand" href="index.html">CRONOS-AI <span class="muted">· User guide</span></a>
+				<nav class="nav" aria-label="Guide navigation">
+					<a href="index.html">← Back to the user guide</a>
+				</nav>
+			</div>
+		</header>
+		<main id="main" class="reference-main">
+			<div class="hero">
+				<div class="hero-copy">
+					<div class="eyebrow">Cronos-AI · Reference</div>
+					<h1>Monitoring Cronos-AI work</h1>
+					<p class="lead">Navigate the dashboard, review approvals, and recover or abandon tasks.</p>
+				</div>
+			</div>
+			<article class="reference-content">
+<p>Build the release binary with <code>cargo build --release</code>, then run <code>scripts/cronos-ai</code> to open the dashboard. Outside Herdr, the launcher starts Cronos-AI in its dedicated <code>cronos-ai</code> Herdr session; inside a Herdr pane, it opens the TUI directly in that pane. For a TUI in the current terminal, you can still run <code>target/release/cronos-ai</code> without a subcommand, but supervised task execution requires Herdr. The dashboard checks for <code>pi</code>, <code>herdr</code>, <code>openspec</code>, and <code>git</code>; if any are missing, it asks you to install them and press Enter to retry. It never installs tools automatically.</p>
+<h2 id="navigation">Navigation</h2>
+<ul>
+<li><strong>Projects:</strong> use ↑/↓ to select a project and Enter to open its task list. Active and archived projects are shown so archived work remains inspectable.</li>
+<li><strong>Tasks:</strong> use ↑/↓ to select a task. Each row shows status, priority, and current workflow step. Press Enter for details. Press <strong>s</strong> to start the next priority/dependency-ready task; task execution requires a validated Git worktree and a Herdr-managed session.</li>
+<li><strong>Task details:</strong> the summary shows status, priority, attempt, description, and active step. Human decisions, recovery context, and revision notes appear above the agent activity panel; use ↑/↓ to select an activity update.</li>
+<li>For an <strong>Error</strong> task, press <strong>r</strong> to discard the failed attempt and retry specification generation or <strong>c</strong> to enter clarification context and regenerate specifications. Recovery removes that attempt's worktree and local branch, resumes In Progress on a fresh worktree, and does not carry approvals forward. Press <strong>a</strong> to abandon instead.</li>
+<li>At the specification or final-code approval step, press <strong>y</strong> to approve or <strong>n</strong> to request revisions and enter a note. A revision returns the workflow to specification generation or code generation without changing the task from In Progress. Final-code approval unlocks documentation; Rust merges the completed task branch locally after Pi settles. No remote push is performed.</li>
+<li>Press <strong>a</strong> in task details to abandon the task; enter a reason to mark it Rejected. Backspace/Esc cancels an open dialog or returns one level; <strong>r</strong> refreshes immediately and <strong>q</strong> exits.</li>
+</ul>
+<p>The dashboard refreshes persisted project/task state once per second, so status, step, and activity updates written by the workflow host appear without restarting. Activity is kept per task with a 100-event limit; older task files without activity data remain readable and show an empty activity panel.</p>
+			</article>
+			<div class="hero-actions reference-actions">
+				<a class="button secondary" href="index.html">Return to the user guide</a>
+			</div>
+		</main>
+		<footer>
+			<p><strong>Cronos-AI</strong> · Supervised, local-first agent workflows for developers.</p>
+			<p><a href="index.html">Return to the user guide</a></p>
+		</footer>
+	</body>
+</html>

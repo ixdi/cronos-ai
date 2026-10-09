@@ -13,8 +13,9 @@ It is an opinionated stack with a Rust TUI. Rust owns persisted task state and h
 
 ## What it does
 
-- Manage projects and prioritized, dependency-aware tasks from the CLI.
+- Manage projects and prioritized, dependency-aware tasks from the CLI and TUI.
 - Monitor task status and agent activity in a terminal dashboard.
+- Assign named Pi skill, extension, and MCP profiles to workflow agents by step.
 - Run one task at a time through specification, implementation, review, verification, approval, documentation, and local merge steps.
 - Require human approval of specifications and final code; request revisions or recover failed attempts with additional context.
 - Give each attempt an isolated local Git worktree. After final approval, changes are merged locally; Cronos-AI never pushes to a remote.
@@ -34,7 +35,7 @@ On startup, Cronos-AI checks for required tools and prompts if any are missing; 
 ## Build and run
 
 ```sh
-cargo --release
+cargo build --release
 ```
 
 Create a project linked to a repository and add a task:
@@ -44,13 +45,23 @@ Create a project linked to a repository and add a task:
 ./target/release/cronos-ai task create <PROJECT_ID> "Build the feature" --priority high
 ```
 
-The commands print JSON containing the project and task IDs. Start the dashboard from a Herdr-managed pane:
+The commands print JSON containing the project and task IDs. After building, start the dashboard with the launcher:
 
 ```sh
-./target/release/cronos-ai
+./scripts/cronos-ai
 ```
 
-Select the project with **Enter**, press **s** on its task list to start the next ready task, then open the task to monitor progress. Review and approve the specification and final-code gates in the TUI. See [the workflow guide](docs/project-task-commands.md) for recovery, navigation, and CLI details.
+From a regular terminal, the launcher creates or attaches to the dedicated `cronos-ai` Herdr session, starts Cronos-AI in its own workspace, and opens Herdr. When run inside a Herdr pane, it starts the TUI directly in that pane. For a TUI in the current terminal without the Herdr launcher, run `./target/release/cronos-ai` directly; supervised task execution requires Herdr.
+
+Select the project with **Enter**, press **s** on its task list to start the next ready task, then open the task to monitor progress. Review and approve the specification and final-code gates in the TUI.
+
+You can also create projects and tasks directly in the dashboard:
+
+1. On the project list, press **n**. Enter a project name and optionally a description and local Git repository path. Use **Tab**/**Shift+Tab** to move between fields, **Enter** to save, or **Esc** to cancel.
+2. Select the project with **Enter**. On its task list, press **n** to create a task. Enter a title and optional description; priority defaults to **Medium**. Use **Tab**/**Shift+Tab** to move between fields, **←/→** to change priority, and **↑/↓** plus **Space** to select task dependencies.
+3. Press **Enter** to save. The task remains **Pending**; press **s** when you are ready to start the next ready task. Configure a local Git repository before starting work if you did not provide one when creating the project.
+
+See [the workflow guide](docs/project-task-commands.md) for recovery, navigation, and CLI details.
 
 For existing projects, set the repository before starting work:
 
@@ -59,6 +70,18 @@ For existing projects, set the repository before starting work:
 ```
 
 The data directory can be selected with `--data-dir DIR` or `CRONOS_AI_DATA_DIR`. Otherwise, Cronos-AI uses the platform's user data directory. See [storage format](docs/storage-format.md).
+
+## Agent resource profiles
+
+To assign Pi skills, extensions, or MCP servers to particular workflow agents, copy the example catalog into Cronos-AI's data directory and add absolute paths to the resources you want:
+
+```sh
+profile_dir="${CRONOS_AI_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/cronos-ai}"
+mkdir -p "$profile_dir"
+cp examples/agent-profiles.json "$profile_dir/agent-profiles.json"
+```
+
+Profiles have stable IDs and list the workflow steps where they can be selected. The orchestrator discovers eligible profiles for each step; workers load only their assigned profile resources. MCP profiles point to a separate Pi-compatible server config and an explicitly installed adapter. Cronos-AI does not install tools or run arbitrary profile shell hooks. See the [agent profile guide](docs/agent-profiles.md) and [sample catalog](examples/agent-profiles.json) for the format and details.
 
 ## Development
 
@@ -77,6 +100,7 @@ cargo test --test workflow_e2e
 
 - [Project/task commands and end-to-end use](docs/project-task-commands.md)
 - [TUI monitoring and controls](docs/monitoring.md)
+- [Workflow-agent profiles](docs/agent-profiles.md)
 - [Workflow states and recovery](docs/workflow-states.md)
 - [Storage format](docs/storage-format.md)
 - [Pi, Herdr, and Git integration contracts](docs/integration-contracts.md)

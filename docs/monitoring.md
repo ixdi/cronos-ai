@@ -1,6 +1,6 @@
 # Monitoring Cronos-AI work
 
-Start `cronos-ai` without a subcommand to open the dashboard. The dashboard checks for `pi`, `herdr`, `openspec`, and `git` first; if any are missing, it asks you to install them and press Enter to retry. It never installs tools automatically.
+Build the release binary with `cargo build --release`, then run `scripts/cronos-ai` to open the dashboard. Outside Herdr, the launcher starts Cronos-AI in its dedicated `cronos-ai` Herdr session; inside a Herdr pane, it opens the TUI directly in that pane. For a TUI in the current terminal, you can still run `target/release/cronos-ai` without a subcommand, but supervised task execution requires Herdr. The dashboard checks for `pi`, `herdr`, `openspec`, and `git`; if any are missing, it asks you to install them and press Enter to retry. It never installs tools automatically.
 
 ## Navigation
 
