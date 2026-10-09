@@ -1,8 +1,15 @@
+<p align="center">
+<img src="assets/cronos-ai-banner.svg" alt="Cronos-AI" width="80%"/>
+</p>
+
 # Cronos-AI
 
-![Cronos-AI — supervised software factory](assets/cronos-ai-banner.svg)
+Cronos-AI is a supervised software factory for taking a project task through a structured, agent-assisted workflow.
 
-Cronos-AI is a supervised software factory for taking a project task through a structured, agent-assisted workflow. It is a Rust CLI/TUI: Rust owns persisted task state and human approval gates, Pi orchestrates workflow steps, and Herdr manages the agents that work in parallel within a step.
+It is an opinionated stack with a Rust TUI. Rust owns persisted task state and human approval gates, Pi orchestrates workflow steps, and Herdr manages the agents that work in parallel within a step.
+
+> [!WARNING]
+> The MVP is not yet capable of running multiple tasks concurrently. Jev-based prioritisation has been deferred.
 
 ## What it does
 
@@ -12,18 +19,22 @@ Cronos-AI is a supervised software factory for taking a project task through a s
 - Require human approval of specifications and final code; request revisions or recover failed attempts with additional context.
 - Give each attempt an isolated local Git worktree. After final approval, changes are merged locally; Cronos-AI never pushes to a remote.
 
-The MVP does not run multiple tasks concurrently. Jev-based prioritization and automated remote publishing are deferred.
+![Workflow diagram](design/workflow.svg)
 
 ## Requirements
 
-- Rust stable (the toolchain is specified in `rust-toolchain.toml`).
-- Git, Pi, Herdr, and OpenSpec for the supervised workflow. On startup, Cronos-AI checks for required tools and prompts if any are missing; it does not install them automatically.
-- A local Git repository for each project that will run tasks. Keep its main working tree clean and configure `user.name` and `user.email` so workflow agents can commit their output.
+On startup, Cronos-AI checks for required tools and prompts if any are missing; it does not install them automatically.
+
+- Rust TUI for the dashboard, project and task management.
+- Pi agent to orchestrate workflow steps.
+- Herdr to manage agents and their work.
+- OpenSpec as single source of truth.
+- A Git repository for each project that will run tasks (a worktree for each).
 
 ## Build and run
 
 ```sh
-cargo build --release
+cargo --release
 ```
 
 Create a project linked to a repository and add a task:

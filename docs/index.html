@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1">
+		<meta name="color-scheme" content="light">
+		<meta name="description" content="Cronos-AI user guide: set up a project, create tasks, supervise agent workflows, and understand the technical architecture.">
+		<title>Cronos-AI · User guide</title>
+		<style>
+			:root {
+				color-scheme: light;
+				--ink: #172b42;
+				--muted: #52677d;
+				--soft-muted: #647a90;
+				--paper: #f4f7fb;
+				--surface: #ffffff;
+				--teal: #087e78;
+				--teal-soft: #e5f5f1;
+				--blue-soft: #eaf2fb;
+				--amber: #8a5a13;
+				--amber-soft: #fff4df;
+				--line: #d8e2ec;
+				--shadow: 0 14px 38px rgba(24, 47, 71, .08);
+				--radius: 18px;
+				font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+				font-synthesis: none;
+				text-rendering: optimizeLegibility;
+			}
+			
+			* { box-sizing: border-box; }
+			html { scroll-behavior: smooth; scroll-padding-top: 84px; }
+			body { margin: 0; background: var(--paper); color: var(--ink); line-height: 1.65; }
+			a { color: #086b70; text-underline-offset: .18em; }
+			a:hover { color: #064e58; }
+			a:focus-visible, button:focus-visible { outline: 3px solid #d79038; outline-offset: 3px; border-radius: 4px; }
+			code, pre, kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+			code { font-size: .92em; }
+			
+			.skip-link { position: absolute; left: 12px; top: -60px; z-index: 10; padding: 10px 14px; background: #fff; color: var(--ink); border: 2px solid var(--teal); border-radius: 8px; }
+			.skip-link:focus { top: 12px; }
+			.topbar { position: sticky; top: 0; z-index: 5; background: rgba(255,255,255,.94); backdrop-filter: blur(12px); border-bottom: 1px solid var(--line); }
+			.topbar-inner { width: min(1180px, calc(100% - 40px)); min-height: 66px; margin: auto; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+			.brand { color: var(--ink); font-weight: 800; letter-spacing: -.03em; text-decoration: none; white-space: nowrap; }
+			.nav { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px 18px; }
+			.nav a { color: #334b63; text-decoration: none; font-size: .9rem; font-weight: 650; }
+			.nav a:hover { color: var(--teal); }
+			
+			main { width: min(1180px, calc(100% - 40px)); margin: 0 auto; }
+			.hero { padding: 48px 0 36px; }
+			.hero-copy { max-width: 830px; margin-bottom: 26px; }
+			.eyebrow { color: var(--teal); font-size: .78rem; font-weight: 800; letter-spacing: .13em; text-transform: uppercase; }
+			h1, h2, h3 { color: var(--ink); line-height: 1.2; }
+			h1 { margin: 10px 0 14px; font-size: clamp(2.2rem, 5vw, 3.8rem); letter-spacing: -.055em; }
+			h2 { margin: 0 0 12px; font-size: clamp(1.55rem, 3vw, 2.15rem); letter-spacing: -.035em; }
+			h3 { margin: 0 0 8px; font-size: 1.12rem; }
+			p { margin: 0 0 14px; color: var(--muted); }
+			.lead { max-width: 760px; font-size: clamp(1.05rem, 2vw, 1.2rem); }
+			.hero-banner { display: block; width: 100%; height: auto; border: 1px solid #d8e3ee; border-radius: 20px; box-shadow: var(--shadow); }
+			.hero-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 22px; }
+			.button { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 10px 17px; border: 1px solid #087e78; border-radius: 10px; background: #087e78; color: white; text-decoration: none; font-weight: 750; }
+			.button:hover { color: white; background: #066963; }
+			.button.secondary { background: #fff; color: #075e62; border-color: #a8cbc8; }
+			.button.secondary:hover { background: var(--teal-soft); }
+			
+			section { margin: 24px 0; padding: clamp(22px, 4vw, 38px); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 7px 24px rgba(24,47,71,.045); }
+			.section-intro { max-width: 820px; margin-bottom: 22px; }
+			.grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+			.grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+			.card { min-width: 0; padding: 19px; background: #fbfdff; border: 1px solid var(--line); border-radius: 14px; }
+			.card.teal { background: var(--teal-soft); border-color: #c7e7df; }
+			.card.blue { background: var(--blue-soft); border-color: #d0dfef; }
+			.card.amber { background: var(--amber-soft); border-color: #f0ddb7; }
+			.card p:last-child, .card ul:last-child { margin-bottom: 0; }
+			.card ul { padding-left: 20px; color: var(--muted); margin: 8px 0 0; }
+			.card li + li { margin-top: 5px; }
+			
+			.notice { margin: 18px 0; padding: 16px 18px; border-left: 4px solid #c5872b; border-radius: 8px; background: var(--amber-soft); color: #553c17; }
+			.notice strong { color: #49310d; }
+			.steps { counter-reset: guide; list-style: none; display: grid; gap: 12px; padding: 0; margin: 0; }
+			.steps li { counter-increment: guide; display: grid; grid-template-columns: 38px 1fr; gap: 13px; align-items: start; color: var(--muted); }
+			.steps li::before { content: counter(guide); width: 34px; height: 34px; display: grid; place-items: center; border-radius: 50%; color: #075e62; background: var(--teal-soft); font-weight: 800; }
+			
+			pre { margin: 14px 0; padding: 17px 18px; overflow-x: auto; background: #13243a; color: #eaf1fa; border: 1px solid #273e59; border-radius: 12px; font-size: .88rem; line-height: 1.55; tab-size: 2; }
+			pre code { color: inherit; }
+			kbd { display: inline-block; padding: 1px 6px; color: #23384f; background: #f4f7fb; border: 1px solid #bdcbd9; border-bottom-width: 2px; border-radius: 5px; font-size: .88em; }
+			.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; }
+			table { width: 100%; border-collapse: collapse; min-width: 590px; }
+			th, td { padding: 12px 14px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+			th { color: #2e4962; background: #f2f6fa; font-size: .86rem; }
+			td { color: var(--muted); }
+			tr:last-child td { border-bottom: 0; }
+			
+			.diagram-frame { padding: 14px; background: #f7fafc; border: 1px solid var(--line); border-radius: 14px; overflow-x: auto; }
+			.mermaid { min-width: 900px; margin: 0; color: var(--ink); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+			.diagram-status { margin: 10px 2px 0; font-size: .86rem; }
+			.diagram-links { display: flex; flex-wrap: wrap; gap: 12px 22px; margin-top: 14px; }
+			.feature-preview { margin: 18px 0 0; padding: 12px; background: #f7fafc; border: 1px solid var(--line); border-radius: 14px; }
+			.feature-preview img { display: block; width: 100%; height: auto; border-radius: 8px; }
+			.feature-preview figcaption { padding: 10px 4px 2px; color: var(--muted); font-size: .88rem; }
+			.feature-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 15px; }
+			.status { display: inline-block; padding: 3px 9px; border-radius: 999px; background: #edf2f7; color: #304a62; font-size: .82rem; font-weight: 750; }
+			.status.error { background: #fff0ed; color: #8a3829; }
+			.status.done { background: #e7f6ec; color: #25613a; }
+			.status.active { background: #e5f5f1; color: #08635f; }
+			.small { font-size: .9rem; }
+			.muted { color: var(--muted); }
+			.path { overflow-wrap: anywhere; }
+			footer { width: min(1180px, calc(100% - 40px)); margin: 34px auto 0; padding: 22px 0 42px; color: var(--soft-muted); font-size: .9rem; border-top: 1px solid var(--line); }
+			footer a { color: #255f67; }
+			
+			@media (max-width: 800px) {
+				.topbar-inner { align-items: flex-start; flex-direction: column; padding: 12px 0; gap: 6px; }
+				.nav { justify-content: flex-start; gap: 8px 14px; }
+				.grid, .grid.two { grid-template-columns: 1fr; }
+				.hero { padding-top: 32px; }
+				section { margin: 16px 0; }
+			}
+			@media (max-width: 480px) {
+				main, .topbar-inner, footer { width: min(100% - 24px, 1180px); }
+				.nav a { font-size: .84rem; }
+				.hero-banner { border-radius: 12px; }
+				section { padding: 19px 15px; border-radius: 14px; }
+				.button { width: 100%; }
+			}
+			@media (prefers-reduced-motion: reduce) {
+				html { scroll-behavior: auto; }
+				*, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+			}
+			@media print {
+				.topbar, .hero-actions, .feature-actions { display: none; }
+				body { background: white; }
+				section { break-inside: avoid; box-shadow: none; }
+			}
+		</style>
+	</head>
+	<body>
+		<a class="skip-link" href="#main">Skip to guide</a>
+		<header class="topbar">
+			<div class="topbar-inner">
+				<a class="brand" href="#top">CRONOS-AI <span class="muted">· User guide</span></a>
+				<nav class="nav" aria-label="Guide sections">
+					<a href="#start">Get started</a>
+					<a href="#workflow">Workflow</a>
+					<a href="#controls">Controls</a>
+					<a href="#architecture">Architecture</a>
+					<a href="#technical">Technical notes</a>
+					<a href="#cli">CLI</a>
+				</nav>
+			</div>
+		</header>
+
+		<!-- Edit docs/guide-content.html, then run: python3 docs/build_guide.py -->
+		<!-- GUIDE_CONTENT_START -->
+		<!-- Edit this HTML content, then run `python3 docs/build_guide.py` to update index.html. -->
+		<main id="main">
+			<div id="top" class="hero">
+				<div class="hero-copy">
+					<div class="eyebrow">A supervised software factory</div>
+					<h1>Software manufactured by AI.</h1>
+					<p class="lead">Factory-Engineered. Cronos AI is an opinionated AI project software factory for autonomous planning,
+						build, and end-to-end workflow validation with human approval.</p>
+					<div class="hero-actions">
+						<a class="button" href="#start">Start a project</a>
+						<a class="button secondary" href="#architecture">Explore the architecture</a>
+					</div>
+				</div>
+				<img class="hero-banner" src="../assets/cronos-ai-banner.svg" alt="Cronos-AI: supervised software factory with a clock-inspired agent network">
+			</div>
+
+			<section id="start" aria-labelledby="start-title">
+				<div class="section-intro">
+					<div class="eyebrow">01 · Get started</div>
+					<h2 id="start-title">Prepare a project</h2>
+					<p>Run Cronos-AI from a Herdr-managed pane for supervised task execution. Your project must point to a local Git repository; keep its main working tree clean and configure a commit identity for agent-created commits.</p>
+				</div>
+				<div class="grid two">
+					<article class="card teal">
+						<h3>Requirements</h3>
+						<ul>
+							<li>Rust for the Dashboard.</li>
+							<li>Pi as agent orchestrator</li>
+							<li>Herdr to supervise the agents</li>
+							<li>OpenSpec for the specifications.</li>
+							<li>Git repository with worktree.</li>
+						</ul>
+						<p class="small" style="margin-top:12px">At startup, Cronos-AI checks for required tools and prompts if any are missing. It does not install tools automatically.</p>
+					</article>
+					<article class="card blue">
+						<h3>Create a project and task</h3>
+						<pre><code>cargo build --release
+./target/release/cronos-ai project create demo \
+  --repository /path/to/repository
+./target/release/cronos-ai task create &lt;PROJECT_ID&gt; \
+  "Build the feature" --priority high</code></pre>
+						<p class="small">Use the project ID printed by <code>project create</code>. The task command prints its task ID as JSON.</p>
+					</article>
+				</div>
+				<ol class="steps" style="margin-top:22px">
+					<li><span><strong>Launch the dashboard:</strong>
+					run <code>./target/release/cronos-ai</code>
+					inside a Herdr-managed pane.</span></li>
+					<li><span><strong>Select and start:</strong>
+					choose the project with <kbd>Enter</kbd>; on its task list press <kbd>s</kbd>
+					to start the next ready task.</span></li>
+					<li><span><strong>Follow the task:</strong>
+					open it with <kbd>Enter</kbd>. The details page shows its current status, step, decisions, and agent activity.</span></li>
+				</ol>
+				<p class="small" style="margin-top:18px">Existing projects can be linked before work starts with <code>project set-repository &lt;PROJECT_ID&gt; --repository /path/to/repository</code>.</p>
+			</section>
+
+			<section id="workflow" aria-labelledby="workflow-title">
+				<div class="section-intro">
+					<div class="eyebrow">02 · Workflow</div>
+					<h2 id="workflow-title">One task, ordered steps, explicit approvals</h2>
+					<p>A project can contain many features and tasks. In the current MVP, the queue runs one task at a time; independent agents within the active step can run in parallel. The editable feature-track diagram describes the target project-level parallel model.</p>
+				</div>
+				<div class="grid">
+					<article class="card"><h3>1. Specifications</h3><p>Pi orchestrates specification agents. OpenSpec is used for spec creation. The task waits at a human approval gate before code generation.</p></article>
+					<article class="card"><h3>2. Build and verify</h3><p>Code generation, code review, and verification run sequentially. Agents assigned to the same step can work concurrently.</p></article>
+					<article class="card"><h3>3. Approve and complete</h3><p>Final-code approval unlocks documentation. After documentation is committed, Rust checks the worktrees and performs a local merge.</p></article>
+				</div>
+				<div class="notice" role="note"><strong>Local only:</strong>
+				Cronos-AI does not push to a remote. A successful local merge marks the task Completed; publishing remains your Git operation.</div>
+				<div class="feature-actions">
+					<a class="button secondary" href="../design/workflow.drawio" download>Download editable draw.io source</a>
+					<a class="button secondary" href="../design/workflow.png">Open full-size preview</a>
+				</div>
+				<figure class="feature-preview">
+					<img src="../design/workflow.png" alt="A project fans out to independent feature tracks; each track proceeds through specs, build, verify, and human approval.">
+					<figcaption>Parallel feature tracks are the target model. The current MVP still processes one task at a time.</figcaption>
+				</figure>
+			</section>
+
+			<section id="controls" aria-labelledby="controls-title">
+				<div class="section-intro">
+					<div class="eyebrow">03 · Human controls</div>
+					<h2 id="controls-title">Review, revise, recover, or abandon</h2>
+					<p>Approval-stage rejection requests revision; it does <strong>not</strong>
+						set the task status to Rejected. Rejected is reserved for explicitly abandoning the entire task.</p>
+				</div>
+				<div class="table-wrap">
+					<table>
+						<thead><tr><th>Task status</th><th>Meaning</th><th>What you can do</th></tr></thead>
+						<tbody>
+							<tr><td><span class="status">Pending</span></td><td>Waiting to be selected by the ready queue.</td><td>Priority and dependencies determine when it becomes ready.</td></tr>
+							<tr><td><span class="status active">In Progress</span></td><td>The active workflow is running or waiting at an approval gate.</td><td><kbd>y</kbd>
+							approves; <kbd>n</kbd>
+							requests revision and asks for a note.</td></tr>
+							<tr><td><span class="status error">Error</span></td><td>A failure stopped the workflow; remaining agents in that step are cancelled.</td><td><kbd>r</kbd>
+							retries specs; <kbd>c</kbd>
+							supplies clarification and regenerates specs. Both discard the failed attempt's worktree and branch.</td></tr>
+							<tr><td><span class="status done">Completed</span></td><td>Required steps and local merge succeeded.</td><td>Inspect the result in the project repository.</td></tr>
+							<tr><td><span class="status error">Rejected</span></td><td>A human explicitly abandoned the whole task.</td><td>Enter a reason when pressing <kbd>a</kbd>
+								in task details.</td></tr>
+						</tbody>
+					</table>
+				</div>
+				<p class="small" style="margin-top:14px">Use <kbd>r</kbd>
+					outside an Error task to refresh. Press <kbd>Backspace</kbd>
+					or <kbd>Esc</kbd>
+					to go back, and <kbd>q</kbd>
+					to quit.</p>
+			</section>
+
+			<section id="architecture" aria-labelledby="architecture-title">
+				<div class="section-intro">
+					<div class="eyebrow">04 · Architecture</div>
+					<h2 id="architecture-title">Rust owns state · Pi orchestrates · Herdr runs agents · Openspec as one source of truth</h2>
+					<p>The boundary is intentional: the model can query task state and request the current step, but only the Rust host validates and persists status transitions, approvals, and worktree operations.</p>
+				</div>
+				<div class="diagram-frame">
+					<pre class="mermaid" id="architecture-diagram">flowchart LR
+  human(["Human operator"])
+  tui["Cronos CLI / TUI"]
+
+  subgraph host["Cronos Rust host · state owner"]
+    queue["Ready queue&lt;br/&gt;Priority + dependencies&lt;br/&gt;One active task in MVP"]
+    state[("Project + task JSON")]
+    workspace["Per-attempt worktree&lt;br/&gt;and local branch"]
+    stepRunner["Workflow host&lt;br/&gt;Validates status, step,&lt;br/&gt;approval and worktree"]
+    approval{{"Human approval&lt;br/&gt;Specs + final code"}}
+    merger["Clean checks&lt;br/&gt;Local merge"]
+  end
+
+  subgraph pi["Pi orchestrator"]
+    session["Pi RPC session"]
+    extension["Cronos workflow extension"]
+  end
+
+  subgraph herdr["Herdr agent runtime"]
+    agents["Agents for current step&lt;br/&gt;Concurrent within the step"]
+  end
+
+  openspec["OpenSpec"]
+  repository[("User's local Git repository")]
+  completed(["Completed"])
+  error(["Error"])
+  rejected(["Rejected"])
+
+  human --&gt; tui
+  tui --&gt;|create and select project, create task| queue
+  queue --&gt;|load and persist| state
+  queue --&gt;|assign attempt| workspace
+  queue --&gt;|launch assigned task| session
+  workspace --&gt; repository
+
+  session --&gt; extension
+  extension --&gt;|read-only task query| state
+  extension --&gt;|run current step| stepRunner
+  stepRunner --&gt;|start step agents| agents
+  agents --&gt;|results; wait for all| stepRunner
+  agents --&gt;|work in assigned worktree| workspace
+  agents --&gt;|specification step| openspec
+  stepRunner --&gt;|validated step and activity updates| state
+  stepRunner --&gt;|approval step reached| approval
+  tui --&gt;|approve or request revision| approval
+  approval --&gt;|validated decision| state
+  approval --&gt;|continue or revise| stepRunner
+  stepRunner --&gt;|documentation changes committed| workspace
+  stepRunner --&gt;|after final approval and docs| merger
+  merger &lt;--&gt;|worktree and local merge| repository
+  merger --&gt;|success| completed
+  completed --&gt; state
+
+  agents -. failure: cancel siblings .-&gt; error
+  merger -. conflict: abort merge .-&gt; error
+  error --&gt;|human retries or clarifies| workspace
+  error --&gt;|human abandons| rejected
+  rejected --&gt; state
+
+  classDef person fill:#F1F5FA,stroke:#667A90,color:#16283D,stroke-width:1.5px;
+  classDef host fill:#EAF5F4,stroke:#188C83,color:#153C42,stroke-width:1.5px;
+  classDef agent fill:#F0EEFA,stroke:#7966B5,color:#302950,stroke-width:1.5px;
+  classDef external fill:#FFF4E3,stroke:#C38A3E,color:#4B371F,stroke-width:1.5px;
+  classDef success fill:#E7F6EC,stroke:#39935B,color:#183E27,stroke-width:1.5px;
+  classDef failure fill:#FFF0ED,stroke:#CB6A56,color:#55271F,stroke-width:1.5px;
+
+  class human,tui person;
+  class queue,state,workspace,stepRunner,approval,merger host;
+  class session,extension,agents agent;
+  class openspec,repository external;
+  class completed success;
+  class error,rejected failure;</pre>
+					<p id="mermaid-status" class="diagram-status" role="status" aria-live="polite">Loading architecture diagram…</p>
+				</div>
+				<div class="diagram-links">
+					<a href="../design/architecture.mmd">Mermaid source</a>
+					<a href="../design/workflow.drawio">Editable feature-flow diagram</a>
+					<a href="../design/workflow.png">Feature-flow preview</a>
+				</div>
+				<p class="small" style="margin-top:14px">The parallel feature view is a target model. The Rust MVP currently runs one task at a time, while independent agents within that task's active step may run concurrently.</p>
+			</section>
+
+			<section id="technical" aria-labelledby="technical-title">
+				<div class="section-intro">
+					<div class="eyebrow">05 · Technical notes for users</div>
+					<h2 id="technical-title">What Cronos-AI does with your project</h2>
+				</div>
+				<div class="grid two">
+					<article class="card blue">
+						<h3>State and storage</h3>
+						<p>Rust stores project and task records as JSON, writes updates atomically, validates records on load, and retains bounded step activity, approval, and recovery history.</p>
+						<p class="small">Project records are under <code>projects/&lt;project-id&gt;/project.json</code>; task records are under <code>projects/&lt;project-id&gt;/tasks/&lt;task-id&gt;.json</code>.</p>
+					</article>
+					<article class="card teal">
+						<h3>Git safety</h3>
+						<p>Each task attempt gets its own worktree under the Cronos data directory and a local attempt branch. Retrying or clarifying discards the failed attempt before a fresh workspace is assigned.</p>
+						<p class="small">Before merging, the base repository and worktree must be clean. Conflicts are aborted; remote publishing is manual.</p>
+					</article>
+				</div>
+				<div class="notice" role="note"><strong>Model access:</strong>
+				the Pi extension offers read-only task-state queries and a narrow current-step command. Rust validates task status, step order, approval gates, agent inputs, and worktree paths before applying changes.</div>
+				<p>For field-level details, see <a href="storage-format.md">storage format</a>, <a href="workflow-states.md">workflow states</a>, <a href="monitoring.md">TUI controls</a>, and <a href="integration-contracts.md">integration contracts</a>.</p>
+			</section>
+
+			<section id="cli" aria-labelledby="cli-title">
+				<div class="section-intro">
+					<div class="eyebrow">06 · CLI reference</div>
+					<h2 id="cli-title">Manage projects and the ready queue</h2>
+					<p>CLI commands print JSON records. Use the returned UUIDs for later commands. Starting and supervising a workflow happens in the dashboard.</p>
+				</div>
+				<pre><code>cronos-ai [--data-dir DIR] project create &lt;name&gt; [--description TEXT] [--repository PATH]
+cronos-ai [--data-dir DIR] project set-repository &lt;project-id&gt; --repository PATH
+cronos-ai [--data-dir DIR] project list
+cronos-ai [--data-dir DIR] project select &lt;project-id&gt;
+cronos-ai [--data-dir DIR] project update &lt;project-id&gt; [--name NAME] [--description TEXT]
+cronos-ai [--data-dir DIR] project archive &lt;project-id&gt;
+
+cronos-ai [--data-dir DIR] task create &lt;project-id&gt; &lt;title&gt; [--priority low|medium|high] [--depends-on TASK_ID[,TASK_ID...]]
+cronos-ai [--data-dir DIR] task list &lt;project-id&gt;
+cronos-ai [--data-dir DIR] task ready &lt;project-id&gt;</code></pre>
+				<p class="small">If <code>--data-dir</code>
+					is omitted, Cronos-AI checks <code>CRONOS_AI_DATA_DIR</code>, then uses the platform's user data directory. <code>project select</code>
+					reports a selection; it does not persist one globally.</p>
+			</section>
+
+			<section aria-labelledby="more-title">
+				<div class="section-intro">
+					<div class="eyebrow">More help</div>
+					<h2 id="more-title">Reference pages</h2>
+				</div>
+				<div class="grid">
+					<article class="card"><h3>Project and task workflow</h3><p><a href="project-task-commands.md">Commands, setup, and end-to-end steps</a></p></article>
+					<article class="card"><h3>Monitoring</h3><p><a href="monitoring.md">Dashboard navigation, approvals, and recovery keys</a></p></article>
+					<article class="card"><h3>Storage</h3><p><a href="storage-format.md">Paths, fields, and persistence safeguards</a></p></article>
+				</div>
+			</section>
+		</main>
+
+		<footer>
+			<p><strong>Cronos-AI</strong>
+			· Supervised, local-first agent workflows for developers.</p>
+			<p>This guide documents current MVP behavior. See <a href="../CHANGELOG.md">the changelog</a>
+				for implemented features.</p>
+		</footer>
+		<!-- GUIDE_CONTENT_END -->
+
+		<script type="module">
+			const diagram = document.getElementById("architecture-diagram");
+			const status = document.getElementById("mermaid-status");
+			try {
+				const { default: mermaid } = await import("https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs");
+				mermaid.initialize({
+					startOnLoad: false,
+					securityLevel: "strict",
+					theme: "base",
+					themeVariables: {
+						background: "#f7fafc",
+						primaryColor: "#eaf5f4",
+						primaryTextColor: "#172b42",
+						primaryBorderColor: "#188c83",
+						secondaryColor: "#f0eef9",
+						tertiaryColor: "#fff4e3",
+						lineColor: "#667b90",
+						edgeLabelBackground: "#ffffff",
+						fontFamily: "Inter, system-ui, sans-serif"
+					},
+					flowchart: { curve: "basis", htmlLabels: true, nodeSpacing: 34, rankSpacing: 50 }
+				});
+			await mermaid.run({ nodes: [diagram] });
+			status.textContent = "Architecture diagram rendered from the linked Mermaid source.";
+			status.classList.add("muted");
+		} catch (error) {
+			status.textContent = "The Mermaid renderer could not load. The architecture source is available in design/architecture.mmd.";
+			status.classList.add("muted");
+		}
+		</script>
+	</body>
+</html>
