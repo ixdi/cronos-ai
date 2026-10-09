@@ -23,7 +23,7 @@ use crate::{
     integrations::{GitAdapter, PiRpcHandle, ToolCommands, herdr_session_available},
     model::{
         AgentActivity, AgentStatus, ApprovalDecision, ApprovalGate, Priority, Project,
-        ProjectStatus, Task, TaskStatus, WorkflowStep,
+        ProjectStatus, Task, TaskId, TaskStatus, WorkflowStep,
     },
     project::{ProjectError, ProjectManager},
 };
@@ -40,6 +40,133 @@ enum Dialog {
     Revision { gate: ApprovalGate, note: String },
     Clarify { note: String },
     Abandon { note: String },
+    CreateProject(ProjectForm),
+    CreateTask(TaskForm),
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ProjectField {
+    Name,
+    Description,
+    Repository,
+}
+
+impl ProjectField {
+    fn next(self) -> Self {
+        match self {
+            Self::Name => Self::Description,
+            Self::Description => Self::Repository,
+            Self::Repository => Self::Name,
+        }
+    }
+
+    fn previous(self) -> Self {
+        match self {
+            Self::Name => Self::Repository,
+            Self::Description => Self::Name,
+            Self::Repository => Self::Description,
+        }
+    }
+}
+
+struct ProjectForm {
+    name: String,
+    description: String,
+    repository: String,
+    focus: ProjectField,
+}
+
+impl Default for ProjectForm {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            description: String::new(),
+            repository: String::new(),
+            focus: ProjectField::Name,
+        }
+    }
+}
+
+impl ProjectForm {
+    fn focused_value_mut(&mut self) -> &mut String {
+        match self.focus {
+            ProjectField::Name => &mut self.name,
+            ProjectField::Description => &mut self.description,
+            ProjectField::Repository => &mut self.repository,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum TaskField {
+    Title,
+    Description,
+    Priority,
+    Dependencies,
+}
+
+impl TaskField {
+    fn next(self) -> Self {
+        match self {
+            Self::Title => Self::Description,
+            Self::Description => Self::Priority,
+            Self::Priority => Self::Dependencies,
+            Self::Dependencies => Self::Title,
+        }
+    }
+
+    fn previous(self) -> Self {
+        match self {
+            Self::Title => Self::Dependencies,
+            Self::Description => Self::Title,
+            Self::Priority => Self::Description,
+            Self::Dependencies => Self::Priority,
+        }
+    }
+}
+
+struct TaskForm {
+    title: String,
+    description: String,
+    priority: Priority,
+    dependencies: Vec<TaskId>,
+    focus: TaskField,
+    dependency_cursor: usize,
+}
+
+impl Default for TaskForm {
+    fn default() -> Self {
+        Self {
+            title: String::new(),
+            description: String::new(),
+            priority: Priority::Medium,
+            dependencies: Vec::new(),
+            focus: TaskField::Title,
+            dependency_cursor: 0,
+        }
+    }
+}
+
+impl TaskForm {
+    fn focused_text_mut(&mut self) -> Option<&mut String> {
+        match self.focus {
+            TaskField::Title => Some(&mut self.title),
+            TaskField::Description => Some(&mut self.description),
+            TaskField::Priority | TaskField::Dependencies => None,
+        }
+    }
+
+    fn toggle_dependency(&mut self, id: TaskId) {
+        if let Some(index) = self
+            .dependencies
+            .iter()
+            .position(|selected| *selected == id)
+        {
+            self.dependencies.remove(index);
+        } else {
+            self.dependencies.push(id);
+        }
+    }
 }
 
 struct Dashboard {
@@ -183,6 +310,10 @@ impl Dashboard {
 
     fn handle_navigation_key(&mut self, key: KeyCode) {
         match (self.screen, key) {
+            (Screen::Projects, KeyCode::Char('n')) => {
+                self.error = None;
+                self.dialog = Dialog::CreateProject(ProjectForm::default());
+            }
             (Screen::Projects, KeyCode::Up) => {
                 self.selected_project = self.selected_project.saturating_sub(1);
             }
@@ -196,6 +327,17 @@ impl Dashboard {
                 self.screen = Screen::Tasks;
                 self.selected_task = 0;
                 self.refresh_for_ui();
+            }
+            (Screen::Tasks, KeyCode::Char('n')) => {
+                if self
+                    .selected_project()
+                    .is_some_and(|project| project.status == ProjectStatus::Active)
+                {
+                    self.error = None;
+                    self.dialog = Dialog::CreateTask(TaskForm::default());
+                } else {
+                    self.error = Some("Archived projects cannot receive tasks.".to_owned());
+                }
             }
             (Screen::Tasks, KeyCode::Up) => {
                 self.selected_task = self.selected_task.saturating_sub(1);
@@ -353,7 +495,236 @@ impl Dashboard {
         };
     }
 
+    fn handle_project_dialog_key(&mut self, key: KeyCode) {
+        match key {
+            KeyCode::Esc => {
+                self.dialog = Dialog::None;
+                self.error = None;
+            }
+            KeyCode::Tab | KeyCode::BackTab => {
+                if let Dialog::CreateProject(form) = &mut self.dialog {
+                    form.focus = if key == KeyCode::Tab {
+                        form.focus.next()
+                    } else {
+                        form.focus.previous()
+                    };
+                }
+                self.error = None;
+            }
+            KeyCode::Backspace => {
+                if let Dialog::CreateProject(form) = &mut self.dialog {
+                    form.focused_value_mut().pop();
+                }
+                self.error = None;
+            }
+            KeyCode::Char(character) if !character.is_control() => {
+                if let Dialog::CreateProject(form) = &mut self.dialog {
+                    let value = form.focused_value_mut();
+                    if value.chars().count() < 10_000 {
+                        value.push(character);
+                    }
+                }
+                self.error = None;
+            }
+            KeyCode::Enter => self.submit_project_creation(),
+            _ => {}
+        }
+    }
+
+    fn submit_project_creation(&mut self) {
+        let dialog = std::mem::replace(&mut self.dialog, Dialog::None);
+        let Dialog::CreateProject(form) = dialog else {
+            self.dialog = dialog;
+            return;
+        };
+        let repository =
+            (!form.repository.trim().is_empty()).then(|| PathBuf::from(form.repository.trim()));
+        let result = self.manager.create_project_with_repository(
+            form.name.clone(),
+            (!form.description.trim().is_empty()).then(|| form.description.clone()),
+            repository.as_deref(),
+            &GitAdapter::default(),
+        );
+        match result {
+            Ok(project) => {
+                self.error = None;
+                self.refresh_for_ui();
+                self.selected_project = self
+                    .projects
+                    .iter()
+                    .position(|item| item.id == project.id)
+                    .unwrap_or(self.selected_project);
+            }
+            Err(error) => {
+                self.error = Some(error.to_string());
+                self.dialog = Dialog::CreateProject(form);
+            }
+        }
+    }
+
+    fn handle_task_dialog_key(&mut self, key: KeyCode) {
+        let task_count = self.tasks.len();
+        match key {
+            KeyCode::Esc => {
+                self.dialog = Dialog::None;
+                self.error = None;
+            }
+            KeyCode::Tab | KeyCode::BackTab => {
+                if let Dialog::CreateTask(form) = &mut self.dialog {
+                    form.focus = if key == KeyCode::Tab {
+                        form.focus.next()
+                    } else {
+                        form.focus.previous()
+                    };
+                }
+                self.error = None;
+            }
+            KeyCode::Backspace => {
+                if let Dialog::CreateTask(form) = &mut self.dialog
+                    && let Some(value) = form.focused_text_mut()
+                {
+                    value.pop();
+                }
+                self.error = None;
+            }
+            KeyCode::Char(character) if !character.is_control() => {
+                let dependency = if character == ' ' {
+                    match &self.dialog {
+                        Dialog::CreateTask(form) if form.focus == TaskField::Dependencies => {
+                            self.tasks.get(form.dependency_cursor).map(|task| task.id)
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                if let Dialog::CreateTask(form) = &mut self.dialog {
+                    if let Some(value) = form.focused_text_mut() {
+                        if value.chars().count() < 10_000 {
+                            value.push(character);
+                        }
+                        self.error = None;
+                    } else if let Some(id) = dependency {
+                        form.toggle_dependency(id);
+                        self.error = None;
+                    }
+                }
+            }
+            KeyCode::Up
+                if matches!(
+                    &self.dialog,
+                    Dialog::CreateTask(TaskForm {
+                        focus: TaskField::Dependencies,
+                        ..
+                    })
+                ) =>
+            {
+                if let Dialog::CreateTask(form) = &mut self.dialog {
+                    form.dependency_cursor = form.dependency_cursor.saturating_sub(1);
+                }
+            }
+            KeyCode::Down
+                if matches!(
+                    &self.dialog,
+                    Dialog::CreateTask(TaskForm {
+                        focus: TaskField::Dependencies,
+                        ..
+                    })
+                ) =>
+            {
+                if let Dialog::CreateTask(form) = &mut self.dialog {
+                    form.dependency_cursor = form
+                        .dependency_cursor
+                        .saturating_add(1)
+                        .min(task_count.saturating_sub(1));
+                }
+            }
+            KeyCode::Left
+                if matches!(
+                    &self.dialog,
+                    Dialog::CreateTask(TaskForm {
+                        focus: TaskField::Priority,
+                        ..
+                    })
+                ) =>
+            {
+                if let Dialog::CreateTask(form) = &mut self.dialog {
+                    form.priority = match form.priority {
+                        Priority::High => Priority::Medium,
+                        Priority::Medium | Priority::Low => Priority::Low,
+                    };
+                    self.error = None;
+                }
+            }
+            KeyCode::Right
+                if matches!(
+                    &self.dialog,
+                    Dialog::CreateTask(TaskForm {
+                        focus: TaskField::Priority,
+                        ..
+                    })
+                ) =>
+            {
+                if let Dialog::CreateTask(form) = &mut self.dialog {
+                    form.priority = match form.priority {
+                        Priority::Low => Priority::Medium,
+                        Priority::Medium | Priority::High => Priority::High,
+                    };
+                    self.error = None;
+                }
+            }
+            KeyCode::Enter => self.submit_task_creation(),
+            _ => {}
+        }
+    }
+
+    fn submit_task_creation(&mut self) {
+        let dialog = std::mem::replace(&mut self.dialog, Dialog::None);
+        let Dialog::CreateTask(form) = dialog else {
+            self.dialog = dialog;
+            return;
+        };
+        let Some(project_id) = self.selected_project().map(|project| project.id) else {
+            self.error = Some("Select a project before creating a task.".to_owned());
+            self.dialog = Dialog::CreateTask(form);
+            return;
+        };
+        let result = self.manager.create_task(
+            project_id,
+            form.title.clone(),
+            (!form.description.trim().is_empty()).then(|| form.description.clone()),
+            form.priority.clone(),
+            form.dependencies.clone(),
+        );
+        match result {
+            Ok(task) => {
+                self.error = None;
+                self.refresh_for_ui();
+                self.selected_task = self
+                    .tasks
+                    .iter()
+                    .position(|item| item.id == task.id)
+                    .unwrap_or(self.selected_task);
+            }
+            Err(error) => {
+                self.error = Some(error.to_string());
+                self.dialog = Dialog::CreateTask(form);
+            }
+        }
+    }
+
     fn handle_dialog_key(&mut self, key: KeyCode) {
+        match &self.dialog {
+            Dialog::CreateProject(_) => {
+                self.handle_project_dialog_key(key);
+                return;
+            }
+            Dialog::CreateTask(_) => {
+                self.handle_task_dialog_key(key);
+                return;
+            }
+            _ => {}
+        }
         if key == KeyCode::Esc {
             self.dialog = Dialog::None;
             return;
@@ -365,7 +736,7 @@ impl Dashboard {
                 | Dialog::Abandon { note } => {
                     note.pop();
                 }
-                Dialog::None => {}
+                Dialog::None | Dialog::CreateProject(_) | Dialog::CreateTask(_) => {}
             }
             return;
         }
@@ -437,6 +808,7 @@ impl Dashboard {
                 self.error = Some("An abandonment reason is required.".to_owned());
             }
             Dialog::None => {}
+            Dialog::CreateProject(_) | Dialog::CreateTask(_) => unreachable!(),
         }
     }
 
@@ -703,9 +1075,9 @@ fn draw(frame: &mut Frame, app: &Dashboard) {
         Screen::TaskDetail => draw_task_detail(frame, app, areas[0]),
     }
     let help = match app.screen {
-        Screen::Projects => "↑/↓ select  Enter open  r refresh  q quit",
+        Screen::Projects => "↑/↓ select  Enter open  n new project  r refresh  q quit",
         Screen::Tasks => {
-            "↑/↓ select  Enter details  s start next ready task  Backspace projects  r refresh  q quit"
+            "↑/↓ select  Enter details  n new task  s start next ready task  Backspace projects  r refresh  q quit"
         }
         Screen::TaskDetail
             if app
@@ -737,33 +1109,116 @@ fn draw(frame: &mut Frame, app: &Dashboard) {
 }
 
 fn draw_dialog(frame: &mut Frame, app: &Dashboard) {
-    let (title, prompt, note) = match &app.dialog {
+    let (title, content) = match &app.dialog {
         Dialog::None => return,
+        Dialog::CreateProject(form) => {
+            let field_line = |field, label: &str, value: &str| {
+                let focused = form.focus == field;
+                format!(
+                    "{} {}: {}{}",
+                    if focused { ">" } else { " " },
+                    label,
+                    terminal_safe(value),
+                    if focused { "_" } else { "" }
+                )
+            };
+            (
+                "Create project".to_owned(),
+                format!(
+                    "{}\n{}\n{}\n\nTab/Shift+Tab fields  Enter create  Esc cancel",
+                    field_line(ProjectField::Name, "Name", &form.name),
+                    field_line(ProjectField::Description, "Description", &form.description),
+                    field_line(ProjectField::Repository, "Git repository", &form.repository),
+                ),
+            )
+        }
+        Dialog::CreateTask(form) => {
+            let field_line = |field, label: &str, value: &str| {
+                let focused = form.focus == field;
+                format!(
+                    "{} {}: {}{}",
+                    if focused { ">" } else { " " },
+                    label,
+                    terminal_safe(value),
+                    if focused { "_" } else { "" }
+                )
+            };
+            let dependencies = if app.tasks.is_empty() {
+                "No existing tasks to use as dependencies.".to_owned()
+            } else {
+                app.tasks
+                    .iter()
+                    .enumerate()
+                    .map(|(index, task)| {
+                        format!(
+                            "{} [{}] {}",
+                            if form.focus == TaskField::Dependencies
+                                && form.dependency_cursor == index
+                            {
+                                ">"
+                            } else {
+                                " "
+                            },
+                            if form.dependencies.contains(&task.id) {
+                                "x"
+                            } else {
+                                " "
+                            },
+                            terminal_safe(&task.title)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            (
+                "Create task".to_owned(),
+                format!(
+                    "{}\n{}\n{} Priority: {}\n{} Dependencies (Space toggles):\n{}\n\nTab/Shift+Tab fields  ←/→ priority  ↑/↓ dependency  Enter create  Esc cancel",
+                    field_line(TaskField::Title, "Title", &form.title),
+                    field_line(TaskField::Description, "Description", &form.description),
+                    if form.focus == TaskField::Priority {
+                        ">"
+                    } else {
+                        " "
+                    },
+                    priority_label(&form.priority),
+                    if form.focus == TaskField::Dependencies {
+                        ">"
+                    } else {
+                        " "
+                    },
+                    dependencies,
+                ),
+            )
+        }
         Dialog::Revision { gate, note } => (
             format!("Request changes — {}", approval_gate_label(*gate)),
-            "Describe the revision needed:",
-            note,
+            format!(
+                "Describe the revision needed:\n\n> {}_\n\nEnter save  Esc cancel",
+                terminal_safe(note)
+            ),
         ),
         Dialog::Clarify { note } => (
             "Clarify task".to_owned(),
-            "This discards the failed worktree. Add context for replacement specifications:",
-            note,
+            format!(
+                "This discards the failed worktree. Add context for replacement specifications:\n\n> {}_\n\nEnter save  Esc cancel",
+                terminal_safe(note)
+            ),
         ),
         Dialog::Abandon { note } => (
             "Abandon task".to_owned(),
-            "This marks the task Rejected. Enter the reason:",
-            note,
+            format!(
+                "This marks the task Rejected. Enter the reason:\n\n> {}_\n\nEnter save  Esc cancel",
+                terminal_safe(note)
+            ),
         ),
     };
-    let area = centered_rect(70, 35, frame.area());
+    let area = centered_rect(78, 45, frame.area());
     frame.render_widget(Clear, area);
     frame.render_widget(
-        Paragraph::new(format!(
-            "{prompt}\n\n> {}_\n\nEnter save  Esc cancel",
-            terminal_safe(note)
-        ))
-        .wrap(Wrap { trim: true })
-        .block(Block::default().borders(Borders::ALL).title(title)),
+        Paragraph::new(content)
+            .wrap(Wrap { trim: true })
+            .block(Block::default().borders(Borders::ALL).title(title)),
         area,
     );
 }
@@ -1076,7 +1531,10 @@ fn agent_status_label(status: &AgentStatus) -> &'static str {
 mod tests {
     use super::{Dashboard, Dialog, Screen};
     use crate::{
-        model::{AgentStatus, ApprovalDecision, ApprovalGate, Priority, TaskStatus, WorkflowStep},
+        model::{
+            AgentStatus, ApprovalDecision, ApprovalGate, Priority, ProjectStatus, TaskStatus,
+            WorkflowStep,
+        },
         project::ProjectManager,
     };
     use crossterm::event::KeyCode;
@@ -1086,6 +1544,253 @@ mod tests {
         let rendered = super::terminal_safe("task\u{1b}[2J\nname");
         assert_eq!(rendered, "task [2J name");
         assert!(!rendered.chars().any(char::is_control));
+    }
+
+    #[test]
+    fn project_creation_saves_and_selects_project_from_form() {
+        let root = tempfile::tempdir().unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+
+        app.handle_key(KeyCode::Char('n'));
+        for character in "Factory".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Tab);
+        for character in "Created in TUI".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Enter);
+
+        let projects = ProjectManager::new(root.path())
+            .unwrap()
+            .list_projects()
+            .unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].name, "Factory");
+        assert_eq!(projects[0].description.as_deref(), Some("Created in TUI"));
+        assert_eq!(projects[0].status, ProjectStatus::Active);
+        assert_eq!(app.selected_project().unwrap().id, projects[0].id);
+        assert!(matches!(app.dialog, Dialog::None));
+    }
+
+    #[test]
+    fn invalid_project_repository_keeps_form_values_and_does_not_save() {
+        let root = tempfile::tempdir().unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+
+        app.handle_key(KeyCode::Char('n'));
+        for character in "Factory".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Tab);
+        for character in "/definitely/not/a/git/repository".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Enter);
+
+        assert!(app.error.is_some());
+        match &app.dialog {
+            Dialog::CreateProject(form) => {
+                assert_eq!(form.name, "Factory");
+                assert_eq!(form.repository, "/definitely/not/a/git/repository");
+            }
+            _ => panic!("invalid submission should leave the project form open"),
+        }
+        assert!(
+            ProjectManager::new(root.path())
+                .unwrap()
+                .list_projects()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn cancelling_project_creation_discards_form_without_saving() {
+        let root = tempfile::tempdir().unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+
+        app.handle_key(KeyCode::Char('n'));
+        for character in "Do not save".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Esc);
+
+        assert!(matches!(app.dialog, Dialog::None));
+        assert!(
+            ProjectManager::new(root.path())
+                .unwrap()
+                .list_projects()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn task_creation_saves_selected_fields_and_dependency_without_starting_work() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(root.path()).unwrap();
+        let project = manager.create_project("Demo".to_owned(), None).unwrap();
+        let prerequisite = manager
+            .create_task(
+                project.id,
+                "Prerequisite".to_owned(),
+                None,
+                Priority::Low,
+                Vec::new(),
+            )
+            .unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+        app.handle_key(KeyCode::Enter);
+        app.handle_key(KeyCode::Char('n'));
+        for character in "Implement the next step".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Tab);
+        for character in "Created through the TUI".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Char(' '));
+        app.handle_key(KeyCode::Enter);
+
+        let task = ProjectManager::new(root.path())
+            .unwrap()
+            .list_tasks(project.id)
+            .unwrap()
+            .into_iter()
+            .find(|task| task.title == "Implement the next step")
+            .unwrap();
+        assert_eq!(task.description.as_deref(), Some("Created through the TUI"));
+        assert_eq!(task.priority, Priority::High);
+        assert_eq!(task.dependencies, vec![prerequisite.id]);
+        assert_eq!(task.status, TaskStatus::Pending);
+        assert!(task.current_step.is_none());
+        assert!(task.worktree.is_none());
+        assert_eq!(app.selected_task().unwrap().id, task.id);
+        assert!(matches!(app.dialog, Dialog::None));
+    }
+
+    #[test]
+    fn task_creation_defaults_to_medium_priority_without_dependencies() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(root.path()).unwrap();
+        let project = manager.create_project("Demo".to_owned(), None).unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+        app.handle_key(KeyCode::Enter);
+        app.handle_key(KeyCode::Char('n'));
+        for character in "Independent task".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Enter);
+
+        let task = manager.list_tasks(project.id).unwrap().pop().unwrap();
+        assert_eq!(task.priority, Priority::Medium);
+        assert!(task.dependencies.is_empty());
+        assert_eq!(task.status, TaskStatus::Pending);
+    }
+
+    #[test]
+    fn invalid_task_title_keeps_form_and_does_not_save() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(root.path()).unwrap();
+        let project = manager.create_project("Demo".to_owned(), None).unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+        app.handle_key(KeyCode::Enter);
+        app.handle_key(KeyCode::Char('n'));
+        app.handle_key(KeyCode::Enter);
+
+        assert!(app.error.is_some());
+        match &app.dialog {
+            Dialog::CreateTask(form) => assert!(form.title.is_empty()),
+            _ => panic!("invalid submission should leave the task form open"),
+        }
+        assert!(manager.list_tasks(project.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn cancelling_task_creation_discards_form_without_saving() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(root.path()).unwrap();
+        let project = manager.create_project("Demo".to_owned(), None).unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+        app.handle_key(KeyCode::Enter);
+        app.handle_key(KeyCode::Char('n'));
+        for character in "Do not save".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Esc);
+
+        assert!(matches!(app.dialog, Dialog::None));
+        assert!(manager.list_tasks(project.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn archived_project_rejects_task_creation_from_tui() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(root.path()).unwrap();
+        let project = manager.create_project("Archived".to_owned(), None).unwrap();
+        manager.archive_project(project.id).unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+        app.handle_key(KeyCode::Enter);
+        app.handle_key(KeyCode::Char('n'));
+
+        assert!(
+            app.error
+                .as_deref()
+                .is_some_and(|error| error.contains("Archived"))
+        );
+        assert!(matches!(app.dialog, Dialog::None));
+        assert!(manager.list_tasks(project.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn project_and_dependent_task_creation_roundtrips_through_tui_controller() {
+        let root = tempfile::tempdir().unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+
+        app.handle_key(KeyCode::Char('n'));
+        for character in "E2E project".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Enter);
+        app.handle_key(KeyCode::Enter);
+
+        app.handle_key(KeyCode::Char('n'));
+        for character in "Prerequisite".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Enter);
+        let manager = ProjectManager::new(root.path()).unwrap();
+        let project = manager.list_projects().unwrap().pop().unwrap();
+        let prerequisite = manager.list_tasks(project.id).unwrap().pop().unwrap();
+
+        app.handle_key(KeyCode::Char('n'));
+        for character in "Dependent task".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Char(' '));
+        app.handle_key(KeyCode::Enter);
+
+        let reloaded = ProjectManager::new(root.path()).unwrap();
+        let tasks = reloaded.list_tasks(project.id).unwrap();
+        let dependent = tasks
+            .iter()
+            .find(|task| task.title == "Dependent task")
+            .unwrap();
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(dependent.dependencies, vec![prerequisite.id]);
+        assert_eq!(dependent.priority, Priority::Medium);
+        assert_eq!(dependent.status, TaskStatus::Pending);
+        assert!(dependent.current_step.is_none());
+        assert!(dependent.worktree.is_none());
+        assert_eq!(app.selected_task().unwrap().id, dependent.id);
     }
 
     #[test]
