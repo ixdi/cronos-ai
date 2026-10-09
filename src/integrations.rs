@@ -1,6 +1,6 @@
 use std::{
     env,
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     io::{self, BufRead, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
@@ -51,6 +51,8 @@ pub enum IntegrationError {
     InvalidAgentName,
     #[error("{0} path must be absolute")]
     RelativePath(&'static str),
+    #[error("{0} path is not valid UTF-8")]
+    NonUtf8Path(&'static str),
     #[error("Herdr returned an invalid pane-split response")]
     InvalidHerdrResponse,
 }
@@ -477,26 +479,107 @@ impl ToolCommands {
             .ok_or(IntegrationError::InvalidHerdrResponse)
     }
 
+    pub fn herdr_create_workspace(
+        &self,
+        session: &str,
+        cwd: &Path,
+    ) -> Result<String, IntegrationError> {
+        if !cwd.is_absolute() {
+            return Err(IntegrationError::RelativePath("working directory"));
+        }
+        let output = self.run(
+            RequiredTool::Herdr,
+            &[
+                OsStr::new("--session"),
+                OsStr::new(session),
+                OsStr::new("workspace"),
+                OsStr::new("create"),
+                OsStr::new("--cwd"),
+                cwd.as_os_str(),
+                OsStr::new("--label"),
+                OsStr::new("Cronos-AI"),
+                OsStr::new("--focus"),
+            ],
+        )?;
+        serde_json::from_slice::<serde_json::Value>(&output.stdout)
+            .ok()
+            .and_then(|response| {
+                response
+                    .pointer("/result/root_pane/pane_id")?
+                    .as_str()
+                    .filter(|pane_id| !pane_id.is_empty())
+                    .map(str::to_owned)
+            })
+            .ok_or(IntegrationError::InvalidHerdrResponse)
+    }
+
+    pub fn herdr_attach_session(&self, session: &str) -> Result<(), IntegrationError> {
+        let status = Command::new(&self.herdr)
+            .arg("--session")
+            .arg(session)
+            .status()
+            .map_err(|source| IntegrationError::Io {
+                tool: RequiredTool::Herdr.executable(),
+                source,
+            })?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(IntegrationError::Failed {
+                tool: RequiredTool::Herdr.executable(),
+                status: status.to_string(),
+                stderr: String::new(),
+            })
+        }
+    }
+
+    pub fn herdr_run_tui(
+        &self,
+        session: &str,
+        pane_id: &str,
+        executable: &Path,
+    ) -> Result<Output, IntegrationError> {
+        if !executable.is_absolute() {
+            return Err(IntegrationError::RelativePath("Cronos executable"));
+        }
+        if pane_id.is_empty() {
+            return Err(IntegrationError::InvalidHerdrResponse);
+        }
+        let executable = executable
+            .to_str()
+            .ok_or(IntegrationError::NonUtf8Path("Cronos executable"))?;
+        let command = quote_shell_word(executable);
+        self.run(
+            RequiredTool::Herdr,
+            &[
+                OsStr::new("--session"),
+                OsStr::new(session),
+                OsStr::new("pane"),
+                OsStr::new("run"),
+                OsStr::new(pane_id),
+                OsStr::new(&command),
+            ],
+        )
+    }
+
     pub fn herdr_start_pi_agent(
         &self,
         name: &str,
         pane_id: &str,
+        pi_args: &[OsString],
     ) -> Result<Output, IntegrationError> {
         if !valid_agent_name(name) {
             return Err(IntegrationError::InvalidAgentName);
         }
-        self.run(
-            RequiredTool::Herdr,
-            &[
-                OsStr::new("agent"),
-                OsStr::new("start"),
-                OsStr::new(name),
-                OsStr::new("--kind"),
-                OsStr::new("pi"),
-                OsStr::new("--pane"),
-                OsStr::new(pane_id),
-            ],
-        )
+        let mut args = [
+            "agent", "start", name, "--kind", "pi", "--pane", pane_id, "--",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect::<Vec<_>>();
+        args.extend_from_slice(pi_args);
+        let args = args.iter().map(OsString::as_os_str).collect::<Vec<_>>();
+        self.run(RequiredTool::Herdr, &args)
     }
 
     pub fn herdr_prompt_agent(&self, name: &str, prompt: &str) -> Result<Output, IntegrationError> {
@@ -693,14 +776,18 @@ fn valid_agent_name(name: &str) -> bool {
         && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '_' | '-'))
 }
 
+fn quote_shell_word(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::{
         GitAdapter, GitError, IntegrationError, RequiredTool, ToolCommands,
-        missing_required_tools_with, prompt_to_install, require_tools,
+        missing_required_tools_with, prompt_to_install, quote_shell_word, require_tools,
     };
     use std::{
-        ffi::OsStr,
+        ffi::{OsStr, OsString},
         fs,
         io::Cursor,
         os::unix::fs::PermissionsExt,
@@ -713,6 +800,21 @@ mod tests {
         fs::write(
             &path,
             "#!/bin/sh\nprintf '%s' '{\"result\":{\"pane\":{\"pane_id\":\"w1:p9\"}}}'\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&path, permissions).unwrap();
+        path
+    }
+
+    fn fake_workspace_command(directory: &std::path::Path, response: &str) -> PathBuf {
+        let path = directory.join("fake-workspace");
+        fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$(dirname \"$0\")/args\"\nprintf '%s' '{response}'\n"
+            ),
         )
         .unwrap();
         let mut permissions = fs::metadata(&path).unwrap().permissions();
@@ -783,14 +885,34 @@ mod tests {
             .unwrap();
         let stdout = String::from_utf8(output.stdout).unwrap();
         assert!(stdout.contains("<review; do not execute shell syntax>"));
+        let pi_args = vec![
+            OsString::from("--no-skills"),
+            OsString::from("--no-extensions"),
+            OsString::from("--no-context-files"),
+            OsString::from("--no-mcp"),
+            OsString::from("--skill"),
+            OsString::from("/path with spaces/security/SKILL.md"),
+            OsString::from("--extension"),
+            OsString::from("/path with spaces/pi-mcp-adapter"),
+            OsString::from("--mcp-config"),
+            OsString::from("/path with spaces/security-mcp.json"),
+        ];
         let started = commands(fake.clone())
-            .herdr_start_pi_agent("reviewer-1", "pane-1")
+            .herdr_start_pi_agent("reviewer-1", "pane-1", &pi_args)
             .unwrap();
-        assert!(
-            String::from_utf8(started.stdout)
-                .unwrap()
-                .contains("<--kind>")
-        );
+        let started_output = String::from_utf8(started.stdout).unwrap();
+        assert!(started_output.contains("<--kind>"));
+        assert!(started_output.contains("<-->"));
+        assert!(started_output.contains("<--no-skills>"));
+        assert!(started_output.contains("<--no-extensions>"));
+        assert!(started_output.contains("<--no-context-files>"));
+        assert!(started_output.contains("<--no-mcp>"));
+        assert!(started_output.contains("<--skill>"));
+        assert!(started_output.contains("</path with spaces/security/SKILL.md>"));
+        assert!(started_output.contains("<--extension>"));
+        assert!(started_output.contains("</path with spaces/pi-mcp-adapter>"));
+        assert!(started_output.contains("<--mcp-config>"));
+        assert!(started_output.contains("</path with spaces/security-mcp.json>"));
         let read = commands(fake.clone())
             .herdr_read_agent("reviewer-1", 12)
             .unwrap();
@@ -814,6 +936,65 @@ mod tests {
         assert!(matches!(
             commands(fake).herdr_cancel_agent("Bad Name"),
             Err(IntegrationError::InvalidAgentName)
+        ));
+    }
+
+    #[test]
+    fn herdr_launcher_adapter_preserves_paths_and_quotes_tui_executable() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().join("project with spaces");
+        fs::create_dir(&cwd).unwrap();
+        let executable = temp.path().join("cronos' ai");
+        fs::write(&executable, "").unwrap();
+        let fake = fake_workspace_command(
+            temp.path(),
+            r#"{"result":{"root_pane":{"pane_id":"w5:p8"}}}"#,
+        );
+        let tools = commands(fake);
+
+        let pane = tools.herdr_create_workspace("cronos-ai", &cwd).unwrap();
+        assert_eq!(pane, "w5:p8");
+        tools
+            .herdr_run_tui("cronos-ai", &pane, &executable)
+            .unwrap();
+
+        let args = fs::read_to_string(temp.path().join("args")).unwrap();
+        let args: Vec<_> = args.lines().collect();
+        assert_eq!(
+            &args[..9],
+            [
+                "--session",
+                "cronos-ai",
+                "workspace",
+                "create",
+                "--cwd",
+                cwd.to_str().unwrap(),
+                "--label",
+                "Cronos-AI",
+                "--focus",
+            ]
+        );
+        assert_eq!(
+            &args[9..],
+            [
+                "--session",
+                "cronos-ai",
+                "pane",
+                "run",
+                "w5:p8",
+                quote_shell_word(executable.to_str().unwrap()).as_str(),
+            ]
+        );
+    }
+
+    #[test]
+    fn herdr_launcher_adapter_rejects_invalid_workspace_response() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().canonicalize().unwrap();
+        let fake = fake_workspace_command(temp.path(), r#"{"result":{"workspace":{}}}"#);
+        assert!(matches!(
+            commands(fake).herdr_create_workspace("cronos-ai", &cwd),
+            Err(IntegrationError::InvalidHerdrResponse)
         ));
     }
 

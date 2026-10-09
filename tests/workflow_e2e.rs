@@ -147,6 +147,7 @@ fn plans(names: &[&str]) -> Vec<AgentPlan> {
         .map(|name| AgentPlan {
             name: (*name).to_owned(),
             prompt: format!("Run the {name} role for this test."),
+            profile_id: None,
         })
         .collect()
 }

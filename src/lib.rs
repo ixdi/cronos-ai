@@ -1,3 +1,4 @@
+pub mod agent_profiles;
 pub mod cli;
 pub mod integrations;
 pub mod model;

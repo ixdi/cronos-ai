@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    ffi::OsString,
     hash::{DefaultHasher, Hash, Hasher},
     panic::{AssertUnwindSafe, catch_unwind},
     path::Path,
@@ -11,6 +12,7 @@ use serde::Deserialize;
 use thiserror::Error;
 
 use crate::{
+    agent_profiles::{AgentProfile, AgentProfileCatalog},
     integrations::ToolCommands,
     model::{AgentStatus, ProjectId, Task, TaskId, TaskStatus, WorkflowStep},
     project::{ProjectError, ProjectManager},
@@ -25,12 +27,29 @@ const MAX_AGENT_SUMMARY_CHARS: usize = 2_000;
 pub struct AgentPlan {
     pub name: String,
     pub prompt: String,
+    #[serde(default)]
+    pub profile_id: Option<String>,
 }
 
 #[derive(Default)]
 pub struct HerdrAgentAdapter {
     tools: ToolCommands,
     pane_creation: Mutex<()>,
+    profiles: AgentProfileCatalog,
+}
+
+impl HerdrAgentAdapter {
+    pub fn with_profiles(profiles: AgentProfileCatalog) -> Self {
+        Self::with_tools_and_profiles(ToolCommands::default(), profiles)
+    }
+
+    pub fn with_tools_and_profiles(tools: ToolCommands, profiles: AgentProfileCatalog) -> Self {
+        Self {
+            tools,
+            pane_creation: Mutex::new(()),
+            profiles,
+        }
+    }
 }
 
 impl AgentAdapter for HerdrAgentAdapter {
@@ -48,6 +67,11 @@ impl AgentAdapter for HerdrAgentAdapter {
             return Err("task worktree is unavailable".to_owned());
         }
         let herdr_name = herdr_agent_name(_task, _step, agent);
+        let profile = agent
+            .profile_id
+            .as_deref()
+            .and_then(|id| self.profiles.get_for_step(id, _step));
+        let pi_args = pi_agent_args(profile);
         {
             let _guard = self
                 .pane_creation
@@ -57,7 +81,10 @@ impl AgentAdapter for HerdrAgentAdapter {
                 .tools
                 .herdr_split_pane(worktree)
                 .map_err(|error| error.to_string())?;
-            if let Err(error) = self.tools.herdr_start_pi_agent(&herdr_name, &pane_id) {
+            if let Err(error) = self
+                .tools
+                .herdr_start_pi_agent(&herdr_name, &pane_id, &pi_args)
+            {
                 self.cancel(_task, _step, agent);
                 return Err(error.to_string());
             }
@@ -124,6 +151,12 @@ pub enum WorkflowError {
     DuplicateAgentName(String),
     #[error("agent prompt must be nonblank and at most {MAX_AGENT_PROMPT_CHARS} characters")]
     InvalidAgentPrompt,
+    #[error("agent {agent} selected unavailable profile {profile:?} for workflow step {step:?}")]
+    InvalidAgentProfile {
+        agent: String,
+        profile: String,
+        step: WorkflowStep,
+    },
     #[error("agent {name} failed: {message}")]
     AgentFailed { name: String, message: String },
 }
@@ -131,11 +164,28 @@ pub enum WorkflowError {
 pub struct WorkflowEngine<A> {
     manager: ProjectManager,
     adapter: A,
+    profiles: AgentProfileCatalog,
 }
 
 impl<A: AgentAdapter> WorkflowEngine<A> {
     pub fn new(manager: ProjectManager, adapter: A) -> Self {
-        Self { manager, adapter }
+        Self {
+            manager,
+            adapter,
+            profiles: AgentProfileCatalog::default(),
+        }
+    }
+
+    pub fn with_profiles(
+        manager: ProjectManager,
+        adapter: A,
+        profiles: AgentProfileCatalog,
+    ) -> Self {
+        Self {
+            manager,
+            adapter,
+            profiles,
+        }
     }
 
     pub fn start_next_task(&self, project_id: ProjectId) -> Result<Option<Task>, ProjectError> {
@@ -153,6 +203,7 @@ impl<A: AgentAdapter> WorkflowEngine<A> {
             return Err(WorkflowError::NotAgentStep(step));
         }
         validate_agents(&agents)?;
+        validate_profile_assignments(&self.profiles, step, &agents)?;
         let mut task = self.manager.get_task(project_id, task_id)?;
         if task.status != TaskStatus::InProgress {
             return Err(ProjectError::TaskNotInProgress(task.status).into());
@@ -325,6 +376,55 @@ fn run_parallel<A: AgentAdapter>(
     })
 }
 
+fn pi_agent_args(profile: Option<&AgentProfile>) -> Vec<OsString> {
+    let mut args = [
+        "--no-skills",
+        "--no-extensions",
+        "--no-context-files",
+        "--no-mcp",
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .collect::<Vec<_>>();
+
+    if let Some(profile) = profile {
+        for skill in &profile.skills {
+            args.push("--skill".into());
+            args.push(skill.as_os_str().to_owned());
+        }
+        for extension in &profile.extensions {
+            args.push("--extension".into());
+            args.push(extension.as_os_str().to_owned());
+        }
+        if let Some(mcp) = &profile.mcp {
+            args.push("--extension".into());
+            args.push(mcp.adapter.as_os_str().to_owned());
+            args.push("--mcp-config".into());
+            args.push(mcp.config.as_os_str().to_owned());
+        }
+    }
+    args
+}
+
+fn validate_profile_assignments(
+    profiles: &AgentProfileCatalog,
+    step: WorkflowStep,
+    agents: &[AgentPlan],
+) -> Result<(), WorkflowError> {
+    for agent in agents {
+        if let Some(profile) = &agent.profile_id
+            && profiles.get_for_step(profile, step).is_none()
+        {
+            return Err(WorkflowError::InvalidAgentProfile {
+                agent: agent.name.clone(),
+                profile: profile.clone(),
+                step,
+            });
+        }
+    }
+    Ok(())
+}
+
 fn validate_agents(agents: &[AgentPlan]) -> Result<(), WorkflowError> {
     if agents.is_empty() || agents.len() > MAX_STEP_AGENTS {
         return Err(WorkflowError::InvalidAgentCount);
@@ -357,10 +457,11 @@ fn herdr_agent_name(task: &Task, step: WorkflowStep, agent: &AgentPlan) -> Strin
     let mut hasher = DefaultHasher::new();
     agent.name.hash(&mut hasher);
     let agent_hash = hasher.finish();
-    let agent_tag = agent.name.chars().take(7).collect::<String>();
+    let agent_tag = agent.name.chars().take(4).collect::<String>();
+    // Keep the full hash while respecting Herdr's 32-character agent-name limit.
     format!(
-        "c{}-{step_tag}-{agent_tag}-{agent_hash:08x}",
-        &task_tag[..10]
+        "c{}-{step_tag}-{agent_tag}-{agent_hash:016x}",
+        &task_tag[..6]
     )
 }
 
@@ -377,18 +478,81 @@ fn truncate(value: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentAdapter, AgentPlan, WorkflowEngine};
+    use super::{AgentAdapter, AgentPlan, WorkflowEngine, pi_agent_args};
     use crate::{
+        agent_profiles::{AgentProfile, AgentProfileCatalog, McpProfile},
         model::{Priority, Task, TaskStatus, WorkflowStep},
         project::{ProjectError, ProjectManager},
     };
     use std::{
         collections::HashSet,
+        path::Path,
         sync::{
             Barrier, Condvar, Mutex,
             atomic::{AtomicUsize, Ordering},
         },
     };
+
+    #[test]
+    fn agent_profiles_are_optional_in_existing_plan_json() {
+        let legacy: AgentPlan =
+            serde_json::from_str(r#"{"name":"reviewer","prompt":"review"}"#).unwrap();
+        assert_eq!(legacy.profile_id, None);
+
+        let configured: AgentPlan = serde_json::from_str(
+            r#"{"name":"reviewer","prompt":"review","profile_id":"security-reviewer"}"#,
+        )
+        .unwrap();
+        assert_eq!(configured.profile_id.as_deref(), Some("security-reviewer"));
+    }
+
+    #[test]
+    fn pi_agent_arguments_load_only_selected_profile_resources() {
+        let profile = AgentProfile {
+            id: "security-reviewer".to_owned(),
+            description: "Security review".to_owned(),
+            steps: vec!["code-review".to_owned()],
+            skills: vec![Path::new("/profiles/security skills/SKILL.md").to_path_buf()],
+            extensions: vec![Path::new("/profiles/security extensions/index.ts").to_path_buf()],
+            mcp: Some(McpProfile {
+                adapter: Path::new("/profiles/mcp adapter").to_path_buf(),
+                config: Path::new("/profiles/security mcp.json").to_path_buf(),
+            }),
+        };
+        let args = pi_agent_args(Some(&profile))
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            args,
+            [
+                "--no-skills",
+                "--no-extensions",
+                "--no-context-files",
+                "--no-mcp",
+                "--skill",
+                "/profiles/security skills/SKILL.md",
+                "--extension",
+                "/profiles/security extensions/index.ts",
+                "--extension",
+                "/profiles/mcp adapter",
+                "--mcp-config",
+                "/profiles/security mcp.json",
+            ]
+        );
+        assert_eq!(
+            pi_agent_args(None)
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            [
+                "--no-skills",
+                "--no-extensions",
+                "--no-context-files",
+                "--no-mcp"
+            ]
+        );
+    }
 
     struct ParallelAdapter {
         barrier: Barrier,
@@ -430,6 +594,24 @@ mod tests {
         ) -> Result<String, String> {
             self.runs.fetch_add(1, Ordering::SeqCst);
             Ok("should not execute".to_owned())
+        }
+
+        fn cancel(&self, _task: &Task, _step: WorkflowStep, _agent: &AgentPlan) {}
+    }
+
+    struct CountingAdapter {
+        runs: AtomicUsize,
+    }
+
+    impl AgentAdapter for CountingAdapter {
+        fn run(
+            &self,
+            _task: &Task,
+            _step: WorkflowStep,
+            _agent: &AgentPlan,
+        ) -> Result<String, String> {
+            self.runs.fetch_add(1, Ordering::SeqCst);
+            Ok("unexpected run".to_owned())
         }
 
         fn cancel(&self, _task: &Task, _step: WorkflowStep, _agent: &AgentPlan) {}
@@ -489,6 +671,7 @@ mod tests {
             vec![AgentPlan {
                 name: "spec-writer".to_owned(),
                 prompt: "write specs".to_owned(),
+                profile_id: None,
             }],
         );
         assert!(matches!(
@@ -498,6 +681,76 @@ mod tests {
             ))
         ));
         assert_eq!(engine.adapter.runs.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn invalid_agent_profiles_fail_before_activity_or_worker_launch() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(root.path()).unwrap();
+        let project = manager.create_project("Demo".to_owned(), None).unwrap();
+        let task = manager
+            .create_task(
+                project.id,
+                "Review change".to_owned(),
+                None,
+                Priority::High,
+                Vec::new(),
+            )
+            .unwrap();
+        manager.start_next_task(project.id).unwrap();
+        let profiles = AgentProfileCatalog::from_profiles(vec![AgentProfile {
+            id: "security-reviewer".to_owned(),
+            description: "Checks security-sensitive changes".to_owned(),
+            steps: vec!["code-review".to_owned()],
+            skills: Vec::new(),
+            extensions: Vec::new(),
+            mcp: None,
+        }])
+        .unwrap();
+        let adapter = CountingAdapter {
+            runs: AtomicUsize::new(0),
+        };
+        let engine = WorkflowEngine::with_profiles(
+            ProjectManager::new(root.path()).unwrap(),
+            adapter,
+            profiles,
+        );
+        let wrong_step = AgentPlan {
+            name: "reviewer".to_owned(),
+            prompt: "Review for security issues".to_owned(),
+            profile_id: Some("security-reviewer".to_owned()),
+        };
+        assert!(matches!(
+            engine.run_step(
+                project.id,
+                task.id,
+                WorkflowStep::SpecificationGeneration,
+                vec![wrong_step],
+            ),
+            Err(super::WorkflowError::InvalidAgentProfile { .. })
+        ));
+        let unknown = AgentPlan {
+            name: "reviewer".to_owned(),
+            prompt: "Review for security issues".to_owned(),
+            profile_id: Some("missing-profile".to_owned()),
+        };
+        assert!(matches!(
+            engine.run_step(
+                project.id,
+                task.id,
+                WorkflowStep::SpecificationGeneration,
+                vec![unknown],
+            ),
+            Err(super::WorkflowError::InvalidAgentProfile { .. })
+        ));
+        assert_eq!(engine.adapter.runs.load(Ordering::SeqCst), 0);
+        assert!(
+            manager
+                .get_task(project.id, task.id)
+                .unwrap()
+                .agent_activity
+                .is_empty()
+        );
     }
 
     #[test]
@@ -539,10 +792,12 @@ mod tests {
                 AgentPlan {
                     name: "failer".to_owned(),
                     prompt: "fail this step".to_owned(),
+                    profile_id: None,
                 },
                 AgentPlan {
                     name: "worker".to_owned(),
                     prompt: "wait for cancellation".to_owned(),
+                    profile_id: None,
                 },
             ],
         );
@@ -598,10 +853,12 @@ mod tests {
                     AgentPlan {
                         name: "spec-writer".to_owned(),
                         prompt: "draft requirements".to_owned(),
+                        profile_id: None,
                     },
                     AgentPlan {
                         name: "spec-reviewer".to_owned(),
                         prompt: "review requirements".to_owned(),
+                        profile_id: None,
                     },
                 ],
             )

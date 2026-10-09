@@ -4,7 +4,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use uuid::Uuid;
 
 use crate::{
-    integrations::GitAdapter,
+    agent_profiles::AgentProfileCatalog,
+    integrations::{GitAdapter, ToolCommands, herdr_session_available, require_tools},
     model::{Priority, ProjectId, TaskId, WorkflowStep},
     project::ProjectManager,
     workflow::{AgentPlan, HerdrAgentAdapter, WorkflowEngine},
@@ -68,9 +69,13 @@ enum ProjectAction {
 
 #[derive(Subcommand)]
 enum InternalAction {
+    Launch,
     Task {
         #[command(subcommand)]
         action: InternalTaskAction,
+    },
+    AgentProfiles {
+        step: String,
     },
     Workflow {
         #[command(subcommand)]
@@ -136,20 +141,20 @@ pub fn run() -> Result<Option<PathBuf>, Box<dyn Error>> {
     let cli = Cli::parse();
     let root = cli.data_dir.unwrap_or(default_data_dir()?);
     let Some(command) = cli.command else {
-        let tools = crate::integrations::ToolCommands::default();
-        let stdin = std::io::stdin();
-        let stdout = std::io::stdout();
-        crate::integrations::require_tools(
-            || tools.missing_required_tools(),
-            &mut stdin.lock(),
-            &mut stdout.lock(),
-        )?;
+        require_available_tools(&ToolCommands::default())?;
         return Ok(Some(root));
     };
-    let manager = ProjectManager::new(root)?;
+    let manager = ProjectManager::new(root.clone())?;
 
     match command {
         Command::Internal { action } => match action {
+            InternalAction::Launch => {
+                return launch_or_open_tui(
+                    root,
+                    herdr_session_available(),
+                    &ToolCommands::default(),
+                );
+            }
             InternalAction::Task { action } => match action {
                 InternalTaskAction::Get {
                     project_id,
@@ -158,6 +163,9 @@ pub fn run() -> Result<Option<PathBuf>, Box<dyn Error>> {
                     &manager.get_task(parse_project_id(&project_id)?, parse_task_id(&task_id)?)?,
                 )?,
             },
+            InternalAction::AgentProfiles { step } => {
+                print_json(&list_agent_profiles(&root, &step)?)?;
+            }
             InternalAction::Workflow { action } => match action {
                 InternalWorkflowAction::RunStep {
                     project_id,
@@ -172,13 +180,14 @@ pub fn run() -> Result<Option<PathBuf>, Box<dyn Error>> {
                         )
                     })?;
                     let agents: Vec<AgentPlan> = serde_json::from_str(&agents_json)?;
-                    let task = WorkflowEngine::new(manager, HerdrAgentAdapter::default())
-                        .run_step(
-                            parse_project_id(&project_id)?,
-                            parse_task_id(&task_id)?,
-                            step,
-                            agents,
-                        )?;
+                    let profiles = AgentProfileCatalog::load(&root)?;
+                    let adapter = HerdrAgentAdapter::with_profiles(profiles.clone());
+                    let task = WorkflowEngine::with_profiles(manager, adapter, profiles).run_step(
+                        parse_project_id(&project_id)?,
+                        parse_task_id(&task_id)?,
+                        step,
+                        agents,
+                    )?;
                     print_json(&task)?;
                 }
             },
@@ -253,6 +262,34 @@ pub fn run() -> Result<Option<PathBuf>, Box<dyn Error>> {
     Ok(None)
 }
 
+#[derive(serde::Serialize)]
+struct AgentProfileSummary {
+    id: String,
+    description: String,
+}
+
+fn list_agent_profiles(
+    data_dir: &std::path::Path,
+    step: &str,
+) -> Result<Vec<AgentProfileSummary>, Box<dyn Error>> {
+    let step = WorkflowStep::parse(step)
+        .filter(|step| step.runs_agents())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "unknown or non-agent workflow step",
+            )
+        })?;
+    let catalog = AgentProfileCatalog::load(data_dir)?;
+    Ok(catalog
+        .for_step(step)
+        .map(|profile| AgentProfileSummary {
+            id: profile.id.clone(),
+            description: profile.description.clone(),
+        })
+        .collect())
+}
+
 fn default_data_dir() -> Result<PathBuf, Box<dyn Error>> {
     if let Some(path) = env::var_os("CRONOS_AI_DATA_DIR") {
         return Ok(PathBuf::from(path));
@@ -270,6 +307,35 @@ fn default_data_dir() -> Result<PathBuf, Box<dyn Error>> {
         .ok_or_else(|| "cannot determine data directory; pass --data-dir".into())
 }
 
+const CRONOS_AI_HERDR_SESSION: &str = "cronos-ai";
+
+fn require_available_tools(tools: &ToolCommands) -> Result<(), Box<dyn Error>> {
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    require_tools(
+        || tools.missing_required_tools(),
+        &mut stdin.lock(),
+        &mut stdout.lock(),
+    )?;
+    Ok(())
+}
+
+fn launch_or_open_tui(
+    data_dir: PathBuf,
+    inside_herdr: bool,
+    tools: &ToolCommands,
+) -> Result<Option<PathBuf>, Box<dyn Error>> {
+    if inside_herdr {
+        require_available_tools(tools)?;
+        return Ok(Some(data_dir));
+    }
+
+    let pane_id = tools.herdr_create_workspace(CRONOS_AI_HERDR_SESSION, &env::current_dir()?)?;
+    tools.herdr_run_tui(CRONOS_AI_HERDR_SESSION, &pane_id, &env::current_exe()?)?;
+    tools.herdr_attach_session(CRONOS_AI_HERDR_SESSION)?;
+    Ok(None)
+}
+
 fn parse_project_id(value: &str) -> Result<ProjectId, uuid::Error> {
     Uuid::parse_str(value).map(ProjectId)
 }
@@ -285,8 +351,190 @@ fn print_json(value: &impl serde::Serialize) -> Result<(), serde_json::Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::Cli;
+    use super::{Cli, launch_or_open_tui, list_agent_profiles};
+    use crate::integrations::ToolCommands;
     use clap::Parser;
+    use std::fs;
+    #[cfg(unix)]
+    use std::{os::unix::fs::PermissionsExt, path::PathBuf, process::Command};
+
+    #[cfg(unix)]
+    fn fake_herdr(directory: &std::path::Path, response: &str) -> PathBuf {
+        let path = directory.join("herdr");
+        fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$(dirname \"$0\")/args\"\nif [ \"$1\" = \"--version\" ]; then exit 0; fi\nif [ \"$3\" = \"workspace\" ] && [ \"$4\" = \"create\" ]; then printf '%s' '{response}'; fi\n"
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&path, permissions).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    fn launcher_tools(herdr: PathBuf) -> ToolCommands {
+        ToolCommands::with_paths(herdr.clone(), herdr.clone(), herdr.clone(), herdr)
+    }
+
+    #[cfg(unix)]
+    fn make_executable(path: &std::path::Path, content: &str) {
+        fs::write(path, content).unwrap();
+        let mut permissions = fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(path, permissions).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cronos_ai_script_resolves_binary_from_its_location_not_the_callers_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let scripts = root.path().join("scripts");
+        let binary = root.path().join("target/release/cronos-ai");
+        let caller = root.path().join("different-working-directory");
+        let log = root.path().join("arguments");
+        fs::create_dir_all(&scripts).unwrap();
+        fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        fs::create_dir_all(&caller).unwrap();
+        fs::write(
+            scripts.join("cronos-ai"),
+            include_str!("../scripts/cronos-ai"),
+        )
+        .unwrap();
+        make_executable(
+            &binary,
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$LOG_PATH\"\n",
+        );
+
+        let output = Command::new("bash")
+            .arg(scripts.join("cronos-ai"))
+            .current_dir(caller)
+            .env("LOG_PATH", &log)
+            .output()
+            .unwrap();
+
+        assert!(output.status.success());
+        assert_eq!(fs::read_to_string(log).unwrap(), "internal\nlaunch\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cronos_ai_script_reports_how_to_build_when_release_binary_is_missing() {
+        let root = tempfile::tempdir().unwrap();
+        let scripts = root.path().join("scripts");
+        let caller = root.path().join("different-working-directory");
+        fs::create_dir_all(&scripts).unwrap();
+        fs::create_dir_all(&caller).unwrap();
+        fs::write(
+            scripts.join("cronos-ai"),
+            include_str!("../scripts/cronos-ai"),
+        )
+        .unwrap();
+
+        let output = Command::new("bash")
+            .arg(scripts.join("cronos-ai"))
+            .current_dir(caller)
+            .output()
+            .unwrap();
+
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("cargo build --release"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn start_inside_herdr_runs_normal_preflight_without_session_operations() {
+        let temp = tempfile::tempdir().unwrap();
+        let fake = fake_herdr(
+            temp.path(),
+            r#"{"result":{"root_pane":{"pane_id":"w1:p1"}}}"#,
+        );
+        let data_dir = temp.path().join("data");
+
+        let result = launch_or_open_tui(data_dir.clone(), true, &launcher_tools(fake)).unwrap();
+
+        assert_eq!(result, Some(data_dir));
+        let calls = fs::read_to_string(temp.path().join("args")).unwrap();
+        assert!(!calls.contains("workspace"));
+        assert!(!calls.contains("pane"));
+        assert!(!calls.contains("--session"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn start_outside_herdr_creates_workspace_runs_tui_and_attaches() {
+        let temp = tempfile::tempdir().unwrap();
+        let fake = fake_herdr(
+            temp.path(),
+            r#"{"result":{"root_pane":{"pane_id":"w5:p8"}}}"#,
+        );
+
+        let result =
+            launch_or_open_tui(temp.path().join("data"), false, &launcher_tools(fake)).unwrap();
+
+        assert!(result.is_none());
+        let calls = fs::read_to_string(temp.path().join("args")).unwrap();
+        assert!(calls.contains("workspace\ncreate\n"));
+        assert!(calls.contains("pane\nrun\nw5:p8\n"));
+        assert!(calls.ends_with("--session\ncronos-ai\n"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn start_outside_herdr_stops_on_invalid_workspace_response() {
+        let temp = tempfile::tempdir().unwrap();
+        let fake = fake_herdr(temp.path(), r#"{"result":{"workspace":{}}}"#);
+
+        assert!(
+            launch_or_open_tui(temp.path().join("data"), false, &launcher_tools(fake),).is_err()
+        );
+        let calls = fs::read_to_string(temp.path().join("args")).unwrap();
+        assert!(calls.contains("workspace\ncreate\n"));
+        assert!(!calls.contains("pane\nrun"));
+        assert!(!calls.ends_with("--session\ncronos-ai\n"));
+    }
+
+    #[test]
+    fn internal_launcher_subcommand_is_accepted() {
+        assert!(Cli::try_parse_from(["cronos-ai", "internal", "launch"]).is_ok());
+    }
+
+    #[test]
+    fn internal_agent_profiles_command_accepts_a_workflow_step() {
+        assert!(
+            Cli::try_parse_from(["cronos-ai", "internal", "agent-profiles", "code-review"]).is_ok()
+        );
+    }
+
+    #[test]
+    fn profile_listing_filters_by_agent_step_and_handles_empty_catalog() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join("agent-profiles.json"),
+            r#"{"version":1,"profiles":[{"id":"reviewer","description":"Reviews changes","steps":["code-review"]},{"id":"writer","description":"Writes docs","steps":["documentation"]}]}"#,
+        )
+        .unwrap();
+
+        let profiles = list_agent_profiles(root.path(), "code-review").unwrap();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].id, "reviewer");
+        assert_eq!(profiles[0].description, "Reviews changes");
+
+        assert!(
+            list_agent_profiles(root.path(), "verification")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn profile_listing_rejects_unknown_and_non_agent_steps() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(list_agent_profiles(root.path(), "not-a-step").is_err());
+        assert!(list_agent_profiles(root.path(), "local-merge").is_err());
+    }
 
     #[test]
     fn project_and_task_commands_accept_expected_arguments() {

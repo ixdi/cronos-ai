@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "project-docs": {
+      "url": "https://docs.example.invalid/mcp",
+      "description": "Search project documentation"
+    }
+  }
+}

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd -- "$script_dir/.." && pwd)"
+cronos_ai="$repo_root/target/release/cronos-ai"
+
+if [[ ! -x "$cronos_ai" ]]; then
+  printf 'Cronos-AI binary not found at %s. Build it with: cargo build --release\n' "$cronos_ai" >&2
+  exit 1
+fi
+
+exec "$cronos_ai" internal launch

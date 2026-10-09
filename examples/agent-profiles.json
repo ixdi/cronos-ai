@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "profiles": [
+    {
+      "id": "spec-writer",
+      "description": "Drafts task specifications.",
+      "steps": ["specification-generation"],
+      "skills": [],
+      "extensions": []
+    },
+    {
+      "id": "security-reviewer",
+      "description": "Reviews code for security risks.",
+      "steps": ["code-review", "verification"],
+      "skills": [],
+      "extensions": []
+    }
+  ]
+}
