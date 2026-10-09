@@ -12,4 +12,7 @@ coverage/
 *.log
 .DS_Store
 
-/target
+/target/
+
+# Keep local OpenSpec planning artifacts out of future commits
+/openspec/
