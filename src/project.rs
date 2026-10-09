@@ -8,6 +8,7 @@ use std::{
 use thiserror::Error;
 
 use crate::{
+    integrations::{GitAdapter, GitError},
     model::{
         AgentActivity, AgentStatus, ApprovalDecision, ApprovalGate, ApprovalRecord,
         MAX_AGENT_EVENTS, MAX_APPROVAL_RECORDS, MAX_RECOVERY_RECORDS, ModelError, Priority,
@@ -67,6 +68,14 @@ pub enum ProjectError {
     UnknownWorkflowStep(String),
     #[error("task worktree is missing or outside its assigned directory")]
     InvalidTaskWorktree,
+    #[error("project has no Git repository configured")]
+    RepositoryRequired,
+    #[error("configured project repository changed; verify it before continuing")]
+    RepositoryChanged,
+    #[error("a project repository cannot change while tasks are running or have worktrees")]
+    RepositoryInUse,
+    #[error(transparent)]
+    Git(#[from] GitError),
     #[error("system clock is before the Unix epoch")]
     InvalidSystemTime,
 }
@@ -91,6 +100,22 @@ impl ProjectManager {
         name: String,
         description: Option<String>,
     ) -> Result<Project, ProjectError> {
+        self.create_project_with_repository(name, description, None, &GitAdapter::default())
+    }
+
+    pub fn create_project_with_repository(
+        &self,
+        name: String,
+        description: Option<String>,
+        repository: Option<&Path>,
+        git: &GitAdapter,
+    ) -> Result<Project, ProjectError> {
+        let repository = repository
+            .map(|path| {
+                git.repository_root(path)
+                    .map(|root| root.to_string_lossy().into_owned())
+            })
+            .transpose()?;
         let now = now_unix_secs()?;
         let project = Project {
             id: ProjectId::new(),
@@ -98,12 +123,55 @@ impl ProjectManager {
             description,
             status: ProjectStatus::Active,
             task_ids: Vec::new(),
+            repository,
             created_at_unix_secs: now,
             updated_at_unix_secs: now,
         };
         project.validate()?;
         self.store.save_project(&project)?;
         Ok(project)
+    }
+
+    pub fn set_project_repository(
+        &self,
+        project_id: ProjectId,
+        repository: &Path,
+        git: &GitAdapter,
+    ) -> Result<Project, ProjectError> {
+        let mut project = self.store.load_project(project_id)?;
+        if self
+            .store
+            .list_tasks(project_id)?
+            .iter()
+            .any(|task| task.status == TaskStatus::InProgress || task.worktree.is_some())
+        {
+            return Err(ProjectError::RepositoryInUse);
+        }
+        project.repository = Some(
+            git.repository_root(repository)?
+                .to_string_lossy()
+                .into_owned(),
+        );
+        project.updated_at_unix_secs = now_unix_secs()?;
+        project.validate()?;
+        self.store.save_project(&project)?;
+        Ok(project)
+    }
+
+    fn repository_path(
+        &self,
+        project: &Project,
+        git: &GitAdapter,
+    ) -> Result<std::path::PathBuf, ProjectError> {
+        let configured = project
+            .repository
+            .as_deref()
+            .ok_or(ProjectError::RepositoryRequired)?;
+        let root = git.repository_root(Path::new(configured))?;
+        if root.to_string_lossy() != configured {
+            return Err(ProjectError::RepositoryChanged);
+        }
+        Ok(root)
     }
 
     pub fn list_projects(&self) -> Result<Vec<Project>, ProjectError> {
@@ -208,6 +276,47 @@ impl ProjectManager {
 
     pub fn get_task(&self, project_id: ProjectId, task_id: TaskId) -> Result<Task, ProjectError> {
         Ok(self.store.load_task(project_id, task_id)?)
+    }
+
+    pub fn prepare_task_worktree(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        git: &GitAdapter,
+    ) -> Result<std::path::PathBuf, ProjectError> {
+        let mut task = self.store.load_task(project_id, task_id)?;
+        if task.status == TaskStatus::Completed || task.status == TaskStatus::Rejected {
+            return Err(ProjectError::TaskNotInProgress(task.status));
+        }
+        if task.worktree.is_some() {
+            return self.validated_task_worktree_path(project_id, task_id);
+        }
+        let project = self.store.load_project(project_id)?;
+        let repository = self.repository_path(&project, git)?;
+        let worktree = self
+            .store
+            .expected_task_worktree_path(project_id, task_id, task.attempt);
+        let worktrees_root = self.store.worktrees_root();
+        fs::create_dir_all(&worktrees_root).map_err(StoreError::Io)?;
+        if fs::canonicalize(&worktrees_root).map_err(StoreError::Io)? != worktrees_root {
+            return Err(ProjectError::InvalidTaskWorktree);
+        }
+        let parent = worktree.parent().ok_or(ProjectError::InvalidTaskWorktree)?;
+        fs::create_dir_all(parent).map_err(StoreError::Io)?;
+        if fs::canonicalize(parent).map_err(StoreError::Io)? != parent
+            || !parent.starts_with(&worktrees_root)
+        {
+            return Err(ProjectError::InvalidTaskWorktree);
+        }
+        let branch = GitAdapter::worktree_branch(task.id, task.attempt);
+        git.add_worktree(&repository, &worktree, &branch)?;
+        task.worktree = Some(worktree.to_string_lossy().into_owned());
+        task.updated_at_unix_secs = now_unix_secs()?;
+        if let Err(error) = self.store.save_task(&task) {
+            let _ = git.discard_attempt(&repository, &worktree, &branch);
+            return Err(error.into());
+        }
+        Ok(worktree)
     }
 
     pub fn validated_task_worktree_path(
@@ -429,8 +538,41 @@ impl ProjectManager {
         }
     }
 
+    pub fn merge_and_complete_task(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        git: &GitAdapter,
+    ) -> Result<Task, ProjectError> {
+        let task = self.store.load_task(project_id, task_id)?;
+        if task.status != TaskStatus::InProgress
+            || task.current_step.as_deref() != Some(WorkflowStep::LocalMerge.as_str())
+            || !task.is_approved(ApprovalGate::FinalCode)
+        {
+            return Err(ProjectError::AwaitingHumanApproval);
+        }
+        let project = self.store.load_project(project_id)?;
+        let repository = self.repository_path(&project, git)?;
+        let worktree = self.validated_task_worktree_path(project_id, task_id)?;
+        git.merge_worktree(
+            &repository,
+            &worktree,
+            &GitAdapter::worktree_branch(task.id, task.attempt),
+        )?;
+        self.complete_workflow_step(project_id, task_id, WorkflowStep::LocalMerge)
+    }
+
     pub fn retry_task(&self, project_id: ProjectId, task_id: TaskId) -> Result<Task, ProjectError> {
-        self.recover_task(project_id, task_id, RecoveryAction::Retry, None)
+        self.recover_task(project_id, task_id, RecoveryAction::Retry, None, None)
+    }
+
+    pub fn retry_task_with_git(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        git: &GitAdapter,
+    ) -> Result<Task, ProjectError> {
+        self.recover_task(project_id, task_id, RecoveryAction::Retry, None, Some(git))
     }
 
     pub fn clarify_task(
@@ -443,7 +585,33 @@ impl ProjectManager {
         if context.is_empty() {
             return Err(ProjectError::ClarificationRequired);
         }
-        self.recover_task(project_id, task_id, RecoveryAction::Clarify, Some(context))
+        self.recover_task(
+            project_id,
+            task_id,
+            RecoveryAction::Clarify,
+            Some(context),
+            None,
+        )
+    }
+
+    pub fn clarify_task_with_git(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        context: String,
+        git: &GitAdapter,
+    ) -> Result<Task, ProjectError> {
+        let context = context.trim().to_owned();
+        if context.is_empty() {
+            return Err(ProjectError::ClarificationRequired);
+        }
+        self.recover_task(
+            project_id,
+            task_id,
+            RecoveryAction::Clarify,
+            Some(context),
+            Some(git),
+        )
     }
 
     fn recover_task(
@@ -452,6 +620,7 @@ impl ProjectManager {
         task_id: TaskId,
         action: RecoveryAction,
         note: Option<String>,
+        git: Option<&GitAdapter>,
     ) -> Result<Task, ProjectError> {
         let mut task = self.store.load_task(project_id, task_id)?;
         if task.status != TaskStatus::Error {
@@ -462,11 +631,17 @@ impl ProjectManager {
             .checked_add(1)
             .ok_or(ProjectError::AttemptOverflow)?;
         let discarded_worktree = if task.worktree.is_some() {
-            Some(
-                self.validated_task_worktree_path(project_id, task_id)?
-                    .to_string_lossy()
-                    .into_owned(),
-            )
+            let path = self.validated_task_worktree_path(project_id, task_id)?;
+            if let Some(git) = git {
+                let project = self.store.load_project(project_id)?;
+                let repository = self.repository_path(&project, git)?;
+                git.discard_attempt(
+                    &repository,
+                    &path,
+                    &GitAdapter::worktree_branch(task.id, task.attempt),
+                )?;
+            }
+            Some(path.to_string_lossy().into_owned())
         } else {
             None
         };
@@ -605,10 +780,79 @@ fn now_unix_secs() -> Result<u64, ProjectError> {
 #[cfg(test)]
 mod tests {
     use super::{ProjectError, ProjectManager};
+    use crate::integrations::GitAdapter;
     use crate::model::{
         AgentStatus, ApprovalDecision, ApprovalGate, MAX_AGENT_EVENTS, Priority, ProjectId,
         ProjectStatus, RecoveryAction, TaskStatus, WorkflowStep,
     };
+    use std::{fs, path::Path, process::Command};
+
+    const EMPTY_GLOBAL_GIT_CONFIG: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
+
+    fn git_fixture(root: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", EMPTY_GLOBAL_GIT_CONFIG)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn init_git_fixture(root: &Path) {
+        fs::create_dir_all(root).unwrap();
+        git_fixture(root, &["init"]);
+        git_fixture(root, &["config", "user.name", "Cronos Tests"]);
+        git_fixture(root, &["config", "user.email", "cronos@example.invalid"]);
+        fs::write(root.join("README.md"), "base\n").unwrap();
+        git_fixture(root, &["add", "README.md"]);
+        git_fixture(root, &["commit", "-m", "initial"]);
+    }
+
+    fn complete_to_local_merge(
+        manager: &ProjectManager,
+        project_id: ProjectId,
+        task_id: crate::model::TaskId,
+    ) {
+        manager
+            .complete_workflow_step(project_id, task_id, WorkflowStep::SpecificationGeneration)
+            .unwrap();
+        manager
+            .record_approval(
+                project_id,
+                task_id,
+                ApprovalGate::Specifications,
+                ApprovalDecision::Approved,
+                None,
+            )
+            .unwrap();
+        for step in [
+            WorkflowStep::CodeGeneration,
+            WorkflowStep::CodeReview,
+            WorkflowStep::Verification,
+        ] {
+            manager
+                .complete_workflow_step(project_id, task_id, step)
+                .unwrap();
+        }
+        manager
+            .record_approval(
+                project_id,
+                task_id,
+                ApprovalGate::FinalCode,
+                ApprovalDecision::Approved,
+                None,
+            )
+            .unwrap();
+        manager
+            .complete_workflow_step(project_id, task_id, WorkflowStep::Documentation)
+            .unwrap();
+    }
 
     fn complete_for_queue(
         manager: &ProjectManager,
@@ -655,6 +899,135 @@ mod tests {
         manager
             .complete_workflow_step(project_id, task_id, WorkflowStep::LocalMerge)
             .unwrap();
+    }
+
+    #[test]
+    fn pending_legacy_project_can_be_configured_with_a_git_repository() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        init_git_fixture(&repository);
+        let manager = ProjectManager::new(temp.path().join("data")).unwrap();
+        let project = manager.create_project("Legacy".to_owned(), None).unwrap();
+        manager
+            .create_task(
+                project.id,
+                "Pending".to_owned(),
+                None,
+                Priority::Medium,
+                Vec::new(),
+            )
+            .unwrap();
+
+        let configured = manager
+            .set_project_repository(project.id, &repository, &GitAdapter::default())
+            .unwrap();
+        let expected_root = GitAdapter::default().repository_root(&repository).unwrap();
+        assert_eq!(
+            configured.repository.as_deref(),
+            Some(expected_root.to_str().unwrap())
+        );
+    }
+
+    #[test]
+    fn repository_configuration_creates_attempt_worktrees_and_retry_removes_old_outputs() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        let data = temp.path().join("data");
+        init_git_fixture(&repository);
+        let manager = ProjectManager::new(&data).unwrap();
+        let git = GitAdapter::default();
+        let project = manager
+            .create_project_with_repository("Factory".to_owned(), None, Some(&repository), &git)
+            .unwrap();
+        let task = manager
+            .create_task(
+                project.id,
+                "Build".to_owned(),
+                None,
+                Priority::High,
+                Vec::new(),
+            )
+            .unwrap();
+        manager.start_next_task(project.id).unwrap().unwrap();
+        let old_worktree = manager
+            .prepare_task_worktree(project.id, task.id, &git)
+            .unwrap();
+        fs::write(old_worktree.join("discarded.txt"), "old output").unwrap();
+        manager
+            .set_task_status(project.id, task.id, TaskStatus::Error)
+            .unwrap();
+
+        let retried = manager
+            .retry_task_with_git(project.id, task.id, &git)
+            .unwrap();
+        assert_eq!(retried.attempt, 2);
+        assert_eq!(retried.status, TaskStatus::InProgress);
+        assert!(!old_worktree.exists());
+        let old_branch = GitAdapter::worktree_branch(task.id, 1);
+        let branch_check = Command::new("git")
+            .arg("-C")
+            .arg(&repository)
+            .args(["show-ref", "--verify", "--quiet"])
+            .arg(format!("refs/heads/{old_branch}"))
+            .output()
+            .unwrap();
+        assert!(!branch_check.status.success());
+        assert_eq!(
+            retried
+                .recovery_history
+                .last()
+                .unwrap()
+                .discarded_worktree
+                .as_deref(),
+            Some(old_worktree.to_str().unwrap())
+        );
+        let new_worktree = manager
+            .prepare_task_worktree(project.id, task.id, &git)
+            .unwrap();
+        assert!(new_worktree.ends_with("attempt-2"));
+        assert!(new_worktree.exists());
+    }
+
+    #[test]
+    fn local_merge_requires_final_approval_and_completes_only_after_git_merge() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        init_git_fixture(&repository);
+        let manager = ProjectManager::new(temp.path().join("data")).unwrap();
+        let git = GitAdapter::default();
+        let project = manager
+            .create_project_with_repository("Factory".to_owned(), None, Some(&repository), &git)
+            .unwrap();
+        let task = manager
+            .create_task(
+                project.id,
+                "Build".to_owned(),
+                None,
+                Priority::High,
+                Vec::new(),
+            )
+            .unwrap();
+        manager.start_next_task(project.id).unwrap().unwrap();
+        let worktree = manager
+            .prepare_task_worktree(project.id, task.id, &git)
+            .unwrap();
+        fs::write(worktree.join("generated.txt"), "merged output\n").unwrap();
+        git_fixture(&worktree, &["add", "generated.txt"]);
+        git_fixture(&worktree, &["commit", "-m", "task output"]);
+        assert!(matches!(
+            manager.merge_and_complete_task(project.id, task.id, &git),
+            Err(ProjectError::AwaitingHumanApproval)
+        ));
+        complete_to_local_merge(&manager, project.id, task.id);
+
+        let completed = manager
+            .merge_and_complete_task(project.id, task.id, &git)
+            .unwrap();
+        assert_eq!(completed.status, TaskStatus::Completed);
+        assert_eq!(
+            fs::read_to_string(repository.join("generated.txt")).unwrap(),
+            "merged output\n"
+        );
     }
 
     #[test]

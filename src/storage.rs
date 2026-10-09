@@ -272,6 +272,7 @@ mod tests {
             description: Some("Test project".to_owned()),
             status: ProjectStatus::Active,
             task_ids,
+            repository: None,
             created_at_unix_secs: 1,
             updated_at_unix_secs: 1,
         }

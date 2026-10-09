@@ -20,7 +20,7 @@ use ratatui::{
 };
 
 use crate::{
-    integrations::{PiRpcHandle, ToolCommands, herdr_session_available},
+    integrations::{GitAdapter, PiRpcHandle, ToolCommands, herdr_session_available},
     model::{
         AgentActivity, AgentStatus, ApprovalDecision, ApprovalGate, Priority, Project,
         ProjectStatus, Task, TaskStatus, WorkflowStep,
@@ -276,15 +276,43 @@ impl Dashboard {
         let Some((project_id, task_id)) = self.selected_ids() else {
             return;
         };
-        match self.manager.retry_task(project_id, task_id) {
+        match self
+            .manager
+            .retry_task_with_git(project_id, task_id, &GitAdapter::default())
+        {
             Ok(task) => {
                 self.workflow_status = Some(format!(
                     "Retry scheduled for attempt {} at specification generation",
                     task.attempt
                 ));
+                self.resume_recovered_task(project_id, task_id);
                 self.refresh_for_ui();
             }
             Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
+    fn resume_recovered_task(
+        &mut self,
+        project_id: crate::model::ProjectId,
+        task_id: crate::model::TaskId,
+    ) {
+        if self
+            .selected_project()
+            .is_none_or(|project| project.repository.is_none())
+        {
+            return;
+        }
+        let result = self
+            .manager
+            .prepare_task_worktree(project_id, task_id, &GitAdapter::default())
+            .map_err(|error| error.to_string())
+            .and_then(|_| self.launch_pi_for_task(project_id, task_id));
+        if let Err(error) = result {
+            let _ = self
+                .manager
+                .set_task_status(project_id, task_id, TaskStatus::Error);
+            self.error = Some(error);
         }
     }
 
@@ -373,12 +401,18 @@ impl Dashboard {
             }
             Dialog::Clarify { note } if !note.trim().is_empty() => {
                 if let Some((project_id, task_id)) = self.selected_ids() {
-                    match self.manager.clarify_task(project_id, task_id, note) {
+                    match self.manager.clarify_task_with_git(
+                        project_id,
+                        task_id,
+                        note,
+                        &GitAdapter::default(),
+                    ) {
                         Ok(task) => {
                             self.workflow_status = Some(format!(
                                 "Clarification saved for attempt {} at specification generation",
                                 task.attempt
                             ));
+                            self.resume_recovered_task(project_id, task_id);
                             self.refresh_for_ui();
                         }
                         Err(error) => self.error = Some(error.to_string()),
@@ -451,32 +485,26 @@ impl Dashboard {
         let Some(project_id) = self.selected_project().map(|project| project.id) else {
             return;
         };
-        let candidate = match self.manager.ready_tasks(project_id) {
-            Ok(tasks) => tasks.into_iter().next(),
-            Err(error) => {
-                self.error = Some(error.to_string());
-                return;
-            }
-        };
-        let Some(candidate) = candidate else {
-            self.error = Some("There is no ready task in this project.".to_owned());
-            return;
-        };
         if !herdr_session_available() {
             self.error =
                 Some("Start Cronos-AI inside a Herdr-managed pane to run tasks.".to_owned());
             return;
         }
-        if let Err(error) = self
-            .manager
-            .validated_task_worktree_path(project_id, candidate.id)
+        if self
+            .selected_project()
+            .is_none_or(|project| project.repository.is_none())
         {
-            self.error = Some(error.to_string());
+            self.error = Some("Configure a Git repository before starting tasks.".to_owned());
             return;
         }
         match self.manager.start_next_task(project_id) {
             Ok(Some(task)) => {
-                if let Err(error) = self.launch_pi_for_task(project_id, task.id) {
+                let result = self
+                    .manager
+                    .prepare_task_worktree(project_id, task.id, &GitAdapter::default())
+                    .map_err(|error| error.to_string())
+                    .and_then(|_| self.launch_pi_for_task(project_id, task.id));
+                if let Err(error) = result {
                     let _ = self
                         .manager
                         .set_task_status(project_id, task.id, TaskStatus::Error);
@@ -547,19 +575,43 @@ impl Dashboard {
                     self.refresh_for_ui();
                     if let Ok(task) = self.manager.get_task(project_id, task_id)
                         && task.status == TaskStatus::InProgress
-                        && !task
-                            .current_step
-                            .as_deref()
-                            .and_then(WorkflowStep::parse)
-                            .is_some_and(WorkflowStep::requires_human_approval)
                     {
-                        let _ =
-                            self.manager
-                                .set_task_status(project_id, task_id, TaskStatus::Error);
-                        self.error = Some(
-                            "Pi settled before completing the current workflow step.".to_owned(),
-                        );
-                        self.refresh_for_ui();
+                        let current_step =
+                            task.current_step.as_deref().and_then(WorkflowStep::parse);
+                        if current_step == Some(WorkflowStep::LocalMerge) {
+                            match self.manager.merge_and_complete_task(
+                                project_id,
+                                task_id,
+                                &GitAdapter::default(),
+                            ) {
+                                Ok(_) => {
+                                    self.workflow_status = Some(
+                                        "Task merged locally and completed; nothing was pushed."
+                                            .to_owned(),
+                                    )
+                                }
+                                Err(error) => {
+                                    let _ = self.manager.set_task_status(
+                                        project_id,
+                                        task_id,
+                                        TaskStatus::Error,
+                                    );
+                                    self.error = Some(error.to_string());
+                                }
+                            }
+                            self.refresh_for_ui();
+                        } else if !current_step.is_some_and(WorkflowStep::requires_human_approval) {
+                            let _ = self.manager.set_task_status(
+                                project_id,
+                                task_id,
+                                TaskStatus::Error,
+                            );
+                            self.error = Some(
+                                "Pi settled before completing the current workflow step."
+                                    .to_owned(),
+                            );
+                            self.refresh_for_ui();
+                        }
                     }
                 }
             }
@@ -660,7 +712,7 @@ fn draw(frame: &mut Frame, app: &Dashboard) {
                 .selected_task()
                 .is_some_and(|task| task.status == TaskStatus::Error) =>
         {
-            "r retry from specs  c clarify context  a abandon  Backspace tasks  q quit"
+            "r retry + discard  c clarify + discard  a abandon  Backspace tasks  q quit"
         }
         Screen::TaskDetail if app.active_approval_gate().is_some() => {
             "y approve  n request revision  a abandon  ↑/↓ activity  Backspace tasks  q quit"
@@ -694,7 +746,7 @@ fn draw_dialog(frame: &mut Frame, app: &Dashboard) {
         ),
         Dialog::Clarify { note } => (
             "Clarify task".to_owned(),
-            "Add context for replacement specifications:",
+            "This discards the failed worktree. Add context for replacement specifications:",
             note,
         ),
         Dialog::Abandon { note } => (
@@ -1262,7 +1314,7 @@ mod tests {
     }
 
     #[test]
-    fn starting_the_queue_does_not_claim_a_task_without_a_valid_worktree() {
+    fn starting_the_queue_does_not_claim_a_task_without_a_configured_repository() {
         let root = tempfile::tempdir().unwrap();
         let manager = ProjectManager::new(root.path()).unwrap();
         let project = manager.create_project("Demo".to_owned(), None).unwrap();

@@ -24,6 +24,10 @@ Herdr 0.9.3 exposes agent operations through its socket API and CLI. The install
 
 CLI help and the installed API schema confirm these command/parameter contracts. The Rust adapter invokes Herdr with argument vectors (never a shell), validates agent names, parses pane IDs from Herdr responses, and waits for a settled state after sending `ctrl+c`. A workflow step creates no-focus sibling panes only after explicit task start, and only in the task's validated worktree under the Cronos data directory. Startup preflight checks `pi`, `herdr`, `openspec`, and `git` by running their version commands; if any are unavailable it prompts for manual installation and retries, but never installs tools or creates panes automatically. A live launch, prompt, output read, and cancellation test is not included here because it would start and interrupt an agent in the current Herdr session; test the adapter with fakes first, then validate live behavior in an explicitly isolated test session.
 
+## Git worktrees and local merge
+
+Projects store the canonical root of a user-selected local Git repository. When a task is started, Rust creates an isolated worktree under the Cronos data directory and a branch named `cronos-ai/<task-id>/attempt-<n>`. Recovery removes the exact validated prior-attempt worktree and branch before assigning a fresh attempt. Final-code approval gates the documentation step, which commits all implementation and documentation changes; after Pi settles, Rust requires both the base repository and task worktree to be clean and performs a local `git merge --no-ff --no-edit`. On conflict, Rust aborts the merge so the base worktree remains unchanged and marks the task Error. There is no remote-push operation in the adapter; users publish manually.
+
 ## Jev
 
 Jev is not installed and is not required by this release. Use the built-in priority/dependency ordering for the MVP. A later change will create a Pi extension that integrates Jev.

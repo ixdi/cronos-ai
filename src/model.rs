@@ -71,6 +71,8 @@ pub struct Project {
     pub description: Option<String>,
     pub status: ProjectStatus,
     pub task_ids: Vec<TaskId>,
+    #[serde(default)]
+    pub repository: Option<String>,
     pub created_at_unix_secs: u64,
     pub updated_at_unix_secs: u64,
 }
@@ -82,6 +84,11 @@ impl Project {
             "project description",
             self.description.as_deref(),
             MAX_DESCRIPTION_CHARS,
+        )?;
+        validate_optional_text(
+            "project repository",
+            self.repository.as_deref(),
+            MAX_WORKTREE_PATH_CHARS,
         )?;
 
         let mut task_ids = HashSet::with_capacity(self.task_ids.len());
@@ -464,6 +471,7 @@ mod tests {
             description: None,
             status: ProjectStatus::Active,
             task_ids: vec![duplicate_id, duplicate_id],
+            repository: None,
             created_at_unix_secs: 0,
             updated_at_unix_secs: 0,
         };
@@ -489,6 +497,21 @@ mod tests {
             task(TaskId::new(), vec![dependency, dependency]).validate(),
             Err(ModelError::DuplicateDependency)
         );
+    }
+
+    #[test]
+    fn legacy_project_without_repository_deserializes() {
+        let project: Project = serde_json::from_value(serde_json::json!({
+            "id": ProjectId::new(),
+            "name": "Legacy",
+            "description": null,
+            "status": "active",
+            "task_ids": [],
+            "created_at_unix_secs": 1,
+            "updated_at_unix_secs": 1
+        }))
+        .unwrap();
+        assert_eq!(project.repository, None);
     }
 
     #[test]

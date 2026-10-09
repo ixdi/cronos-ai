@@ -142,7 +142,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool(runStepTool);
 
 	pi.on("before_agent_start", (event) => ({
-		systemPrompt: `${event.systemPrompt}\n\nCronos-AI workflow instructions:\n- Read the assigned task using cronos_task_state before acting. On a clarified attempt, apply only the clarification note recorded for the current attempt; older attempts are history, not active instructions.\n- Run only the task's current agent step using cronos_run_step; Rust validates status, step order, approvals, and the task worktree.\n- Wait for each step tool call to finish before continuing. Do not bypass the specification or final-code approval gates; the human handles those in the Cronos TUI.\n- Do not modify task status, approval records, or worktree paths directly.`,
+		systemPrompt: `${event.systemPrompt}\n\nCronos-AI workflow instructions:\n- Read the assigned task using cronos_task_state before acting. On a clarified attempt, apply only the clarification note recorded for the current attempt; older attempts are history, not active instructions.\n- Run only the task's current agent step using cronos_run_step; Rust validates status, step order, approvals, and the task worktree.\n- Wait for each step tool call to finish before continuing. Do not bypass the specification or final-code approval gates; the human handles those in the Cronos TUI.\n- After final-code approval and documentation generation, commit all task changes (implementation and docs) in the task worktree. Rust performs the local merge after Pi settles; do not push or attempt remote publishing.\n- Do not modify task status, approval records, or worktree paths directly.`,
 	}));
 
 	pi.on("session_start", async () => {

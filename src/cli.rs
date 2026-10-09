@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use uuid::Uuid;
 
 use crate::{
+    integrations::GitAdapter,
     model::{Priority, ProjectId, TaskId, WorkflowStep},
     project::ProjectManager,
     workflow::{AgentPlan, HerdrAgentAdapter, WorkflowEngine},
@@ -41,8 +42,15 @@ enum ProjectAction {
         name: String,
         #[arg(long)]
         description: Option<String>,
+        #[arg(long, value_name = "PATH")]
+        repository: Option<PathBuf>,
     },
     List,
+    SetRepository {
+        id: String,
+        #[arg(long, value_name = "PATH")]
+        repository: PathBuf,
+    },
     Select {
         id: String,
     },
@@ -176,10 +184,26 @@ pub fn run() -> Result<Option<PathBuf>, Box<dyn Error>> {
             },
         },
         Command::Project { action } => match action {
-            ProjectAction::Create { name, description } => {
-                print_json(&manager.create_project(name, description)?)?;
+            ProjectAction::Create {
+                name,
+                description,
+                repository,
+            } => {
+                print_json(&manager.create_project_with_repository(
+                    name,
+                    description,
+                    repository.as_deref(),
+                    &GitAdapter::default(),
+                )?)?;
             }
             ProjectAction::List => print_json(&manager.list_projects()?)?,
+            ProjectAction::SetRepository { id, repository } => {
+                print_json(&manager.set_project_repository(
+                    parse_project_id(&id)?,
+                    &repository,
+                    &GitAdapter::default(),
+                )?)?;
+            }
             ProjectAction::Select { id } => {
                 print_json(&manager.select_project(parse_project_id(&id)?)?)?;
             }
@@ -276,6 +300,28 @@ mod tests {
                 "Factory",
                 "--description",
                 "Local project",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "cronos-ai",
+                "project",
+                "create",
+                "Factory",
+                "--repository",
+                "./repo",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "cronos-ai",
+                "project",
+                "set-repository",
+                "00000000-0000-0000-0000-000000000000",
+                "--repository",
+                "./repo",
             ])
             .is_ok()
         );

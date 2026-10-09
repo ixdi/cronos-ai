@@ -72,6 +72,199 @@ impl PiRpcHandle {
     }
 }
 
+#[derive(Debug, Error)]
+pub enum GitError {
+    #[error(transparent)]
+    Integration(#[from] IntegrationError),
+    #[error("not a Git repository: {0}")]
+    InvalidRepository(String),
+    #[error("worktree path must be absolute")]
+    RelativeWorktreePath,
+    #[error("worktree target already exists: {0}")]
+    WorktreeExists(String),
+    #[error("Git branch name is invalid")]
+    InvalidBranch,
+    #[error("Git repository is not clean: {0}")]
+    DirtyRepository(String),
+    #[error("local merge conflicted: {0}")]
+    MergeConflict(String),
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct GitAdapter {
+    tools: ToolCommands,
+}
+
+impl GitAdapter {
+    pub fn with_tools(tools: ToolCommands) -> Self {
+        Self { tools }
+    }
+
+    pub fn repository_root(&self, path: &Path) -> Result<PathBuf, GitError> {
+        let canonical = std::fs::canonicalize(path).map_err(|source| IntegrationError::Io {
+            tool: "git",
+            source,
+        })?;
+        if !canonical.is_dir() {
+            return Err(GitError::InvalidRepository(canonical.display().to_string()));
+        }
+        let output = self.tools.run_git(&[
+            OsStr::new("-C"),
+            canonical.as_os_str(),
+            OsStr::new("rev-parse"),
+            OsStr::new("--show-toplevel"),
+        ])?;
+        let root = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+        let root = std::fs::canonicalize(root).map_err(|source| IntegrationError::Io {
+            tool: "git",
+            source,
+        })?;
+        Ok(root)
+    }
+
+    pub fn worktree_branch(task_id: TaskId, attempt: u32) -> String {
+        format!("cronos-ai/{}/attempt-{attempt}", task_id.0.simple())
+    }
+
+    pub fn add_worktree(
+        &self,
+        repository: &Path,
+        worktree: &Path,
+        branch: &str,
+    ) -> Result<(), GitError> {
+        let repository = self.repository_root(repository)?;
+        if !worktree.is_absolute() {
+            return Err(GitError::RelativeWorktreePath);
+        }
+        if worktree.exists() || std::fs::symlink_metadata(worktree).is_ok() {
+            return Err(GitError::WorktreeExists(worktree.display().to_string()));
+        }
+        if !valid_branch_name(branch) {
+            return Err(GitError::InvalidBranch);
+        }
+        self.tools.run_git(&[
+            OsStr::new("-C"),
+            repository.as_os_str(),
+            OsStr::new("worktree"),
+            OsStr::new("add"),
+            OsStr::new("-b"),
+            OsStr::new(branch),
+            worktree.as_os_str(),
+            OsStr::new("HEAD"),
+        ])?;
+        Ok(())
+    }
+
+    pub fn discard_attempt(
+        &self,
+        repository: &Path,
+        worktree: &Path,
+        branch: &str,
+    ) -> Result<(), GitError> {
+        if !valid_branch_name(branch) {
+            return Err(GitError::InvalidBranch);
+        }
+        self.remove_worktree(repository, worktree, true)?;
+        let repository = self.repository_root(repository)?;
+        self.tools.run_git(&[
+            OsStr::new("-C"),
+            repository.as_os_str(),
+            OsStr::new("branch"),
+            OsStr::new("-D"),
+            OsStr::new(branch),
+        ])?;
+        Ok(())
+    }
+
+    pub fn remove_worktree(
+        &self,
+        repository: &Path,
+        worktree: &Path,
+        force: bool,
+    ) -> Result<(), GitError> {
+        let repository = self.repository_root(repository)?;
+        if !worktree.is_absolute() {
+            return Err(GitError::RelativeWorktreePath);
+        }
+        let mut args = vec![
+            OsStr::new("-C"),
+            repository.as_os_str(),
+            OsStr::new("worktree"),
+            OsStr::new("remove"),
+        ];
+        if force {
+            args.push(OsStr::new("--force"));
+        }
+        args.push(worktree.as_os_str());
+        self.tools.run_git(&args)?;
+        Ok(())
+    }
+
+    pub fn merge_worktree(
+        &self,
+        repository: &Path,
+        worktree: &Path,
+        branch: &str,
+    ) -> Result<(), GitError> {
+        let repository = self.repository_root(repository)?;
+        if !worktree.is_absolute() {
+            return Err(GitError::RelativeWorktreePath);
+        }
+        if !valid_branch_name(branch) {
+            return Err(GitError::InvalidBranch);
+        }
+        self.ensure_clean(&repository)?;
+        self.ensure_clean(worktree)?;
+        match self.tools.run_git(&[
+            OsStr::new("-C"),
+            repository.as_os_str(),
+            OsStr::new("merge"),
+            OsStr::new("--no-ff"),
+            OsStr::new("--no-edit"),
+            OsStr::new(branch),
+        ]) {
+            Ok(_) => Ok(()),
+            Err(IntegrationError::Failed { stderr, .. }) => {
+                let abort = self.tools.run_git(&[
+                    OsStr::new("-C"),
+                    repository.as_os_str(),
+                    OsStr::new("merge"),
+                    OsStr::new("--abort"),
+                ]);
+                let detail = match abort {
+                    Ok(_) => stderr,
+                    Err(abort_error) => format!("{stderr}; merge abort failed: {abort_error}"),
+                };
+                Err(GitError::MergeConflict(detail))
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn ensure_clean(&self, path: &Path) -> Result<(), GitError> {
+        let output = self.tools.run_git(&[
+            OsStr::new("-C"),
+            path.as_os_str(),
+            OsStr::new("status"),
+            OsStr::new("--porcelain"),
+        ])?;
+        let status = String::from_utf8_lossy(&output.stdout);
+        if status.trim().is_empty() {
+            Ok(())
+        } else {
+            Err(GitError::DirtyRepository(path.display().to_string()))
+        }
+    }
+}
+
+fn valid_branch_name(branch: &str) -> bool {
+    !branch.is_empty()
+        && branch.starts_with("cronos-ai/")
+        && branch.chars().all(|ch| {
+            ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '-' | '_' | '/')
+        })
+}
+
 #[derive(Clone, Debug)]
 pub struct ToolCommands {
     pi: PathBuf,
@@ -503,8 +696,8 @@ fn valid_agent_name(name: &str) -> bool {
 #[cfg(all(test, unix))]
 mod tests {
     use super::{
-        IntegrationError, RequiredTool, ToolCommands, missing_required_tools_with,
-        prompt_to_install, require_tools,
+        GitAdapter, GitError, IntegrationError, RequiredTool, ToolCommands,
+        missing_required_tools_with, prompt_to_install, require_tools,
     };
     use std::{
         ffi::OsStr,
@@ -512,6 +705,7 @@ mod tests {
         io::Cursor,
         os::unix::fs::PermissionsExt,
         path::{Path, PathBuf},
+        process::Command,
     };
 
     fn fake_json_command(directory: &std::path::Path) -> PathBuf {
@@ -649,6 +843,115 @@ mod tests {
         assert_eq!(
             commands(path).herdr_agent_status("reviewer").unwrap(),
             "blocked"
+        );
+    }
+
+    fn fixture_git(root: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    fn init_git_fixture(root: &Path) {
+        fs::create_dir_all(root).unwrap();
+        fixture_git(root, &["init"]);
+        fixture_git(root, &["config", "user.name", "Cronos Tests"]);
+        fixture_git(root, &["config", "user.email", "cronos@example.invalid"]);
+        fs::write(root.join("tracked.txt"), "base\n").unwrap();
+        fixture_git(root, &["add", "tracked.txt"]);
+        fixture_git(root, &["commit", "-m", "initial"]);
+    }
+
+    fn recording_git_adapter(directory: &Path) -> GitAdapter {
+        let log = directory.join("git-calls.log");
+        let wrapper = directory.join("git-wrapper");
+        fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec git \"$@\"\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&wrapper).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&wrapper, permissions).unwrap();
+        GitAdapter::with_tools(ToolCommands {
+            git: wrapper,
+            ..ToolCommands::default()
+        })
+    }
+
+    #[test]
+    fn git_worktree_is_locally_merged_without_remote_push() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        let worktree = temp.path().join("worktrees/task/attempt-1");
+        init_git_fixture(&repository);
+        fs::create_dir_all(worktree.parent().unwrap()).unwrap();
+        let adapter = recording_git_adapter(temp.path());
+        let branch = "cronos-ai/task/attempt-1";
+        adapter
+            .add_worktree(&repository, &worktree, branch)
+            .unwrap();
+        fs::write(worktree.join("generated.txt"), "task output\n").unwrap();
+        fixture_git(&worktree, &["add", "generated.txt"]);
+        fixture_git(&worktree, &["commit", "-m", "task output"]);
+        adapter
+            .merge_worktree(&repository, &worktree, branch)
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(repository.join("generated.txt")).unwrap(),
+            "task output\n"
+        );
+        let log = fs::read_to_string(temp.path().join("git-calls.log")).unwrap();
+        assert!(
+            !log.lines()
+                .any(|line| line.split_whitespace().any(|token| token == "push"))
+        );
+    }
+
+    #[test]
+    fn merge_conflict_is_aborted_without_changing_the_base_worktree() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        let worktree = temp.path().join("worktrees/task/attempt-1");
+        init_git_fixture(&repository);
+        fs::create_dir_all(worktree.parent().unwrap()).unwrap();
+        let adapter = recording_git_adapter(temp.path());
+        let branch = "cronos-ai/task/attempt-1";
+        adapter
+            .add_worktree(&repository, &worktree, branch)
+            .unwrap();
+        fs::write(worktree.join("tracked.txt"), "agent change\n").unwrap();
+        fixture_git(&worktree, &["add", "tracked.txt"]);
+        fixture_git(&worktree, &["commit", "-m", "agent change"]);
+        fs::write(repository.join("tracked.txt"), "human change\n").unwrap();
+        fixture_git(&repository, &["add", "tracked.txt"]);
+        fixture_git(&repository, &["commit", "-m", "human change"]);
+
+        assert!(matches!(
+            adapter.merge_worktree(&repository, &worktree, branch),
+            Err(GitError::MergeConflict(_))
+        ));
+        assert_eq!(
+            fs::read_to_string(repository.join("tracked.txt")).unwrap(),
+            "human change\n"
+        );
+        assert!(fixture_git(&repository, &["status", "--porcelain"]).is_empty());
+        assert_eq!(
+            fs::read_to_string(worktree.join("tracked.txt")).unwrap(),
+            "agent change\n"
         );
     }
 
