@@ -91,6 +91,8 @@ The data directory can be selected with `--data-dir DIR` or `CRONOS_AI_DATA_DIR`
 
 Profiles give workflow agents their Pi skills, extensions, MCP servers, model, and time limit. Manage them in the dashboard: press **p** on the project list to list, create, edit, and delete profiles. The editor checks every path before saving and shows which resources are missing.
 
+![Agent profile editor in the Cronos-AI TUI](assets/agent-profiles.png)
+
 You can also copy the example catalog into Cronos-AI's data directory and edit it by hand:
 
 ```sh
