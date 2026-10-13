@@ -28,6 +28,12 @@ use crate::{
     project::{ProjectError, ProjectManager},
 };
 
+const PRIMARY: Color = Color::Rgb(188, 147, 248);
+const WARNING: Color = Color::Rgb(255, 184, 108);
+const ERROR: Color = Color::Rgb(254, 86, 84);
+const SHORTCUT: Color = Color::Rgb(222, 110, 177);
+const SUCCESS: Color = Color::Rgb(0, 106, 99);
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Screen {
     Projects,
@@ -1067,12 +1073,17 @@ impl Drop for TerminalGuard {
 fn draw(frame: &mut Frame, app: &Dashboard) {
     let areas = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(4), Constraint::Length(2)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(4),
+            Constraint::Length(2),
+        ])
         .split(frame.area());
+    draw_header(frame, areas[0]);
     match app.screen {
-        Screen::Projects => draw_projects(frame, app, areas[0]),
-        Screen::Tasks => draw_tasks(frame, app, areas[0]),
-        Screen::TaskDetail => draw_task_detail(frame, app, areas[0]),
+        Screen::Projects => draw_projects(frame, app, areas[1]),
+        Screen::Tasks => draw_tasks(frame, app, areas[1]),
+        Screen::TaskDetail => draw_task_detail(frame, app, areas[1]),
     }
     let help = match app.screen {
         Screen::Projects => "↑/↓ select  Enter open  n new project  r refresh  q quit",
@@ -1091,21 +1102,31 @@ fn draw(frame: &mut Frame, app: &Dashboard) {
         }
         Screen::TaskDetail => "a abandon  ↑/↓ activity  Backspace tasks  r refresh  q quit",
     };
-    let footer = match (&app.workflow_status, &app.error) {
-        (Some(status), Some(error)) => format!(
-            "{help}  |  {}  |  Error: {}",
-            terminal_safe(status),
-            terminal_safe(error)
-        ),
-        (Some(status), None) => format!("{help}  |  {}", terminal_safe(status)),
-        (None, Some(error)) => format!("{help}  |  Error: {}", terminal_safe(error)),
-        (None, None) => help.to_owned(),
-    };
+    let mut footer = shortcut_help_line(help).spans;
+    if let Some(status) = &app.workflow_status {
+        footer.push(Span::raw("  |  "));
+        footer.push(Span::raw(terminal_safe(status)));
+    }
+    if let Some(error) = &app.error {
+        footer.push(Span::raw("  |  "));
+        footer.push(Span::styled(
+            format!("Error: {}", terminal_safe(error)),
+            Style::default().fg(ERROR),
+        ));
+    }
     frame.render_widget(
-        Paragraph::new(footer).block(Block::default().borders(Borders::TOP)),
-        areas[1],
+        Paragraph::new(Line::from(footer)).block(Block::default().borders(Borders::TOP)),
+        areas[2],
     );
     draw_dialog(frame, app);
+}
+
+fn draw_header(frame: &mut Frame, area: ratatui::layout::Rect) {
+    frame.render_widget(
+        Paragraph::new("Cronos-AI")
+            .style(Style::default().fg(PRIMARY).add_modifier(Modifier::BOLD)),
+        area,
+    );
 }
 
 fn draw_dialog(frame: &mut Frame, app: &Dashboard) {
@@ -1216,9 +1237,14 @@ fn draw_dialog(frame: &mut Frame, app: &Dashboard) {
     let area = centered_rect(78, 45, frame.area());
     frame.render_widget(Clear, area);
     frame.render_widget(
-        Paragraph::new(content)
+        Paragraph::new(dialog_text(content))
             .wrap(Wrap { trim: true })
-            .block(Block::default().borders(Borders::ALL).title(title)),
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(PRIMARY))
+                    .title(title),
+            ),
         area,
     );
 }
@@ -1251,7 +1277,13 @@ fn draw_projects(frame: &mut Frame, app: &Dashboard, area: ratatui::layout::Rect
                 ProjectStatus::Active => "active",
                 ProjectStatus::Archived => "archived",
             };
-            ListItem::new(format!("{}  [{status}]", terminal_safe(&project.name)))
+            ListItem::new(Line::from(vec![
+                Span::raw(terminal_safe(&project.name)),
+                Span::styled(
+                    format!("  [{status}]"),
+                    Style::default().fg(project_status_color(&project.status)),
+                ),
+            ]))
         })
         .collect::<Vec<_>>();
     let mut state = ListState::default();
@@ -1261,12 +1293,8 @@ fn draw_projects(frame: &mut Frame, app: &Dashboard, area: ratatui::layout::Rect
     frame.render_stateful_widget(
         List::new(items)
             .block(Block::default().borders(Borders::ALL).title("Projects"))
-            .highlight_symbol("▶ ")
-            .highlight_style(
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
+            .highlight_symbol(Line::from(Span::styled("▶ ", Style::default().fg(PRIMARY))))
+            .highlight_style(Style::default().add_modifier(Modifier::BOLD)),
         area,
         &mut state,
     );
@@ -1282,13 +1310,18 @@ fn draw_tasks(frame: &mut Frame, app: &Dashboard, area: ratatui::layout::Rect) {
         .iter()
         .map(|task| {
             let step = task.current_step.as_deref().unwrap_or("—");
-            ListItem::new(format!(
-                "{:<11} {:<6} {}  |  {}",
-                task_status_label(&task.status),
-                priority_label(&task.priority),
-                terminal_safe(&task.title),
-                terminal_safe(step),
-            ))
+            ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!("{:<11}", task_status_label(&task.status)),
+                    Style::default().fg(task_status_color(&task.status)),
+                ),
+                Span::raw(format!(
+                    " {:<6} {}  |  {}",
+                    priority_label(&task.priority),
+                    terminal_safe(&task.title),
+                    terminal_safe(step),
+                )),
+            ]))
         })
         .collect::<Vec<_>>();
     let mut state = ListState::default();
@@ -1302,12 +1335,8 @@ fn draw_tasks(frame: &mut Frame, app: &Dashboard, area: ratatui::layout::Rect) {
                     .borders(Borders::ALL)
                     .title(format!("{project_name} — tasks (status | priority | step)")),
             )
-            .highlight_symbol("▶ ")
-            .highlight_style(
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
+            .highlight_symbol(Line::from(Span::styled("▶ ", Style::default().fg(PRIMARY))))
+            .highlight_style(Style::default().add_modifier(Modifier::BOLD)),
         area,
         &mut state,
     );
@@ -1335,7 +1364,10 @@ fn draw_task_detail(frame: &mut Frame, app: &Dashboard, area: ratatui::layout::R
     let summary = Text::from(vec![
         Line::from(vec![
             Span::styled("Status: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(task_status_label(&task.status)),
+            Span::styled(
+                task_status_label(&task.status),
+                Style::default().fg(task_status_color(&task.status)),
+            ),
         ]),
         Line::from(vec![
             Span::styled("Priority: ", Style::default().add_modifier(Modifier::BOLD)),
@@ -1356,11 +1388,18 @@ fn draw_task_detail(frame: &mut Frame, app: &Dashboard, area: ratatui::layout::R
             Span::raw(description),
         ]),
         Line::from(format!("Attempt: {}", task.attempt)),
-        Line::from(format!(
-            "Specifications: {}  |  Final code: {}",
-            approval_status(task, ApprovalGate::Specifications),
-            approval_status(task, ApprovalGate::FinalCode),
-        )),
+        Line::from(vec![
+            Span::raw("Specifications: "),
+            Span::styled(
+                approval_status(task, ApprovalGate::Specifications),
+                Style::default().fg(approval_status_color(task, ApprovalGate::Specifications)),
+            ),
+            Span::raw("  |  Final code: "),
+            Span::styled(
+                approval_status(task, ApprovalGate::FinalCode),
+                Style::default().fg(approval_status_color(task, ApprovalGate::FinalCode)),
+            ),
+        ]),
     ]);
     frame.render_widget(
         Paragraph::new(summary)
@@ -1419,8 +1458,8 @@ fn draw_task_detail(frame: &mut Frame, app: &Dashboard, area: ratatui::layout::R
                     .borders(Borders::ALL)
                     .title("Agent activity (newest updates appear below)"),
             )
-            .highlight_symbol("▶ ")
-            .highlight_style(Style::default().fg(Color::Yellow)),
+            .highlight_symbol(Line::from(Span::styled("▶ ", Style::default().fg(PRIMARY))))
+            .highlight_style(Style::default().add_modifier(Modifier::BOLD)),
         areas[2],
         &mut state,
     );
@@ -1440,13 +1479,18 @@ fn recovery_record_line(record: &crate::model::RecoveryRecord) -> Line<'static> 
 
 fn approval_record_line(record: &crate::model::ApprovalRecord) -> Line<'static> {
     let note = record.note.as_deref().unwrap_or("");
-    Line::from(format!(
-        "Attempt {} — {}: {}  {}",
-        record.attempt,
-        approval_gate_label(record.gate),
-        approval_decision_label(record.decision),
-        terminal_safe(note),
-    ))
+    Line::from(vec![
+        Span::raw(format!(
+            "Attempt {} — {}: ",
+            record.attempt,
+            approval_gate_label(record.gate),
+        )),
+        Span::styled(
+            approval_decision_label(record.decision),
+            Style::default().fg(approval_decision_color(record.decision)),
+        ),
+        Span::raw(format!("  {}", terminal_safe(note))),
+    ])
 }
 
 fn approval_gate_label(gate: ApprovalGate) -> &'static str {
@@ -1463,6 +1507,38 @@ fn approval_decision_label(decision: ApprovalDecision) -> &'static str {
     }
 }
 
+fn project_status_color(status: &ProjectStatus) -> Color {
+    match status {
+        ProjectStatus::Active => PRIMARY,
+        ProjectStatus::Archived => WARNING,
+    }
+}
+
+fn task_status_color(status: &TaskStatus) -> Color {
+    match status {
+        TaskStatus::Pending | TaskStatus::Rejected => WARNING,
+        TaskStatus::InProgress => PRIMARY,
+        TaskStatus::Completed => SUCCESS,
+        TaskStatus::Error => ERROR,
+    }
+}
+
+fn agent_status_color(status: &AgentStatus) -> Color {
+    match status {
+        AgentStatus::Starting | AgentStatus::Running => PRIMARY,
+        AgentStatus::Waiting | AgentStatus::Cancelled | AgentStatus::Blocked => WARNING,
+        AgentStatus::Completed => SUCCESS,
+        AgentStatus::Failed => ERROR,
+    }
+}
+
+fn approval_decision_color(decision: ApprovalDecision) -> Color {
+    match decision {
+        ApprovalDecision::Approved => SUCCESS,
+        ApprovalDecision::Rejected => WARNING,
+    }
+}
+
 fn approval_status(task: &Task, gate: ApprovalGate) -> &'static str {
     task.approval_history
         .iter()
@@ -1471,17 +1547,65 @@ fn approval_status(task: &Task, gate: ApprovalGate) -> &'static str {
         .map_or("pending", |record| approval_decision_label(record.decision))
 }
 
+fn approval_status_color(task: &Task, gate: ApprovalGate) -> Color {
+    task.approval_history
+        .iter()
+        .rev()
+        .find(|record| record.attempt == task.attempt && record.gate == gate)
+        .map_or(WARNING, |record| approval_decision_color(record.decision))
+}
+
+fn shortcut_help_line(hints: &str) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (index, hint) in hints.split("  ").enumerate() {
+        if index > 0 {
+            spans.push(Span::raw("  "));
+        }
+        if let Some((shortcut, description)) = hint.split_once(' ') {
+            spans.push(Span::styled(
+                shortcut.to_owned(),
+                Style::default().fg(SHORTCUT).add_modifier(Modifier::BOLD),
+            ));
+            spans.push(Span::raw(format!(" {description}")));
+        } else {
+            spans.push(Span::styled(
+                hint.to_owned(),
+                Style::default().fg(SHORTCUT).add_modifier(Modifier::BOLD),
+            ));
+        }
+    }
+    Line::from(spans)
+}
+
+fn dialog_text(content: String) -> Text<'static> {
+    let Some((body, hints)) = content.rsplit_once("\n\n") else {
+        return Text::from(content);
+    };
+    let mut lines = body
+        .lines()
+        .map(|line| Line::raw(line.to_owned()))
+        .collect::<Vec<_>>();
+    lines.push(Line::default());
+    lines.push(shortcut_help_line(hints));
+    Text::from(lines)
+}
+
 fn agent_activity_item(activity: &AgentActivity) -> ListItem<'static> {
     let detail = terminal_safe(activity.detail.as_deref().unwrap_or(""));
-    ListItem::new(format!(
-        "{}  attempt {}  {} — {} / {}  {}",
-        activity.updated_at_unix_secs,
-        activity.attempt,
-        terminal_safe(&activity.agent_name),
-        terminal_safe(&activity.step),
-        agent_status_label(&activity.status),
-        detail,
-    ))
+    ListItem::new(Line::from(vec![
+        Span::raw(format!(
+            "{}  attempt {}  {} — {} / ",
+            activity.updated_at_unix_secs,
+            activity.attempt,
+            terminal_safe(&activity.agent_name),
+            terminal_safe(&activity.step),
+        )),
+        Span::styled(
+            agent_status_label(&activity.status),
+            Style::default().fg(agent_status_color(&activity.status)),
+        ),
+        Span::raw(format!("  {detail}")),
+    ]))
 }
 
 fn terminal_safe(value: &str) -> String {
@@ -1529,7 +1653,10 @@ fn agent_status_label(status: &AgentStatus) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{Dashboard, Dialog, Screen};
+    use super::{
+        Dashboard, Dialog, ERROR, PRIMARY, SHORTCUT, SUCCESS, Screen, WARNING, agent_status_color,
+        approval_decision_color, project_status_color, task_status_color,
+    };
     use crate::{
         model::{
             AgentStatus, ApprovalDecision, ApprovalGate, Priority, ProjectStatus, TaskStatus,
@@ -1538,6 +1665,150 @@ mod tests {
         project::ProjectManager,
     };
     use crossterm::event::KeyCode;
+    use ratatui::{Terminal, backend::TestBackend, style::Color};
+
+    fn render(app: &Dashboard) -> TestBackend {
+        let backend = TestBackend::new(180, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| super::draw(frame, app)).unwrap();
+        terminal.backend().clone()
+    }
+
+    fn rendered_text_position(backend: &TestBackend, text: &str) -> (u16, u16) {
+        let buffer = backend.buffer();
+        for y in 0..buffer.area.height {
+            let row = (0..buffer.area.width).fold(String::new(), |mut row, x| {
+                row.push_str(buffer.cell((x, y)).unwrap().symbol());
+                row
+            });
+            if let Some(start) = row.find(text) {
+                return (row[..start].chars().count() as u16, y);
+            }
+        }
+        panic!("rendered text not found: {text:?}");
+    }
+
+    fn assert_rendered_color(backend: &TestBackend, text: &str, expected: Color) {
+        let (x, y) = rendered_text_position(backend, text);
+        assert_eq!(
+            backend.buffer().cell((x, y)).unwrap().fg,
+            expected,
+            "style for {text:?}"
+        );
+    }
+
+    #[test]
+    fn palette_colors_and_status_roles_match_the_requested_semantics() {
+        assert_eq!(PRIMARY, ratatui::style::Color::Rgb(188, 147, 248));
+        assert_eq!(WARNING, ratatui::style::Color::Rgb(255, 184, 108));
+        assert_eq!(ERROR, ratatui::style::Color::Rgb(254, 86, 84));
+        assert_eq!(SHORTCUT, ratatui::style::Color::Rgb(222, 110, 177));
+        assert_eq!(SUCCESS, ratatui::style::Color::Rgb(0, 106, 99));
+
+        assert_eq!(project_status_color(&ProjectStatus::Active), PRIMARY);
+        assert_eq!(project_status_color(&ProjectStatus::Archived), WARNING);
+        assert_eq!(task_status_color(&TaskStatus::Pending), WARNING);
+        assert_eq!(task_status_color(&TaskStatus::InProgress), PRIMARY);
+        assert_eq!(task_status_color(&TaskStatus::Completed), SUCCESS);
+        assert_eq!(task_status_color(&TaskStatus::Rejected), WARNING);
+        assert_eq!(task_status_color(&TaskStatus::Error), ERROR);
+        assert_eq!(agent_status_color(&AgentStatus::Waiting), WARNING);
+        assert_eq!(agent_status_color(&AgentStatus::Failed), ERROR);
+        assert_eq!(agent_status_color(&AgentStatus::Completed), SUCCESS);
+        assert_eq!(approval_decision_color(ApprovalDecision::Approved), SUCCESS);
+        assert_eq!(approval_decision_color(ApprovalDecision::Rejected), WARNING);
+    }
+
+    #[test]
+    fn title_is_at_the_top_in_primary_color_on_every_dashboard_screen() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(root.path()).unwrap();
+        let project = manager.create_project("Demo".to_owned(), None).unwrap();
+        manager
+            .create_task(
+                project.id,
+                "Build feature".to_owned(),
+                None,
+                Priority::Medium,
+                Vec::new(),
+            )
+            .unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+        app.handle_key(KeyCode::Enter);
+
+        for screen in [Screen::Projects, Screen::Tasks, Screen::TaskDetail] {
+            app.screen = screen;
+            let backend = render(&app);
+            let (x, y) = rendered_text_position(&backend, "Cronos-AI");
+            assert_eq!(y, 0);
+            assert_eq!(backend.buffer().cell((x, y)).unwrap().fg, PRIMARY);
+        }
+    }
+
+    #[test]
+    fn rendered_task_states_errors_and_shortcuts_use_semantic_colors() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(root.path()).unwrap();
+        let project = manager.create_project("Demo".to_owned(), None).unwrap();
+        manager
+            .create_task(
+                project.id,
+                "Build feature".to_owned(),
+                None,
+                Priority::Medium,
+                Vec::new(),
+            )
+            .unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+        app.handle_key(KeyCode::Enter);
+        app.error = Some("simulated failure".to_owned());
+
+        let backend = render(&app);
+        assert_rendered_color(&backend, "pending", WARNING);
+        assert_rendered_color(&backend, "n new task", SHORTCUT);
+        assert_rendered_color(&backend, "Error: simulated failure", ERROR);
+
+        app.screen = Screen::TaskDetail;
+        let task = &mut app.tasks[0];
+        task.status = TaskStatus::Completed;
+        task.approval_history = vec![
+            crate::model::ApprovalRecord {
+                attempt: task.attempt,
+                gate: ApprovalGate::Specifications,
+                decision: ApprovalDecision::Approved,
+                note: None,
+                decided_at_unix_secs: 1,
+            },
+            crate::model::ApprovalRecord {
+                attempt: task.attempt,
+                gate: ApprovalGate::FinalCode,
+                decision: ApprovalDecision::Rejected,
+                note: Some("Revise this change".to_owned()),
+                decided_at_unix_secs: 2,
+            },
+        ];
+        task.agent_activity.push(crate::model::AgentActivity {
+            attempt: task.attempt,
+            agent_name: "reviewer".to_owned(),
+            step: "code-review".to_owned(),
+            status: AgentStatus::Failed,
+            detail: Some("test failure".to_owned()),
+            updated_at_unix_secs: 3,
+        });
+
+        let backend = render(&app);
+        assert_rendered_color(&backend, "completed", SUCCESS);
+        assert_rendered_color(&backend, "approved", SUCCESS);
+        assert_rendered_color(&backend, "revision requested", WARNING);
+        assert_rendered_color(&backend, "failed", ERROR);
+
+        app.dialog = Dialog::Abandon {
+            note: String::new(),
+        };
+        let backend = render(&app);
+        assert_rendered_color(&backend, "Enter save", SHORTCUT);
+        assert_rendered_color(&backend, "Esc cancel", SHORTCUT);
+    }
 
     #[test]
     fn rendered_user_content_cannot_inject_terminal_control_sequences() {
