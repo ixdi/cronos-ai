@@ -27,130 +27,153 @@
 		<!-- Edit guide-content.html or a reference .md file, then run python3 docs/build_guide.py (requires pandoc). -->
 		<!-- GUIDE_CONTENT_START -->
 <!-- Edit this HTML content and the Markdown reference pages; run python3 docs/build_guide.py (requires pandoc) to rebuild the guide. -->
-		<main id="main">
-			<div id="top" class="hero">
-				<div class="hero-copy">
-					<div class="eyebrow">A supervised software factory</div>
-					<h1>Software manufactured by AI.</h1>
-					<p class="lead">Factory-Engineered. Cronos AI is an opinionated software factory: AI agents specify, build, review,
-						verify, and document each task, Rust enforces the rules, and a human approves the specs and the final code.</p>
-					<div class="hero-actions">
-						<a class="button" href="#start">Start a project</a>
-						<a class="button secondary" href="#architecture">Explore the architecture</a>
-					</div>
-				</div>
-				<img class="hero-banner" src="../assets/cronos-ai-banner.svg" alt="Cronos-AI: supervised software factory with a clock-inspired agent network">
+<main id="main">
+	<div id="top" class="hero">
+		<div class="hero-copy">
+			<div class="eyebrow">A supervised software factory</div>
+			<h1>Software manufactured by AI.</h1>
+			<p class="lead">Factory-Engineered. Cronos AI is an opinionated software factory: AI agents specify, build, review,
+				verify, and document each task, Rust enforces the rules, and a human approves the specs and the final code.</p>
+			<div class="hero-actions">
+				<a class="button" href="#start">Start a project</a>
+				<a class="button secondary" href="#architecture">Explore the architecture</a>
 			</div>
+		</div>
+		<img class="hero-banner" src="./assets/cronos-ai-banner.svg" alt="Cronos-AI: supervised software factory with a clock-inspired agent network">
+	</div>
 
-			<section id="start" aria-labelledby="start-title">
-				<div class="section-intro">
-					<div class="eyebrow">01 · Get started</div>
-					<h2 id="start-title">Prepare a project</h2>
-					<p>Build Cronos-AI with <code>cargo build --release</code>, then run <code>./scripts/cronos-ai</code>. From a regular terminal the launcher opens the dedicated <code>cronos-ai</code> Herdr session and workspace; inside a Herdr pane it starts directly there. Supervised task execution requires Herdr. Your project must point to a local Git repository with a committed <code>openspec/</code> directory (<code>openspec init</code>, then commit) and have a check command. Keep the repository's main working tree clean and configure a commit identity, because agents and Cronos-AI commit to the task branch.</p>
-				</div>
-				<div class="grid two">
-					<article class="card teal">
-						<h3>Requirements</h3>
-						<ul>
-							<li>A Rust toolchain to build Cronos-AI.</li>
-							<li>Pi as agent orchestrator and worker.</li>
-							<li>Herdr to run and supervise the agents.</li>
-							<li>OpenSpec for the specifications.</li>
-							<li>Git, plus a project repository with a committed <code>openspec/</code> directory.</li>
-							<li>A check command for the project, such as <code>./scripts/check.sh</code>.</li>
-						</ul>
-						<p class="small" style="margin-top:12px">At startup, Cronos-AI checks for required tools and prompts if any are missing. It does not install tools automatically.</p>
-					</article>
-					<article class="card blue">
-						<h3>Create a project and task</h3>
-						<pre><code>cargo build --release
+	<section id="start" aria-labelledby="start-title">
+		<div class="section-intro">
+			<div class="eyebrow">01 · Get started</div>
+			<h2 id="start-title">Prepare a project</h2>
+			<p>Build Cronos-AI with <code>cargo build --release</code>, then run <code>./scripts/cronos-ai</code>. From a regular terminal the launcher opens the dedicated <code>cronos-ai</code>
+				Herdr session and workspace; inside a Herdr pane it starts directly there. Supervised task execution requires Herdr. Your project must point to a local Git repository with a committed <code>openspec/</code>
+				directory (<code>openspec init</code>, then commit) and have a check command. Keep the repository's main working tree clean and configure a commit identity, because agents and Cronos-AI commit to the task branch.</p>
+		</div>
+		<div class="grid two">
+			<article class="card teal">
+				<h3>Requirements</h3>
+				<ul>
+					<li>A Rust toolchain to build Cronos-AI.</li>
+					<li>Pi as agent orchestrator and worker.</li>
+					<li>Herdr to run and supervise the agents.</li>
+					<li>OpenSpec for the specifications.</li>
+					<li>Git, plus a project repository with a committed <code>openspec/</code>
+						directory.</li>
+					<li>A check command for the project, such as <code>./scripts/check.sh</code>.</li>
+				</ul>
+				<p class="small" style="margin-top:12px">At startup, Cronos-AI checks for required tools and prompts if any are missing. It does not install tools automatically.</p>
+			</article>
+			<article class="card blue">
+				<h3>Create a project and task</h3>
+				<pre><code>cargo build --release
 ./target/release/cronos-ai project create demo \
   --repository /path/to/repository
 ./target/release/cronos-ai project set-check-command \
   &lt;PROJECT_ID&gt; -- ./scripts/check.sh
 ./target/release/cronos-ai task create &lt;PROJECT_ID&gt; \
   "Build the feature" --priority high</code></pre>
-						<p class="small">Use the project ID printed by <code>project create</code>. The repository needs a committed <code>openspec/</code> directory, and the check command runs without a shell after verification. The task command prints its task ID as JSON.</p>
-					</article>
-				</div>
-				<ol class="steps" style="margin-top:22px">
-					<li><span><strong>Launch the dashboard:</strong>
-					run <code>./scripts/cronos-ai</code> after building. Outside Herdr it creates or attaches to its dedicated session; inside Herdr it starts in the current pane. Run <code>./target/release/cronos-ai</code> directly for the TUI without the launcher.</span></li>
-					<li><span><strong>Select and start:</strong>
-					choose the project with <kbd>Enter</kbd>; on its task list press <kbd>s</kbd>
-					to start the next ready task.</span></li>
-					<li><span><strong>Follow the task:</strong>
-					open it with <kbd>Enter</kbd>. The details page shows its status, step and elapsed time, worktree, branch, OpenSpec change, decisions, and agent activity. Press <kbd>v</kbd> for the review view.</span></li>
-				</ol>
-				<p class="small" style="margin-top:18px">You can also create a project from the TUI: press <kbd>n</kbd> on the project list, enter its required name and optional description, Git repository path, and check command, then press <kbd>Enter</kbd>. Use <kbd>Tab</kbd> to move between fields or <kbd>Esc</kbd> to cancel; validation errors leave the form open so you can correct them.</p>
-				<p class="small" style="margin-top:12px">On a project's task list, press <kbd>n</kbd> to add a task. Enter its title and optional description; priority defaults to Medium and dependencies can be selected from same-project tasks. Use <kbd>←</kbd>/<kbd>→</kbd> to change priority, <kbd>↑</kbd>/<kbd>↓</kbd> and <kbd>Space</kbd> to choose dependencies, then <kbd>Enter</kbd> to create or <kbd>Esc</kbd> to cancel. New tasks remain Pending; press <kbd>s</kbd> separately to start ready work.</p>
-				<p class="small" style="margin-top:18px">The project form is only for new projects. For an existing project, use <code>project set-repository &lt;PROJECT_ID&gt; --repository /path/to/repository</code> and <code>project set-check-command &lt;PROJECT_ID&gt; -- ./scripts/check.sh</code> before starting work.</p>
-			</section>
+				<p class="small">Use the project ID printed by <code>project create</code>. The repository needs a committed <code>openspec/</code>
+					directory, and the check command runs without a shell after verification. The task command prints its task ID as JSON.</p>
+			</article>
+		</div>
+		<ol class="steps" style="margin-top:22px">
+			<li><span><strong>Launch the dashboard:</strong>
+			run <code>./scripts/cronos-ai</code>
+			after building. Outside Herdr it creates or attaches to its dedicated session; inside Herdr it starts in the current pane. Run <code>./target/release/cronos-ai</code>
+			directly for the TUI without the launcher.</span></li>
+			<li><span><strong>Select and start:</strong>
+			choose the project with <kbd>Enter</kbd>; on its task list press <kbd>s</kbd>
+			to start the next ready task.</span></li>
+			<li><span><strong>Follow the task:</strong>
+			open it with <kbd>Enter</kbd>. The details page shows its status, step and elapsed time, worktree, branch, OpenSpec change, decisions, and agent activity. Press <kbd>v</kbd>
+			for the review view.</span></li>
+		</ol>
+		<p class="small" style="margin-top:18px">You can also create a project from the TUI: press <kbd>n</kbd>
+			on the project list, enter its required name and optional description, Git repository path, and check command, then press <kbd>Enter</kbd>. Use <kbd>Tab</kbd>
+			to move between fields or <kbd>Esc</kbd>
+			to cancel; validation errors leave the form open so you can correct them.</p>
+		<p class="small" style="margin-top:12px">On a project's task list, press <kbd>n</kbd>
+			to add a task. Enter its title and optional description; priority defaults to Medium and dependencies can be selected from same-project tasks. Use <kbd>←</kbd>/<kbd>→</kbd>
+			to change priority, <kbd>↑</kbd>/<kbd>↓</kbd>
+			and <kbd>Space</kbd>
+			to choose dependencies, then <kbd>Enter</kbd>
+			to create or <kbd>Esc</kbd>
+			to cancel. New tasks remain Pending; press <kbd>s</kbd>
+			separately to start ready work.</p>
+		<p class="small" style="margin-top:18px">The project form is only for new projects. For an existing project, use <code>project set-repository &lt;PROJECT_ID&gt; --repository /path/to/repository</code>
+			and <code>project set-check-command &lt;PROJECT_ID&gt; -- ./scripts/check.sh</code>
+			before starting work.</p>
+	</section>
 
-			<section id="workflow" aria-labelledby="workflow-title">
-				<div class="section-intro">
-					<div class="eyebrow">02 · Workflow</div>
-					<h2 id="workflow-title">One task, ordered steps, explicit approvals</h2>
-					<p>A project can contain many features and tasks. In the current MVP, the queue runs one task at a time; independent agents within the active step can run in parallel. The editable feature-track diagram describes the target project-level parallel model.</p>
-				</div>
-				<div class="grid">
-					<article class="card"><h3>1. Specifications</h3><p>One agent writes and commits the task's OpenSpec change; Rust requires <code>openspec validate --strict</code> to pass. The task waits at a human approval gate before code generation.</p></article>
-					<article class="card"><h3>2. Build and verify</h3><p>One agent implements and commits; 1-4 read-only reviewers and verifiers run in parallel, then Rust runs the check command. Findings or a failing check send the code back automatically, up to 3 times per attempt.</p></article>
-					<article class="card"><h3>3. Approve and complete</h3><p>Final-code approval unlocks documentation. Rust archives the OpenSpec change, makes one documentation commit, and merges locally. A merge conflict returns the task to code generation.</p></article>
-				</div>
-				<div class="notice" role="note"><strong>Local only:</strong>
-				Cronos-AI does not push to a remote. A successful local merge marks the task Completed; publishing remains your Git operation.</div>
-				<div class="feature-actions">
-					<a class="button secondary" href="../design/workflow.drawio" download>Download editable draw.io source</a>
-					<a class="button secondary" href="../design/workflow.png">Open full-size preview</a>
-				</div>
-				<figure class="feature-preview">
-					<img src="../design/workflow.png" alt="A project fans out to independent feature tracks; each track proceeds through specs, build, verify, and human approval.">
-					<figcaption>Parallel feature tracks are the target model. The current MVP still processes one task at a time.</figcaption>
-				</figure>
-			</section>
+	<section id="workflow" aria-labelledby="workflow-title">
+		<div class="section-intro">
+			<div class="eyebrow">02 · Workflow</div>
+			<h2 id="workflow-title">One task, ordered steps, explicit approvals</h2>
+			<p>A project can contain many features and tasks. In the current MVP, the queue runs one task at a time; independent agents within the active step can run in parallel. The editable feature-track diagram describes the target project-level parallel model.</p>
+		</div>
+		<div class="grid">
+			<article class="card"><h3>1. Specifications</h3><p>One agent writes and commits the task's OpenSpec change; Rust requires <code>openspec validate --strict</code>
+				to pass. The task waits at a human approval gate before code generation.</p></article>
+			<article class="card"><h3>2. Build and verify</h3><p>One agent implements and commits; 1-4 read-only reviewers and verifiers run in parallel, then Rust runs the check command. Findings or a failing check send the code back automatically, up to 3 times per attempt.</p></article>
+			<article class="card"><h3>3. Approve and complete</h3><p>Final-code approval unlocks documentation. Rust archives the OpenSpec change, makes one documentation commit, and merges locally. A merge conflict returns the task to code generation.</p></article>
+		</div>
+		<div class="notice" role="note"><strong>Local only:</strong>
+		Cronos-AI does not push to a remote. A successful local merge marks the task Completed; publishing remains your Git operation.</div>
+		<div class="feature-actions">
+			<a class="button secondary" href="../design/workflow.drawio" download>Download editable draw.io source</a>
+			<a class="button secondary" href="../design/workflow.png">Open full-size preview</a>
+		</div>
+		<figure class="feature-preview">
+			<img src="../design/workflow.png" alt="A project fans out to independent feature tracks; each track proceeds through specs, build, verify, and human approval.">
+			<figcaption>Parallel feature tracks are the target model. The current MVP still processes one task at a time.</figcaption>
+		</figure>
+	</section>
 
-			<section id="controls" aria-labelledby="controls-title">
-				<div class="section-intro">
-					<div class="eyebrow">03 · Human controls</div>
-					<h2 id="controls-title">Review, revise, recover, or abandon</h2>
-					<p>Approval-stage rejection requests revision; it does <strong>not</strong>
-						set the task status to Rejected. Rejected is reserved for explicitly abandoning the entire task.</p>
-				</div>
-				<div class="table-wrap">
-					<table>
-						<thead><tr><th>Task status</th><th>Meaning</th><th>What you can do</th></tr></thead>
-						<tbody>
-							<tr><td><span class="status">Pending</span></td><td>Waiting to be selected by the ready queue.</td><td>Priority and dependencies determine when it becomes ready.</td></tr>
-							<tr><td><span class="status active">In Progress</span></td><td>The active workflow is running, waiting at an approval gate, waiting for a clean base at local merge, or interrupted.</td><td><kbd>v</kbd>
-							reviews the work; <kbd>y</kbd>
-							approves; <kbd>n</kbd>
-							requests revision and asks for a note; <kbd>s</kbd> on the task list resumes an interrupted task or retries the merge.</td></tr>
-							<tr><td><span class="status error">Error</span></td><td>A failure stopped the workflow; remaining agents in that step are cancelled.</td><td><kbd>t</kbd>
-							retries only the failed step, keeping the attempt; <kbd>r</kbd>
-							retries specs; <kbd>c</kbd>
-							supplies clarification and regenerates specs. <kbd>r</kbd> and <kbd>c</kbd> discard the failed attempt's worktree and branch.</td></tr>
-							<tr><td><span class="status done">Completed</span></td><td>Required steps and local merge succeeded.</td><td>Inspect the result in the project repository.</td></tr>
-							<tr><td><span class="status error">Rejected</span></td><td>A human explicitly abandoned the whole task.</td><td>Enter a reason when pressing <kbd>a</kbd>
-								in task details.</td></tr>
-						</tbody>
-					</table>
-				</div>
-				<p class="small" style="margin-top:14px">Use <kbd>r</kbd>
-					outside an Error task to refresh. Press <kbd>Backspace</kbd>
-					or <kbd>Esc</kbd>
-					to go back, and <kbd>q</kbd>
-					to quit.</p>
-			</section>
+	<section id="controls" aria-labelledby="controls-title">
+		<div class="section-intro">
+			<div class="eyebrow">03 · Human controls</div>
+			<h2 id="controls-title">Review, revise, recover, or abandon</h2>
+			<p>Approval-stage rejection requests revision; it does <strong>not</strong>
+				set the task status to Rejected. Rejected is reserved for explicitly abandoning the entire task.</p>
+		</div>
+		<div class="table-wrap">
+			<table>
+				<thead><tr><th>Task status</th><th>Meaning</th><th>What you can do</th></tr></thead>
+				<tbody>
+					<tr><td><span class="status">Pending</span></td><td>Waiting to be selected by the ready queue.</td><td>Priority and dependencies determine when it becomes ready.</td></tr>
+					<tr><td><span class="status active">In Progress</span></td><td>The active workflow is running, waiting at an approval gate, waiting for a clean base at local merge, or interrupted.</td><td><kbd>v</kbd>
+					reviews the work; <kbd>y</kbd>
+					approves; <kbd>n</kbd>
+					requests revision and asks for a note; <kbd>s</kbd>
+					on the task list resumes an interrupted task or retries the merge.</td></tr>
+					<tr><td><span class="status error">Error</span></td><td>A failure stopped the workflow; remaining agents in that step are cancelled.</td><td><kbd>t</kbd>
+					retries only the failed step, keeping the attempt; <kbd>r</kbd>
+					retries specs; <kbd>c</kbd>
+					supplies clarification and regenerates specs. <kbd>r</kbd>
+					and <kbd>c</kbd>
+					discard the failed attempt's worktree and branch.</td></tr>
+					<tr><td><span class="status done">Completed</span></td><td>Required steps and local merge succeeded.</td><td>Inspect the result in the project repository.</td></tr>
+					<tr><td><span class="status error">Rejected</span></td><td>A human explicitly abandoned the whole task.</td><td>Enter a reason when pressing <kbd>a</kbd>
+						in task details.</td></tr>
+				</tbody>
+			</table>
+		</div>
+		<p class="small" style="margin-top:14px">Use <kbd>r</kbd>
+			outside an Error task to refresh. Press <kbd>Backspace</kbd>
+			or <kbd>Esc</kbd>
+			to go back, and <kbd>q</kbd>
+			to quit.</p>
+	</section>
 
-			<section id="architecture" aria-labelledby="architecture-title">
-				<div class="section-intro">
-					<div class="eyebrow">04 · Architecture</div>
-					<h2 id="architecture-title">Rust owns state · Pi orchestrates · Herdr runs agents · Openspec as one source of truth</h2>
-					<p>The boundary is intentional: the model can query task state and request the current step, but only the Rust host validates and persists status transitions, approvals, and worktree operations.</p>
-				</div>
-				<div class="diagram-frame">
-					<pre class="mermaid" id="architecture-diagram">flowchart LR
+	<section id="architecture" aria-labelledby="architecture-title">
+		<div class="section-intro">
+			<div class="eyebrow">04 · Architecture</div>
+			<h2 id="architecture-title">Rust owns state · Pi orchestrates · Herdr runs agents · Openspec as one source of truth</h2>
+			<p>The boundary is intentional: the model can query task state and request the current step, but only the Rust host validates and persists status transitions, approvals, and worktree operations.</p>
+		</div>
+		<div class="diagram-frame">
+			<pre class="mermaid" id="architecture-diagram">flowchart LR
   human(["Human operator"])
   tui["Cronos CLI / TUI&lt;br/&gt;Review view · approvals&lt;br/&gt;resume · recovery"]
 
@@ -237,57 +260,62 @@
   class openspec,repository external
   class completed success
   class error,rejected failure</pre>
-					<p id="mermaid-status" class="diagram-status" role="status" aria-live="polite">Loading architecture diagram…</p>
-				</div>
-				<div class="diagram-links">
-					<a href="../design/architecture.mmd">Mermaid source</a>
-					<a href="../design/workflow.drawio">Editable feature-flow diagram</a>
-					<a href="../design/workflow.png">Feature-flow preview</a>
-				</div>
-				<p class="small" style="margin-top:14px">The parallel feature view is a target model. The Rust MVP currently runs one task at a time, while independent agents within that task's active step may run concurrently.</p>
-			</section>
+			<p id="mermaid-status" class="diagram-status" role="status" aria-live="polite">Loading architecture diagram…</p>
+		</div>
+		<div class="diagram-links">
+			<a href="../design/architecture.mmd">Mermaid source</a>
+			<a href="../design/workflow.drawio">Editable feature-flow diagram</a>
+			<a href="../design/workflow.png">Feature-flow preview</a>
+		</div>
+		<p class="small" style="margin-top:14px">The parallel feature view is a target model. The Rust MVP currently runs one task at a time, while independent agents within that task's active step may run concurrently.</p>
+	</section>
 
-			<section id="technical" aria-labelledby="technical-title">
-				<div class="section-intro">
-					<div class="eyebrow">05 · Technical notes for users</div>
-					<h2 id="technical-title">What Cronos-AI does with your project</h2>
-				</div>
-				<div class="grid two">
-					<article class="card blue">
-						<h3>State and storage</h3>
-						<p>Rust stores project and task records as JSON, writes updates atomically, validates records on load, and retains bounded step activity, approval, and recovery history.</p>
-						<p class="small">Project records are under <code>projects/&lt;project-id&gt;/project.json</code>; task records are under <code>projects/&lt;project-id&gt;/tasks/&lt;task-id&gt;.json</code>. A per-task lock under <code>locks/</code> makes sure only one process runs a task's step at a time.</p>
-					</article>
-					<article class="card teal">
-						<h3>Git safety</h3>
-						<p>Each task attempt gets its own worktree under the Cronos data directory and a local attempt branch. Retrying a step keeps it; retrying or clarifying the task discards it and assigns a fresh one.</p>
-						<p class="small">Before merging, the base repository and worktree must be clean; a dirty base makes the task wait. A conflict is aborted and sent back to code generation; any other merge failure is aborted and stops the task with Error. Remote publishing is manual.</p>
-					</article>
-					<article class="card blue">
-						<h3>Agent resource profiles</h3>
-						<p>Use <code>agent-profiles.json</code> in Cronos-AI's data directory to assign named Pi skills, extensions, and optional MCP configs to specific workflow steps. The orchestrator discovers eligible profile IDs; Rust validates each assignment before Herdr starts workers.</p>
-						<p class="small">A profile can also set the worker's <code>model</code> and <code>timeout_minutes</code>. Unprofiled workers load no optional user resources. MCP configs remain separate, and Cronos-AI never installs resources or runs arbitrary shell hooks. See the <a href="agent-profiles.html">profile setup guide</a> and <a href="../examples/agent-profiles.json">sample catalog</a>.</p>
-					</article>
-					<article class="card teal">
-						<h3>Results, checks, and limits</h3>
-						<p>Every agent writes a JSON result (<code>success</code>, <code>changes_requested</code>, or <code>failed</code>) under <code>.cronos/</code> in the worktree, which is never committed. Rust decides each step from these results, then runs your check command without a shell after verification.</p>
-						<p class="small">Agents have 30- or 60-minute limits per step. A check that fails or leaves files behind sends the code back; a task branch that edits the check program is flagged in the review view.</p>
-					</article>
-				</div>
-				<div class="notice" role="note"><strong>Model access:</strong>
-				the orchestrator can read the worktree and use only read-only task-state and profile queries plus a narrow current-step command. Rust validates task status, step order, profile IDs, approval gates, agent inputs, and worktree paths, and appends its own rules to every agent prompt.</div>
-				<div class="notice" role="note"><strong>Trust boundary:</strong>
-				workers are full Pi sessions with shell access and your operating-system permissions. Cronos tools cannot change task status or approvals, but a worker's shell could. Review the work at the approval gates, and run Cronos-AI as a dedicated user or in a container for untrusted work. See <a href="integration-contracts.html#trust-boundary">integration contracts</a>.</div>
-				<p>For field-level details, see <a href="storage-format.html">storage format</a>, <a href="workflow-states.html">workflow states</a>, <a href="monitoring.html">TUI controls</a>, and <a href="integration-contracts.html">integration contracts</a>.</p>
-			</section>
+	<section id="technical" aria-labelledby="technical-title">
+		<div class="section-intro">
+			<div class="eyebrow">05 · Technical notes for users</div>
+			<h2 id="technical-title">What Cronos-AI does with your project</h2>
+		</div>
+		<div class="grid two">
+			<article class="card blue">
+				<h3>State and storage</h3>
+				<p>Rust stores project and task records as JSON, writes updates atomically, validates records on load, and retains bounded step activity, approval, and recovery history.</p>
+				<p class="small">Project records are under <code>projects/&lt;project-id&gt;/project.json</code>; task records are under <code>projects/&lt;project-id&gt;/tasks/&lt;task-id&gt;.json</code>. A per-task lock under <code>locks/</code>
+					makes sure only one process runs a task's step at a time.</p>
+			</article>
+			<article class="card teal">
+				<h3>Git safety</h3>
+				<p>Each task attempt gets its own worktree under the Cronos data directory and a local attempt branch. Retrying a step keeps it; retrying or clarifying the task discards it and assigns a fresh one.</p>
+				<p class="small">Before merging, the base repository and worktree must be clean; a dirty base makes the task wait. A conflict is aborted and sent back to code generation; any other merge failure is aborted and stops the task with Error. Remote publishing is manual.</p>
+			</article>
+			<article class="card blue">
+				<h3>Agent resource profiles</h3>
+				<p>Use <code>agent-profiles.json</code>
+					in Cronos-AI's data directory to assign named Pi skills, extensions, and optional MCP configs to specific workflow steps. The orchestrator discovers eligible profile IDs; Rust validates each assignment before Herdr starts workers.</p>
+				<p class="small">A profile can also set the worker's <code>model</code>
+					and <code>timeout_minutes</code>. Unprofiled workers load no optional user resources. MCP configs remain separate, and Cronos-AI never installs resources or runs arbitrary shell hooks. See the <a href="agent-profiles.html">profile setup guide</a>
+					and <a href="../examples/agent-profiles.json">sample catalog</a>.</p>
+			</article>
+			<article class="card teal">
+				<h3>Results, checks, and limits</h3>
+				<p>Every agent writes a JSON result (<code>success</code>, <code>changes_requested</code>, or <code>failed</code>) under <code>.cronos/</code>
+					in the worktree, which is never committed. Rust decides each step from these results, then runs your check command without a shell after verification.</p>
+				<p class="small">Agents have 30- or 60-minute limits per step. A check that fails or leaves files behind sends the code back; a task branch that edits the check program is flagged in the review view.</p>
+			</article>
+		</div>
+		<div class="notice" role="note"><strong>Model access:</strong>
+		the orchestrator can read the worktree and use only read-only task-state and profile queries plus a narrow current-step command. Rust validates task status, step order, profile IDs, approval gates, agent inputs, and worktree paths, and appends its own rules to every agent prompt.</div>
+		<div class="notice" role="note"><strong>Trust boundary:</strong>
+		workers are full Pi sessions with shell access and your operating-system permissions. Cronos tools cannot change task status or approvals, but a worker's shell could. Review the work at the approval gates, and run Cronos-AI as a dedicated user or in a container for untrusted work. See <a href="integration-contracts.html#trust-boundary">integration contracts</a>.</div>
+		<p>For field-level details, see <a href="storage-format.html">storage format</a>, <a href="workflow-states.html">workflow states</a>, <a href="monitoring.html">TUI controls</a>, and <a href="integration-contracts.html">integration contracts</a>.</p>
+	</section>
 
-			<section id="cli" aria-labelledby="cli-title">
-				<div class="section-intro">
-					<div class="eyebrow">06 · CLI reference</div>
-					<h2 id="cli-title">Manage projects and the ready queue</h2>
-					<p>CLI commands print JSON records. Use the returned UUIDs for later commands. Starting and supervising a workflow happens in the dashboard.</p>
-				</div>
-				<pre><code>cronos-ai [--data-dir DIR] project create &lt;name&gt; [--description TEXT] [--repository PATH]
+	<section id="cli" aria-labelledby="cli-title">
+		<div class="section-intro">
+			<div class="eyebrow">06 · CLI reference</div>
+			<h2 id="cli-title">Manage projects and the ready queue</h2>
+			<p>CLI commands print JSON records. Use the returned UUIDs for later commands. Starting and supervising a workflow happens in the dashboard.</p>
+		</div>
+		<pre><code>cronos-ai [--data-dir DIR] project create &lt;name&gt; [--description TEXT] [--repository PATH]
 cronos-ai [--data-dir DIR] project set-repository &lt;project-id&gt; --repository PATH
 cronos-ai [--data-dir DIR] project set-check-command &lt;project-id&gt; -- PROGRAM [ARGS...]
 cronos-ai [--data-dir DIR] project list
@@ -298,33 +326,33 @@ cronos-ai [--data-dir DIR] project archive &lt;project-id&gt;
 cronos-ai [--data-dir DIR] task create &lt;project-id&gt; &lt;title&gt; [--description TEXT] [--priority low|medium|high] [--depends-on TASK_ID[,TASK_ID...]]
 cronos-ai [--data-dir DIR] task list &lt;project-id&gt;
 cronos-ai [--data-dir DIR] task ready &lt;project-id&gt;</code></pre>
-				<p class="small">If <code>--data-dir</code>
-					is omitted, Cronos-AI checks <code>CRONOS_AI_DATA_DIR</code>, then uses the platform's user data directory. <code>project select</code>
-					reports a selection; it does not persist one globally.</p>
-			</section>
+		<p class="small">If <code>--data-dir</code>
+			is omitted, Cronos-AI checks <code>CRONOS_AI_DATA_DIR</code>, then uses the platform's user data directory. <code>project select</code>
+			reports a selection; it does not persist one globally.</p>
+	</section>
 
-			<section aria-labelledby="more-title">
-				<div class="section-intro">
-					<div class="eyebrow">More help</div>
-					<h2 id="more-title">Reference pages</h2>
-				</div>
-				<div class="grid">
-					<article class="card"><h3>Project and task workflow</h3><p><a href="project-task-commands.html">Commands, setup, and end-to-end steps</a></p></article>
-					<article class="card"><h3>Monitoring</h3><p><a href="monitoring.html">Dashboard navigation, approvals, and recovery keys</a></p></article>
-					<article class="card"><h3>Storage</h3><p><a href="storage-format.html">Paths, fields, and persistence safeguards</a></p></article>
-					<article class="card"><h3>Agent resources</h3><p><a href="agent-profiles.html">Configure step-specific Pi skills, extensions, MCP servers, models, and time limits</a></p></article>
-					<article class="card"><h3>Workflow states</h3><p><a href="workflow-states.html">Steps, outcomes, automatic revisions, and recovery</a></p></article>
-					<article class="card"><h3>Integrations</h3><p><a href="integration-contracts.html">How Cronos-AI drives Pi, Herdr, Git, and the check command, and the trust boundary</a></p></article>
-				</div>
-			</section>
-		</main>
+	<section aria-labelledby="more-title">
+		<div class="section-intro">
+			<div class="eyebrow">More help</div>
+			<h2 id="more-title">Reference pages</h2>
+		</div>
+		<div class="grid">
+			<article class="card"><h3>Project and task workflow</h3><p><a href="project-task-commands.html">Commands, setup, and end-to-end steps</a></p></article>
+			<article class="card"><h3>Monitoring</h3><p><a href="monitoring.html">Dashboard navigation, approvals, and recovery keys</a></p></article>
+			<article class="card"><h3>Storage</h3><p><a href="storage-format.html">Paths, fields, and persistence safeguards</a></p></article>
+			<article class="card"><h3>Agent resources</h3><p><a href="agent-profiles.html">Configure step-specific Pi skills, extensions, MCP servers, models, and time limits</a></p></article>
+			<article class="card"><h3>Workflow states</h3><p><a href="workflow-states.html">Steps, outcomes, automatic revisions, and recovery</a></p></article>
+			<article class="card"><h3>Integrations</h3><p><a href="integration-contracts.html">How Cronos-AI drives Pi, Herdr, Git, and the check command, and the trust boundary</a></p></article>
+		</div>
+	</section>
+</main>
 
-		<footer>
-			<p><strong>Cronos-AI</strong>
-			· Supervised, local-first agent workflows for developers.</p>
-			<p>This guide documents current MVP behavior. See <a href="../CHANGELOG.md">the changelog</a>
-				for implemented features.</p>
-		</footer>
+<footer>
+	<p><strong>Cronos-AI</strong>
+	· Supervised, local-first agent workflows for developers.</p>
+	<p>This guide documents current MVP behavior. See <a href="../CHANGELOG.md">the changelog</a>
+		for implemented features.</p>
+</footer>
 <!-- GUIDE_CONTENT_END -->
 
 		<script type="module">

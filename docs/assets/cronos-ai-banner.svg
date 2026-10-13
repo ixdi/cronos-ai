@@ -1,0 +1,383 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="954.82422"
+   height="327.69135"
+   viewBox="0 0 954.82422 327.69135"
+   fill="none"
+   role="img"
+   aria-labelledby="title description"
+   version="1.1"
+   id="svg52"
+   sodipodi:docname="cronos-ai-banner.svg"
+   inkscape:version="1.4.2 (ebf0e940, 2025-05-08)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns:xlink="http://www.w3.org/1999/xlink"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg"
+   xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+   xmlns:cc="http://creativecommons.org/ns#"
+   xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <sodipodi:namedview
+     id="namedview52"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="1"
+     inkscape:cx="498"
+     inkscape:cy="357"
+     inkscape:window-width="2560"
+     inkscape:window-height="1353"
+     inkscape:window-x="0"
+     inkscape:window-y="68"
+     inkscape:window-maximized="0"
+     inkscape:current-layer="svg52" />
+  <title
+     id="title">Cronos-AI — supervised software factory</title>
+  <desc
+     id="description">A midnight-blue software workflow banner with a luminous, clock-inspired agent network.</desc>
+  <defs
+     id="defs16">
+    <pattern
+       inkscape:collect="always"
+       xlink:href="#grid"
+       id="pattern2"
+       patternTransform="scale(0.89375,1)" />
+    <linearGradient
+       id="background"
+       x1="0"
+       y1="0"
+       x2="1600"
+       y2="520"
+       gradientUnits="userSpaceOnUse"
+       gradientTransform="scale(0.89375,1)">
+      <stop
+         stop-color="#080D1B"
+         id="stop1"
+         offset="0"
+         style="stop-color:#071125;stop-opacity:1;" />
+      <stop
+         offset="0.58"
+         stop-color="#101A30"
+         id="stop2" />
+      <stop
+         offset="1"
+         stop-color="#0A1424"
+         id="stop3"
+         style="stop-color:#0a2e49;stop-opacity:1;" />
+    </linearGradient>
+    <linearGradient
+       id="titleGradient"
+       x1="130"
+       y1="150"
+       x2="670"
+       y2="270"
+       gradientUnits="userSpaceOnUse">
+      <stop
+         stop-color="#F4F7FF"
+         id="stop4" />
+      <stop
+         offset="1"
+         stop-color="#C9D7EA"
+         id="stop5" />
+    </linearGradient>
+    <linearGradient
+       id="teal"
+       x1="1030"
+       y1="90"
+       x2="1350"
+       y2="430"
+       gradientUnits="userSpaceOnUse">
+      <stop
+         stop-color="#70F0DC"
+         id="stop6" />
+      <stop
+         offset="1"
+         stop-color="#39A9CF"
+         id="stop7" />
+    </linearGradient>
+    <linearGradient
+       id="amber"
+       x1="1230"
+       y1="120"
+       x2="1470"
+       y2="380"
+       gradientUnits="userSpaceOnUse">
+      <stop
+         stop-color="#FFD28B"
+         id="stop8" />
+      <stop
+         offset="1"
+         stop-color="#ED9A62"
+         id="stop9" />
+    </linearGradient>
+    <radialGradient
+       id="tealGlow"
+       cx="0"
+       cy="0"
+       r="1"
+       gradientTransform="matrix(327.50196,0,0,387.32434,1155.1824,163.3518)"
+       gradientUnits="userSpaceOnUse">
+      <stop
+         stop-color="#35C9C0"
+         stop-opacity=".17"
+         id="stop10" />
+      <stop
+         offset="1"
+         stop-color="#35C9C0"
+         stop-opacity="0"
+         id="stop11" />
+    </radialGradient>
+    <radialGradient
+       id="amberGlow"
+       cx="0"
+       cy="0"
+       r="1"
+       gradientTransform="matrix(187.68751,0,0,200,1340.625,91.999995)"
+       gradientUnits="userSpaceOnUse">
+      <stop
+         stop-color="#E99A5B"
+         stop-opacity=".12"
+         id="stop12" />
+      <stop
+         offset="1"
+         stop-color="#E99A5B"
+         stop-opacity="0"
+         id="stop13" />
+    </radialGradient>
+    <pattern
+       id="grid"
+       width="36"
+       height="36"
+       patternUnits="userSpaceOnUse">
+      <path
+         d="M36 0H0V36"
+         stroke="#B8CEE8"
+         stroke-opacity=".045"
+         stroke-width="1"
+         id="path13" />
+      <circle
+         cx="0"
+         cy="0"
+         r="1.5"
+         fill="#8DB8D2"
+         fill-opacity=".13"
+         id="circle13" />
+    </pattern>
+    <filter
+       id="softGlow"
+       x="-0.14006849"
+       y="-0.14006849"
+       width="1.2801369"
+       height="1.2801369">
+      <feGaussianBlur
+         stdDeviation="8"
+         result="blur"
+         id="feGaussianBlur13" />
+      <feMerge
+         id="feMerge14">
+        <feMergeNode
+           in="blur"
+           id="feMergeNode13" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode14" />
+      </feMerge>
+    </filter>
+    <filter
+       id="nodeGlow"
+       x="-0.030769231"
+       y="-0.030769231"
+       width="1.0615385"
+       height="1.0615385">
+      <feGaussianBlur
+         stdDeviation="4"
+         result="blur"
+         id="feGaussianBlur14" />
+      <feMerge
+         id="feMerge16">
+        <feMergeNode
+           in="blur"
+           id="feMergeNode15" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode16" />
+      </feMerge>
+    </filter>
+    <linearGradient
+       inkscape:collect="always"
+       xlink:href="#teal"
+       id="linearGradient52"
+       gradientUnits="userSpaceOnUse"
+       x1="1030"
+       y1="90"
+       x2="1350"
+       y2="430"
+       gradientTransform="translate(-16)" />
+    <linearGradient
+       inkscape:collect="always"
+       xlink:href="#teal"
+       id="linearGradient3"
+       gradientUnits="userSpaceOnUse"
+       x1="1030"
+       y1="90"
+       x2="1350"
+       y2="430"
+       gradientTransform="translate(0,-173.31371)" />
+    <linearGradient
+       inkscape:collect="always"
+       xlink:href="#teal"
+       id="linearGradient4"
+       gradientUnits="userSpaceOnUse"
+       x1="1030"
+       y1="90"
+       x2="1350"
+       y2="430"
+       gradientTransform="translate(214.38393)" />
+  </defs>
+  <g
+     id="g3"
+     transform="scale(0.66770926,0.63017566)">
+    <rect
+       width="1430"
+       height="520"
+       rx="25.025"
+       fill="url(#background)"
+       id="rect16"
+       style="display:inline;opacity:0.95;fill:url(#background);stroke-width:0.945384"
+       x="0"
+       y="0" />
+    <rect
+       width="1430"
+       height="520"
+       rx="25.025"
+       fill="url(#grid)"
+       id="rect17"
+       x="0"
+       y="0"
+       style="display:inline;fill:url(#pattern2);stroke-width:0.945384" />
+    <rect
+       width="1430"
+       height="520"
+       rx="25.025"
+       fill="url(#amberGlow)"
+       id="rect19"
+       style="display:inline;fill:url(#amberGlow);stroke-width:0.945383"
+       x="0"
+       y="0" />
+    <rect
+       width="1806.9076"
+       height="805.6347"
+       rx="31.620878"
+       fill="url(#tealGlow)"
+       id="rect18"
+       style="display:inline;fill:url(#tealGlow);stroke-width:1.32273"
+       x="-188.7049"
+       y="-233.2683" />
+  </g>
+  <path
+     d="M 0,446.68629 H 890"
+     stroke="#8aa9c5"
+     stroke-opacity="0.12"
+     id="path19" />
+  <path
+     d="M 0,285.68629 H 560"
+     stroke="url(#teal)"
+     stroke-opacity="0.55"
+     stroke-width="2"
+     id="path20"
+     style="stroke:url(#linearGradient3)" />
+  <g
+     font-family="Inter, ui-sans-serif, system-ui, '-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
+     id="g28"
+     transform="translate(91.028195,-82.568542)">
+    <g
+       id="g5"
+       transform="translate(56.575844)">
+      <text
+         x="128"
+         y="215"
+         fill="url(#titleGradient)"
+         font-size="88px"
+         font-weight="720"
+         letter-spacing="-4"
+         id="text20"
+         style="fill:url(#titleGradient)"><tspan
+           style="font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;font-family:'Space Grotesk';-inkscape-font-specification:'Space Grotesk Bold';fill:url(#titleGradient)"
+           id="tspan5">CRONOS</tspan></text>
+      <text
+         x="459"
+         y="215"
+         fill="url(#teal)"
+         font-size="88px"
+         font-weight="720"
+         letter-spacing="-5"
+         id="text21"
+         style="fill:url(#linearGradient52)"><tspan
+           style="font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;font-family:'Space Grotesk';-inkscape-font-specification:'Space Grotesk Bold';fill:url(#linearGradient52)"
+           id="tspan6">AI</tspan></text>
+    </g>
+    <path
+       d="m 346.38393,243 h 80"
+       stroke="url(#teal)"
+       stroke-width="4"
+       stroke-linecap="round"
+       id="path21"
+       style="stroke:url(#linearGradient4)" />
+    <text
+       x="130.47372"
+       y="292"
+       fill="#afc4da"
+       font-size="21px"
+       font-weight="650"
+       letter-spacing="4.6"
+       id="text22"><tspan
+         style="font-style:normal;font-variant:normal;font-weight:500;font-stretch:normal;font-family:'Inter 18pt';-inkscape-font-specification:'Inter 18pt Medium'"
+         id="tspan7">SUPERVISED AI SOFTWARE FACTORY</tspan></text>
+    <text
+       x="230.2169"
+       y="332"
+       fill="#d7e2f0"
+       font-size="22px"
+       font-weight="420"
+       letter-spacing="0.1"
+       id="text23"
+       style="font-size:17.3333px;fill:#808080"><tspan
+         style="font-style:normal;font-variant:normal;font-weight:500;font-stretch:normal;font-size:17.3333px;font-family:'Inter 18pt';-inkscape-font-specification:'Inter 18pt Medium';fill:#808080"
+         id="tspan2">[ RUST TUI · PI · HERDR · OPENSPEC ]</tspan></text>
+  </g>
+  <g
+     id="g4"
+     transform="matrix(0.6118916,0,0,0.6118916,62.963655,-2.296396)">
+    <path
+       d="M 1399,51.999995 V 468"
+       stroke="#9cc8d8"
+       stroke-opacity="0.16"
+       id="path51" />
+    <circle
+       cx="1399"
+       cy="52"
+       r="3"
+       fill="#f1b77c"
+       id="circle51" />
+    <circle
+       cx="1399"
+       cy="468"
+       r="3"
+       fill="#66d8ce"
+       id="circle52" />
+  </g>
+  <metadata
+     id="metadata2">
+    <rdf:RDF>
+      <cc:Work
+         rdf:about="">
+        <dc:title>Cronos-AI — supervised software factory</dc:title>
+      </cc:Work>
+    </rdf:RDF>
+  </metadata>
+</svg>
