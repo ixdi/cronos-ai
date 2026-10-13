@@ -23,13 +23,15 @@ It is an opinionated stack with a Rust TUI. Rust owns persisted task state and h
 
 ![Workflow diagram](design/workflow.svg)
 
+The diagram shows the target model, where several feature tracks run in parallel. Today, one task runs at a time through the same per-task steps.
+
 ## Requirements
 
 On startup, Cronos-AI checks for required tools and prompts if any are missing; it does not install them automatically.
 
-- Rust TUI for the dashboard, project and task management.
+- A Rust toolchain to build the CLI and TUI.
 - Pi agent to orchestrate workflow steps.
-- Herdr to manage agents and their work.
+- Herdr to manage agents and their work. Tasks only run when Cronos-AI is inside a Herdr session.
 - OpenSpec as single source of truth. Each project repository needs a committed `openspec/` directory (`openspec init`, then commit).
 - A Git repository and a check command (for example `./scripts/check.sh`) for each project that will run tasks. Each attempt gets its own worktree.
 
@@ -61,15 +63,27 @@ You can also create projects and tasks directly in the dashboard:
 
 1. On the project list, press **n**. Enter a project name and optionally a description, local Git repository path, and check command. Use **Tab**/**Shift+Tab** to move between fields, **Enter** to save, or **Esc** to cancel.
 2. Select the project with **Enter**. On its task list, press **n** to create a task. Enter a title and optional description; priority defaults to **Medium**. Use **Tab**/**Shift+Tab** to move between fields, **←/→** to change priority, and **↑/↓** plus **Space** to select task dependencies.
-3. Press **Enter** to save. The task remains **Pending**; press **s** when you are ready to start the next ready task. Configure a local Git repository before starting work if you did not provide one when creating the project.
+3. Press **Enter** to save. The task remains **Pending**; press **s** when you are ready to start the next ready task.
 
-See [the workflow guide](docs/project-task-commands.md) for recovery, navigation, and CLI details.
-
-For existing projects, set the repository before starting work:
+The project form is only for new projects. To add a repository or check command to an existing project, use the CLI:
 
 ```sh
 ./target/release/cronos-ai project set-repository <PROJECT_ID> --repository /path/to/repository
+./target/release/cronos-ai project set-check-command <PROJECT_ID> -- ./scripts/check.sh
 ```
+
+## When something fails
+
+Agents that crash, time out, or report failure stop the task with **Error**. Review, verification, and check-command findings instead send the code back to code generation automatically, up to 3 times per attempt. In an Error task's details:
+
+| Key | Action |
+|---|---|
+| **t** | Retry only the failed step, keeping the attempt, worktree, and approvals. |
+| **r** | Discard the attempt and start again from specification generation. |
+| **c** | Like **r**, with extra context the new specifications must follow. |
+| **a** | Abandon the task (Rejected) with a reason. |
+
+A merge conflict sends the task back to code generation to resolve it. If the base repository has uncommitted changes, the task waits at local merge until you clean it and press **s**. See [workflow states](docs/workflow-states.md) for every outcome.
 
 The data directory can be selected with `--data-dir DIR` or `CRONOS_AI_DATA_DIR`. Otherwise, Cronos-AI uses the platform's user data directory. See [storage format](docs/storage-format.md).
 
@@ -110,6 +124,7 @@ Workers run with your operating-system permissions; see the [trust boundary](doc
 
 ## Documentation
 
+- [User guide](docs/index.html) (open in a browser)
 - [Project/task commands and end-to-end use](docs/project-task-commands.md)
 - [TUI monitoring and controls](docs/monitoring.md)
 - [Workflow-agent profiles](docs/agent-profiles.md)
