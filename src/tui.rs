@@ -13,10 +13,10 @@ use crossterm::{
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, BorderType, Cell, Clear, Padding, Paragraph, Row, Table, TableState, Wrap},
 };
 
 use crate::{
@@ -34,6 +34,9 @@ const WARNING: Color = Color::Rgb(255, 184, 108);
 const ERROR: Color = Color::Rgb(254, 86, 84);
 const SHORTCUT: Color = Color::Rgb(222, 110, 177);
 const SUCCESS: Color = Color::Rgb(0, 106, 99);
+// Neutral tones for labels, borders, and the selected row; readable on light and dark terminals.
+const MUTED: Color = Color::Rgb(138, 138, 160);
+const SELECTION: Color = Color::Rgb(62, 52, 92);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Screen {
@@ -1328,13 +1331,60 @@ fn draw(frame: &mut Frame, app: &Dashboard) {
             Constraint::Length(2),
         ])
         .split(frame.area());
-    draw_header(frame, areas[0]);
+    draw_header(frame, app, areas[0]);
     match app.screen {
         Screen::Projects => draw_projects(frame, app, areas[1]),
         Screen::Tasks => draw_tasks(frame, app, areas[1]),
         Screen::TaskDetail => draw_task_detail(frame, app, areas[1]),
         Screen::Review => draw_review(frame, app, areas[1]),
     }
+    draw_footer(frame, app, areas[2]);
+    draw_dialog(frame, app);
+}
+
+/// Brand, breadcrumb of where the user is, and whether an orchestrator is running.
+fn draw_header(frame: &mut Frame, app: &Dashboard, area: Rect) {
+    let mut crumbs = vec![
+        Span::styled(
+            "Cronos-AI",
+            Style::default().fg(PRIMARY).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  Projects", Style::default().fg(MUTED)),
+    ];
+    if app.screen != Screen::Projects
+        && let Some(project) = app.selected_project()
+    {
+        crumbs.push(Span::styled(" › ", Style::default().fg(MUTED)));
+        crumbs.push(Span::raw(terminal_safe(&project.name)));
+    }
+    if matches!(app.screen, Screen::TaskDetail | Screen::Review)
+        && let Some(task) = app.selected_task()
+    {
+        crumbs.push(Span::styled(" › ", Style::default().fg(MUTED)));
+        crumbs.push(Span::styled(
+            terminal_safe(&task.title),
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+    }
+    if app.screen == Screen::Review {
+        crumbs.push(Span::styled(" › review", Style::default().fg(MUTED)));
+    }
+    let orchestrator = if app.workflow.is_some() {
+        Span::styled("● orchestrator running ", Style::default().fg(PRIMARY))
+    } else {
+        Span::styled("○ orchestrator idle ", Style::default().fg(MUTED))
+    };
+    let width = orchestrator.width() as u16;
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(10), Constraint::Length(width)])
+        .split(area);
+    frame.render_widget(Paragraph::new(Line::from(crumbs)), columns[0]);
+    frame.render_widget(Paragraph::new(Line::from(orchestrator)), columns[1]);
+}
+
+/// Message line (error or orchestrator status) above the key hints for the current screen.
+fn draw_footer(frame: &mut Frame, app: &Dashboard, area: Rect) {
     let help = match app.screen {
         Screen::Projects => "↑/↓ select  Enter open  n new project  r refresh  q quit",
         Screen::Tasks => {
@@ -1355,343 +1405,331 @@ fn draw(frame: &mut Frame, app: &Dashboard) {
         }
         Screen::Review => "↑/↓ scroll  PgUp/PgDn page  Backspace details  q quit",
     };
-    let mut footer = shortcut_help_line(help).spans;
-    if let Some(status) = &app.workflow_status {
-        footer.push(Span::raw("  |  "));
-        footer.push(Span::raw(terminal_safe(status)));
-    }
-    if let Some(error) = &app.error {
-        footer.push(Span::raw("  |  "));
-        footer.push(Span::styled(
-            format!("Error: {}", terminal_safe(error)),
-            Style::default().fg(ERROR),
-        ));
-    }
-    frame.render_widget(
-        Paragraph::new(Line::from(footer)).block(Block::default().borders(Borders::TOP)),
-        areas[2],
-    );
-    draw_dialog(frame, app);
-}
-
-fn draw_header(frame: &mut Frame, area: ratatui::layout::Rect) {
-    frame.render_widget(
-        Paragraph::new("Cronos-AI")
-            .style(Style::default().fg(PRIMARY).add_modifier(Modifier::BOLD)),
-        area,
-    );
-}
-
-fn draw_dialog(frame: &mut Frame, app: &Dashboard) {
-    let (title, content) = match &app.dialog {
-        Dialog::None => return,
-        Dialog::CreateProject(form) => {
-            let field_line = |field, label: &str, value: &str| {
-                let focused = form.focus == field;
-                format!(
-                    "{} {}: {}{}",
-                    if focused { ">" } else { " " },
-                    label,
-                    terminal_safe(value),
-                    if focused { "_" } else { "" }
-                )
-            };
-            (
-                "Create project".to_owned(),
-                format!(
-                    "{}\n{}\n{}\n{}\n\nTab/Shift+Tab fields  Enter create  Esc cancel",
-                    field_line(ProjectField::Name, "Name", &form.name),
-                    field_line(ProjectField::Description, "Description", &form.description),
-                    field_line(ProjectField::Repository, "Git repository", &form.repository),
-                    field_line(
-                        ProjectField::CheckCommand,
-                        "Check command",
-                        &form.check_command
-                    ),
-                ),
-            )
-        }
-        Dialog::CreateTask(form) => {
-            let field_line = |field, label: &str, value: &str| {
-                let focused = form.focus == field;
-                format!(
-                    "{} {}: {}{}",
-                    if focused { ">" } else { " " },
-                    label,
-                    terminal_safe(value),
-                    if focused { "_" } else { "" }
-                )
-            };
-            let dependencies = if app.tasks.is_empty() {
-                "No existing tasks to use as dependencies.".to_owned()
-            } else {
-                app.tasks
-                    .iter()
-                    .enumerate()
-                    .map(|(index, task)| {
-                        format!(
-                            "{} [{}] {}",
-                            if form.focus == TaskField::Dependencies
-                                && form.dependency_cursor == index
-                            {
-                                ">"
-                            } else {
-                                " "
-                            },
-                            if form.dependencies.contains(&task.id) {
-                                "x"
-                            } else {
-                                " "
-                            },
-                            terminal_safe(&task.title)
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            };
-            (
-                "Create task".to_owned(),
-                format!(
-                    "{}\n{}\n{} Priority: {}\n{} Dependencies (Space toggles):\n{}\n\nTab/Shift+Tab fields  ←/→ priority  ↑/↓ dependency  Enter create  Esc cancel",
-                    field_line(TaskField::Title, "Title", &form.title),
-                    field_line(TaskField::Description, "Description", &form.description),
-                    if form.focus == TaskField::Priority {
-                        ">"
-                    } else {
-                        " "
-                    },
-                    priority_label(&form.priority),
-                    if form.focus == TaskField::Dependencies {
-                        ">"
-                    } else {
-                        " "
-                    },
-                    dependencies,
-                ),
-            )
-        }
-        Dialog::Revision { gate, note } => (
-            format!("Request changes — {}", approval_gate_label(*gate)),
-            format!(
-                "Describe the revision needed:\n\n> {}_\n\nEnter save  Esc cancel",
-                terminal_safe(note)
-            ),
-        ),
-        Dialog::Clarify { note } => (
-            "Clarify task".to_owned(),
-            format!(
-                "This discards the failed worktree. Add context for replacement specifications:\n\n> {}_\n\nEnter save  Esc cancel",
-                terminal_safe(note)
-            ),
-        ),
-        Dialog::Abandon { note } => (
-            "Abandon task".to_owned(),
-            format!(
-                "This marks the task Rejected. Enter the reason:\n\n> {}_\n\nEnter save  Esc cancel",
-                terminal_safe(note)
-            ),
-        ),
+    let message = if let Some(error) = &app.error {
+        Line::from(Span::styled(
+            format!("✕ Error: {}", terminal_safe(error)),
+            Style::default().fg(ERROR).add_modifier(Modifier::BOLD),
+        ))
+    } else if let Some(status) = &app.workflow_status {
+        Line::from(vec![
+            Span::styled("◆ ", Style::default().fg(PRIMARY)),
+            Span::styled(terminal_safe(status), Style::default().fg(MUTED)),
+        ])
+    } else {
+        Line::default()
     };
-    let area = centered_rect(78, 45, frame.area());
-    frame.render_widget(Clear, area);
     frame.render_widget(
-        Paragraph::new(dialog_text(content))
-            .wrap(Wrap { trim: true })
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(PRIMARY))
-                    .title(title),
-            ),
+        Paragraph::new(vec![message, shortcut_help_line(help)]),
         area,
     );
 }
 
-fn centered_rect(width: u16, height: u16, area: ratatui::layout::Rect) -> ratatui::layout::Rect {
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - height) / 2),
-            Constraint::Percentage(height),
-            Constraint::Percentage((100 - height) / 2),
-        ])
-        .split(area);
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - width) / 2),
-            Constraint::Percentage(width),
-            Constraint::Percentage((100 - width) / 2),
-        ])
-        .split(vertical[1])[1]
+/// Rounded panel with a padded, highlighted title.
+fn panel(title: impl Into<String>) -> Block<'static> {
+    Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(MUTED))
+        .title(Span::styled(
+            format!(" {} ", title.into()),
+            Style::default().fg(PRIMARY).add_modifier(Modifier::BOLD),
+        ))
 }
 
-fn draw_projects(frame: &mut Frame, app: &Dashboard, area: ratatui::layout::Rect) {
-    let items = app
-        .projects
-        .iter()
-        .map(|project| {
-            let status = match project.status {
-                ProjectStatus::Active => "active",
-                ProjectStatus::Archived => "archived",
-            };
-            ListItem::new(Line::from(vec![
-                Span::raw(terminal_safe(&project.name)),
-                Span::styled(
-                    format!("  [{status}]"),
-                    Style::default().fg(project_status_color(&project.status)),
-                ),
-            ]))
-        })
-        .collect::<Vec<_>>();
-    let mut state = ListState::default();
-    if !items.is_empty() {
-        state.select(Some(app.selected_project));
+fn table_header(labels: &[&'static str]) -> Row<'static> {
+    Row::new(labels.iter().map(|label| Cell::from(*label)))
+        .style(Style::default().fg(MUTED).add_modifier(Modifier::BOLD))
+}
+
+/// Background and weight only, so status colors stay visible on the selected row.
+fn selected_row_style() -> Style {
+    Style::default().bg(SELECTION).add_modifier(Modifier::BOLD)
+}
+
+/// Centered hint for an empty list, with the key that fixes it highlighted.
+fn draw_empty_state(frame: &mut Frame, block: Block<'static>, area: Rect, message: Line<'static>) {
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let row = Rect {
+        y: inner.y + inner.height / 2,
+        height: 1.min(inner.height),
+        ..inner
+    };
+    frame.render_widget(Paragraph::new(message).alignment(Alignment::Center), row);
+}
+
+fn key_hint(before: &str, key: &str, after: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(before.to_owned(), Style::default().fg(MUTED)),
+        Span::styled(
+            key.to_owned(),
+            Style::default().fg(SHORTCUT).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(after.to_owned(), Style::default().fg(MUTED)),
+    ])
+}
+
+fn draw_projects(frame: &mut Frame, app: &Dashboard, area: Rect) {
+    let block = panel("Projects");
+    if app.projects.is_empty() {
+        draw_empty_state(
+            frame,
+            block,
+            area,
+            key_hint("No projects yet. Press ", "n", " to create one."),
+        );
+        return;
     }
+    let rows = app.projects.iter().map(|project| {
+        let status = match project.status {
+            ProjectStatus::Active => "● active",
+            ProjectStatus::Archived => "◌ archived",
+        };
+        let repository = project.repository.as_deref().map_or_else(
+            || Span::styled("— not set", Style::default().fg(WARNING)),
+            |path| Span::raw(truncate_start(&terminal_safe(path), 48)),
+        );
+        let check = project.check_command.as_ref().map_or_else(
+            || Span::styled("— not set", Style::default().fg(WARNING)),
+            |command| Span::raw(truncate_end(&terminal_safe(&command.join(" ")), 30)),
+        );
+        Row::new(vec![
+            Cell::from(Line::from(vec![
+                Span::styled(
+                    terminal_safe(&project.name),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    project
+                        .description
+                        .as_deref()
+                        .map(|description| format!("  {}", terminal_safe(description)))
+                        .unwrap_or_default(),
+                    Style::default().fg(MUTED),
+                ),
+            ])),
+            Cell::from(Span::styled(
+                status,
+                Style::default().fg(project_status_color(&project.status)),
+            )),
+            Cell::from(repository),
+            Cell::from(check),
+            Cell::from(Span::styled(
+                project.task_ids.len().to_string(),
+                Style::default().fg(MUTED),
+            )),
+        ])
+    });
+    let mut state = TableState::default().with_selected(Some(app.selected_project));
     frame.render_stateful_widget(
-        List::new(items)
-            .block(Block::default().borders(Borders::ALL).title("Projects"))
-            .highlight_symbol(Line::from(Span::styled("▶ ", Style::default().fg(PRIMARY))))
-            .highlight_style(Style::default().add_modifier(Modifier::BOLD)),
+        Table::new(
+            rows,
+            [
+                Constraint::Fill(2),
+                Constraint::Length(11),
+                Constraint::Fill(2),
+                Constraint::Fill(1),
+                Constraint::Length(5),
+            ],
+        )
+        .header(table_header(&[
+            "Name",
+            "Status",
+            "Repository",
+            "Check command",
+            "Tasks",
+        ]))
+        .column_spacing(2)
+        .block(block)
+        .highlight_symbol("▌")
+        .row_highlight_style(selected_row_style()),
         area,
         &mut state,
     );
 }
 
-fn draw_tasks(frame: &mut Frame, app: &Dashboard, area: ratatui::layout::Rect) {
+fn draw_tasks(frame: &mut Frame, app: &Dashboard, area: Rect) {
     let project_name = app.selected_project().map_or_else(
         || "Tasks".to_owned(),
         |project| terminal_safe(&project.name),
     );
-    let items = app
-        .tasks
-        .iter()
-        .map(|task| {
-            let step = task.current_step.as_deref().unwrap_or("—");
-            ListItem::new(Line::from(vec![
-                Span::styled(
-                    format!("{:<11}", task_status_label(&task.status)),
-                    Style::default().fg(task_status_color(&task.status)),
-                ),
-                Span::raw(format!(
-                    " {:<6} {}  |  {}",
-                    priority_label(&task.priority),
-                    terminal_safe(&task.title),
-                    terminal_safe(step),
-                )),
-            ]))
-        })
-        .collect::<Vec<_>>();
-    let mut state = ListState::default();
-    if !items.is_empty() {
-        state.select(Some(app.selected_task));
+    let mut counts = Vec::new();
+    for status in [
+        TaskStatus::InProgress,
+        TaskStatus::Error,
+        TaskStatus::Pending,
+        TaskStatus::Completed,
+    ] {
+        let count = app
+            .tasks
+            .iter()
+            .filter(|task| task.status == status)
+            .count();
+        if count > 0 {
+            counts.push(Span::styled(
+                format!(" {count} {} ", task_status_label(&status)),
+                Style::default().fg(task_status_color(&status)),
+            ));
+        }
     }
+    let block =
+        panel(format!("{project_name} · tasks")).title_top(Line::from(counts).right_aligned());
+    if app.tasks.is_empty() {
+        draw_empty_state(
+            frame,
+            block,
+            area,
+            key_hint("No tasks yet. Press ", "n", " to add one."),
+        );
+        return;
+    }
+    let rows = app.tasks.iter().map(|task| {
+        let step = task.current_step.as_deref().unwrap_or("—");
+        let elapsed = (task.status == TaskStatus::InProgress)
+            .then(|| step_elapsed(task))
+            .flatten()
+            .map(elapsed_label)
+            .unwrap_or_default();
+        let dependencies = match task.dependencies.len() {
+            0 => String::new(),
+            1 => "1 dep".to_owned(),
+            count => format!("{count} deps"),
+        };
+        Row::new(vec![
+            Cell::from(status_badge(&task.status)),
+            Cell::from(priority_badge(&task.priority)),
+            Cell::from(terminal_safe(&task.title)),
+            Cell::from(Span::styled(
+                terminal_safe(step),
+                Style::default().fg(MUTED),
+            )),
+            Cell::from(elapsed),
+            Cell::from(Span::styled(dependencies, Style::default().fg(MUTED))),
+        ])
+    });
+    let mut state = TableState::default().with_selected(Some(app.selected_task));
     frame.render_stateful_widget(
-        List::new(items)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(format!("{project_name} — tasks (status | priority | step)")),
-            )
-            .highlight_symbol(Line::from(Span::styled("▶ ", Style::default().fg(PRIMARY))))
-            .highlight_style(Style::default().add_modifier(Modifier::BOLD)),
+        Table::new(
+            rows,
+            [
+                Constraint::Length(13),
+                Constraint::Length(8),
+                Constraint::Fill(3),
+                Constraint::Fill(2),
+                Constraint::Length(8),
+                Constraint::Length(6),
+            ],
+        )
+        .header(table_header(&[
+            "Status", "Priority", "Title", "Step", "Running", "Deps",
+        ]))
+        .column_spacing(2)
+        .block(block)
+        .highlight_symbol("▌")
+        .row_highlight_style(selected_row_style()),
         area,
         &mut state,
     );
 }
 
-fn draw_task_detail(frame: &mut Frame, app: &Dashboard, area: ratatui::layout::Rect) {
+fn status_badge(status: &TaskStatus) -> Span<'static> {
+    let symbol = match status {
+        TaskStatus::Pending => "○",
+        TaskStatus::InProgress => "●",
+        TaskStatus::Completed => "✓",
+        TaskStatus::Rejected => "⊘",
+        TaskStatus::Error => "✕",
+    };
+    Span::styled(
+        format!("{symbol} {}", task_status_label(status)),
+        Style::default()
+            .fg(task_status_color(status))
+            .add_modifier(Modifier::BOLD),
+    )
+}
+
+fn priority_badge(priority: &Priority) -> Span<'static> {
+    let (symbol, style) = match priority {
+        Priority::High => ("▲", Style::default().fg(WARNING)),
+        Priority::Medium => ("■", Style::default()),
+        Priority::Low => ("▼", Style::default().fg(MUTED)),
+    };
+    Span::styled(format!("{symbol} {}", priority_label(priority)), style)
+}
+
+/// Seconds the task has spent in its current step.
+fn step_elapsed(task: &Task) -> Option<u64> {
+    let started = task
+        .current_step
+        .as_deref()
+        .and_then(|step| task.step_started_at_unix_secs.get(step))?;
+    Some(now_unix_secs().saturating_sub(*started))
+}
+
+fn now_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
+}
+
+/// One line showing every workflow step: done, current, or still ahead.
+fn workflow_progress_line(task: &Task) -> Line<'static> {
+    let steps = std::iter::successors(Some(WorkflowStep::SpecificationGeneration), |step| {
+        step.next()
+    })
+    .collect::<Vec<_>>();
+    let current = task
+        .current_step
+        .as_deref()
+        .and_then(WorkflowStep::parse)
+        .and_then(|step| steps.iter().position(|candidate| *candidate == step));
+    let mut spans = Vec::new();
+    for (index, step) in steps.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(" ─ ", Style::default().fg(MUTED)));
+        }
+        let label = match step {
+            WorkflowStep::SpecificationGeneration => "specs",
+            WorkflowStep::SpecificationApproval => "approve specs",
+            WorkflowStep::CodeGeneration => "code",
+            WorkflowStep::CodeReview => "review",
+            WorkflowStep::Verification => "verify",
+            WorkflowStep::FinalApproval => "final approval",
+            WorkflowStep::Documentation => "docs",
+            WorkflowStep::LocalMerge => "merge",
+        };
+        let done = task.status == TaskStatus::Completed || current.is_some_and(|at| index < at);
+        let (symbol, style) = if done {
+            ("✓", Style::default().fg(SUCCESS))
+        } else if current == Some(index) {
+            let color = match task.status {
+                TaskStatus::Error => ERROR,
+                TaskStatus::Rejected => MUTED,
+                _ if step.requires_human_approval() => WARNING,
+                _ => PRIMARY,
+            };
+            ("●", Style::default().fg(color).add_modifier(Modifier::BOLD))
+        } else {
+            ("○", Style::default().fg(MUTED))
+        };
+        spans.push(Span::styled(format!("{symbol} {label}"), style));
+    }
+    Line::from(spans)
+}
+
+fn field(label: &'static str, value: Vec<Span<'static>>) -> Line<'static> {
+    let mut spans = vec![Span::styled(
+        format!("{label}: "),
+        Style::default().fg(MUTED),
+    )];
+    spans.extend(value);
+    Line::from(spans)
+}
+
+fn draw_task_detail(frame: &mut Frame, app: &Dashboard, area: Rect) {
     let Some(task) = app.selected_task() else {
-        frame.render_widget(
-            Paragraph::new("No task selected").block(Block::bordered()),
-            area,
-        );
+        draw_empty_state(frame, panel("Task"), area, Line::from("No task selected."));
         return;
     };
-    let areas = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(12),
-            Constraint::Length(6),
-            Constraint::Min(2),
-        ])
-        .split(area);
-    let description = terminal_safe(task.description.as_deref().unwrap_or("No description."));
-    let mut current_step = terminal_safe(task.current_step.as_deref().unwrap_or("Not started"));
-    if task.status == TaskStatus::InProgress
-        && let Some(started) = task
-            .current_step
-            .as_deref()
-            .and_then(|step| task.step_started_at_unix_secs.get(step))
-    {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(*started, |duration| duration.as_secs());
-        current_step.push_str(&format!(
-            " (running {})",
-            elapsed_label(now.saturating_sub(*started))
-        ));
-    }
-    let title = terminal_safe(&task.title);
-    let summary = Text::from(vec![
-        Line::from(vec![
-            Span::styled("Status: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::styled(
-                task_status_label(&task.status),
-                Style::default().fg(task_status_color(&task.status)),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Priority: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(priority_label(&task.priority)),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "Active step: ",
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(current_step),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "Description: ",
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(description),
-        ]),
-        Line::from(format!(
-            "Attempt: {}  |  Automatic revisions: {}/{MAX_AUTOMATIC_REVISIONS}",
-            task.attempt, task.automatic_revisions
-        )),
-        Line::from(format!(
-            "Worktree: {}",
-            terminal_safe(task.worktree.as_deref().unwrap_or("not created"))
-        )),
-        Line::from(format!(
-            "Branch: {}  |  OpenSpec change: {}",
-            crate::integrations::GitAdapter::worktree_branch(task.id, task.attempt),
-            task.openspec_change()
-        )),
-        Line::from(vec![
-            Span::raw("Specifications: "),
-            Span::styled(
-                approval_status(task, ApprovalGate::Specifications),
-                Style::default().fg(approval_status_color(task, ApprovalGate::Specifications)),
-            ),
-            Span::raw("  |  Final code: "),
-            Span::styled(
-                approval_status(task, ApprovalGate::FinalCode),
-                Style::default().fg(approval_status_color(task, ApprovalGate::FinalCode)),
-            ),
-        ]),
-    ]);
-    frame.render_widget(
-        Paragraph::new(summary)
-            .wrap(Wrap { trim: true })
-            .block(Block::default().borders(Borders::ALL).title(title)),
-        areas[0],
-    );
-
     let mut decisions = task
         .recovery_history
         .iter()
@@ -1707,61 +1745,477 @@ fn draw_task_detail(frame: &mut Frame, app: &Dashboard, area: ratatui::layout::R
             .map(approval_record_line),
     );
     if let Some(note) = task.abandonment_note.as_deref() {
-        decisions.insert(0, Line::from(format!("Abandoned: {}", terminal_safe(note))));
+        decisions.insert(
+            0,
+            Line::from(vec![
+                Span::styled("Abandoned: ", Style::default().fg(WARNING)),
+                Span::raw(terminal_safe(note)),
+            ]),
+        );
     }
     if decisions.is_empty() {
-        decisions.push(Line::from("No human decisions recorded."));
+        decisions.push(Line::styled(
+            "No human decisions recorded.",
+            Style::default().fg(MUTED),
+        ));
     }
+    let areas = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(11),
+            Constraint::Length(decisions.len().min(6) as u16 + 2),
+            Constraint::Min(4),
+        ])
+        .split(area);
+
+    let mut current_step = terminal_safe(task.current_step.as_deref().unwrap_or("Not started"));
+    if task.status == TaskStatus::InProgress
+        && let Some(elapsed) = step_elapsed(task)
+    {
+        current_step.push_str(&format!(" (running {})", elapsed_label(elapsed)));
+    }
+    let overview = panel(terminal_safe(&task.title)).padding(Padding::horizontal(1));
+    let inner = overview.inner(areas[0]);
+    frame.render_widget(overview, areas[0]);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(4),
+            Constraint::Min(1),
+        ])
+        .split(inner);
+    frame.render_widget(Paragraph::new(workflow_progress_line(task)), rows[0]);
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
+        .spacing(2)
+        .split(rows[2]);
+    let left = vec![
+        field("Status", vec![status_badge(&task.status)]),
+        field("Priority", vec![priority_badge(&task.priority)]),
+        field("Active step", vec![Span::raw(current_step)]),
+        field(
+            "Attempt",
+            vec![Span::raw(format!(
+                "{}  ·  Automatic revisions: {}/{MAX_AUTOMATIC_REVISIONS}",
+                task.attempt, task.automatic_revisions
+            ))],
+        ),
+    ];
+    let path_width = usize::from(columns[1].width).saturating_sub(12).max(16);
+    let right = vec![
+        field(
+            "Worktree",
+            vec![Span::raw(
+                task.worktree
+                    .as_deref()
+                    .map_or("not created".to_owned(), |path| {
+                        truncate_start(&terminal_safe(path), path_width)
+                    }),
+            )],
+        ),
+        field(
+            "Branch",
+            vec![Span::raw(crate::integrations::GitAdapter::worktree_branch(
+                task.id,
+                task.attempt,
+            ))],
+        ),
+        field("OpenSpec change", vec![Span::raw(task.openspec_change())]),
+        field(
+            "Approvals",
+            vec![
+                Span::raw("specs "),
+                Span::styled(
+                    approval_status(task, ApprovalGate::Specifications),
+                    Style::default().fg(approval_status_color(task, ApprovalGate::Specifications)),
+                ),
+                Span::styled("  ·  ", Style::default().fg(MUTED)),
+                Span::raw("final code "),
+                Span::styled(
+                    approval_status(task, ApprovalGate::FinalCode),
+                    Style::default().fg(approval_status_color(task, ApprovalGate::FinalCode)),
+                ),
+            ],
+        ),
+    ];
+    frame.render_widget(Paragraph::new(left), columns[0]);
+    frame.render_widget(Paragraph::new(right), columns[1]);
+    frame.render_widget(
+        Paragraph::new(match task.description.as_deref() {
+            Some(description) => Line::raw(terminal_safe(description)),
+            None => Line::styled("No description.", Style::default().fg(MUTED)),
+        })
+        .wrap(Wrap { trim: true }),
+        rows[3],
+    );
+
     frame.render_widget(
         Paragraph::new(Text::from(decisions))
             .wrap(Wrap { trim: true })
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Human decisions and revision notes"),
-            ),
+            .block(panel("Human decisions and revision notes").padding(Padding::horizontal(1))),
         areas[1],
     );
 
-    let items = if task.agent_activity.is_empty() {
-        vec![ListItem::new("No agent activity recorded yet.")]
-    } else {
-        task.agent_activity
-            .iter()
-            .map(agent_activity_item)
-            .collect::<Vec<_>>()
-    };
-    let mut state = ListState::default();
-    if !task.agent_activity.is_empty() {
-        state.select(Some(app.selected_activity));
+    let block = panel("Agent activity")
+        .title_top(Line::styled(" newest last ", Style::default().fg(MUTED)).right_aligned());
+    if task.agent_activity.is_empty() {
+        draw_empty_state(
+            frame,
+            block,
+            areas[2],
+            Line::styled(
+                "No agent activity recorded yet.",
+                Style::default().fg(MUTED),
+            ),
+        );
+        return;
     }
+    let now = now_unix_secs();
+    let rows = task
+        .agent_activity
+        .iter()
+        .map(|activity| agent_activity_row(activity, now));
+    let mut state = TableState::default().with_selected(Some(app.selected_activity));
     frame.render_stateful_widget(
-        List::new(items)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Agent activity (newest updates appear below)"),
-            )
-            .highlight_symbol(Line::from(Span::styled("▶ ", Style::default().fg(PRIMARY))))
-            .highlight_style(Style::default().add_modifier(Modifier::BOLD)),
+        Table::new(
+            rows,
+            [
+                Constraint::Length(9),
+                Constraint::Length(3),
+                Constraint::Length(14),
+                Constraint::Length(25),
+                Constraint::Length(17),
+                Constraint::Fill(1),
+            ],
+        )
+        .header(table_header(&[
+            "When", "#", "Agent", "Step", "Status", "Detail",
+        ]))
+        .column_spacing(1)
+        .block(block)
+        .highlight_symbol("▌")
+        .row_highlight_style(selected_row_style()),
         areas[2],
         &mut state,
     );
 }
 
-fn draw_review(frame: &mut Frame, app: &Dashboard, area: ratatui::layout::Rect) {
+fn draw_review(frame: &mut Frame, app: &Dashboard, area: Rect) {
     let title = app.selected_task().map_or("Review".to_owned(), |task| {
-        format!("Review — {}", terminal_safe(&task.title))
+        format!("Review · {}", terminal_safe(&task.title))
     });
+    let total = app.review_text.len();
+    let position = format!(
+        " line {}/{} ",
+        (usize::from(app.review_scroll) + 1).min(total),
+        total
+    );
     frame.render_widget(
         Paragraph::new(
             app.review_text
                 .iter()
-                .map(|line| Line::raw(line.clone()))
+                .map(|line| review_line(line))
                 .collect::<Vec<_>>(),
         )
         .scroll((app.review_scroll, 0))
-        .block(Block::default().borders(Borders::ALL).title(title)),
+        .block(
+            panel(title)
+                .title_top(Line::styled(position, Style::default().fg(MUTED)).right_aligned()),
+        ),
+        area,
+    );
+}
+
+/// Colors review sections, warnings, and `git diff --stat` lines.
+fn review_line(line: &str) -> Line<'static> {
+    if let Some(section) = line
+        .strip_prefix("== ")
+        .and_then(|rest| rest.strip_suffix(" =="))
+    {
+        return Line::styled(
+            format!("▍{section}"),
+            Style::default().fg(PRIMARY).add_modifier(Modifier::BOLD),
+        );
+    }
+    if line.starts_with("WARNING") {
+        return Line::styled(
+            line.to_owned(),
+            Style::default().fg(WARNING).add_modifier(Modifier::BOLD),
+        );
+    }
+    if let Some((file, change)) = line.rsplit_once(" | ")
+        && change
+            .trim_start()
+            .starts_with(|ch: char| ch.is_ascii_digit())
+    {
+        let mut spans = vec![Span::raw(format!("{file} | "))];
+        for ch in change.chars() {
+            let style = match ch {
+                '+' => Style::default().fg(SUCCESS),
+                '-' => Style::default().fg(ERROR),
+                _ => Style::default(),
+            };
+            spans.push(Span::styled(ch.to_string(), style));
+        }
+        return Line::from(spans);
+    }
+    if let Some((label, value)) = line.split_once(": ")
+        && matches!(label, "Worktree" | "OpenSpec change")
+    {
+        return Line::from(vec![
+            Span::styled(format!("{label}: "), Style::default().fg(MUTED)),
+            Span::raw(value.to_owned()),
+        ]);
+    }
+    Line::raw(line.to_owned())
+}
+
+fn truncate_start(value: &str, max_chars: usize) -> String {
+    let count = value.chars().count();
+    if count <= max_chars || max_chars < 2 {
+        return value.to_owned();
+    }
+    let tail = value
+        .chars()
+        .skip(count - (max_chars - 1))
+        .collect::<String>();
+    format!("…{tail}")
+}
+
+fn truncate_end(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars || max_chars < 2 {
+        return value.to_owned();
+    }
+    let head = value.chars().take(max_chars - 1).collect::<String>();
+    format!("{head}…")
+}
+
+/// Short relative age such as `just now`, `45s ago`, or `3h ago`.
+fn age_label(seconds: u64) -> String {
+    match seconds {
+        0..5 => "just now".to_owned(),
+        5..60 => format!("{seconds}s ago"),
+        60..3_600 => format!("{}m ago", seconds / 60),
+        3_600..86_400 => format!("{}h ago", seconds / 3_600),
+        _ => format!("{}d ago", seconds / 86_400),
+    }
+}
+
+/// A labelled form input: the focused field shows a marker, a highlighted label, and a cursor;
+/// an empty field shows its placeholder.
+fn form_field(focused: bool, label: &str, value: &str, placeholder: &str) -> Line<'static> {
+    let mut spans = vec![
+        Span::styled(
+            if focused { "› " } else { "  " },
+            Style::default().fg(PRIMARY).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("{label:<16}"),
+            if focused {
+                Style::default().fg(PRIMARY).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(MUTED)
+            },
+        ),
+        Span::raw(terminal_safe(value)),
+    ];
+    if focused {
+        spans.push(Span::styled("█", Style::default().fg(PRIMARY)));
+    }
+    if value.is_empty() {
+        spans.push(Span::styled(
+            placeholder.to_owned(),
+            Style::default().fg(MUTED).add_modifier(Modifier::ITALIC),
+        ));
+    }
+    Line::from(spans)
+}
+
+fn note_dialog(prompt: &str, note: &str) -> Vec<Line<'static>> {
+    vec![
+        Line::raw(prompt.to_owned()),
+        Line::default(),
+        Line::from(vec![
+            Span::styled(
+                "› ",
+                Style::default().fg(PRIMARY).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(terminal_safe(note)),
+            Span::styled("█", Style::default().fg(PRIMARY)),
+        ]),
+    ]
+}
+
+fn draw_dialog(frame: &mut Frame, app: &Dashboard) {
+    let (title, border, mut lines, hints) = match &app.dialog {
+        Dialog::None => return,
+        Dialog::CreateProject(form) => (
+            "Create project".to_owned(),
+            PRIMARY,
+            vec![
+                form_field(
+                    form.focus == ProjectField::Name,
+                    "Name",
+                    &form.name,
+                    "required",
+                ),
+                form_field(
+                    form.focus == ProjectField::Description,
+                    "Description",
+                    &form.description,
+                    "optional",
+                ),
+                form_field(
+                    form.focus == ProjectField::Repository,
+                    "Git repository",
+                    &form.repository,
+                    "/path/to/repository",
+                ),
+                form_field(
+                    form.focus == ProjectField::CheckCommand,
+                    "Check command",
+                    &form.check_command,
+                    "./scripts/check.sh (split on spaces, no shell)",
+                ),
+            ],
+            "Tab/Shift+Tab fields  Enter create  Esc cancel",
+        ),
+        Dialog::CreateTask(form) => {
+            let priority_focused = form.focus == TaskField::Priority;
+            let mut priority = vec![
+                Span::styled(
+                    if priority_focused { "› " } else { "  " },
+                    Style::default().fg(PRIMARY).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("{:<16}", "Priority"),
+                    if priority_focused {
+                        Style::default().fg(PRIMARY).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(MUTED)
+                    },
+                ),
+            ];
+            if priority_focused {
+                priority.push(Span::styled("◀ ", Style::default().fg(SHORTCUT)));
+            }
+            priority.push(priority_badge(&form.priority));
+            if priority_focused {
+                priority.push(Span::styled(" ▶", Style::default().fg(SHORTCUT)));
+            }
+            let dependencies_focused = form.focus == TaskField::Dependencies;
+            let mut lines = vec![
+                form_field(
+                    form.focus == TaskField::Title,
+                    "Title",
+                    &form.title,
+                    "required",
+                ),
+                form_field(
+                    form.focus == TaskField::Description,
+                    "Description",
+                    &form.description,
+                    "optional",
+                ),
+                Line::from(priority),
+                form_field(
+                    dependencies_focused,
+                    "Dependencies",
+                    "",
+                    "Space toggles the highlighted task",
+                ),
+            ];
+            if app.tasks.is_empty() {
+                lines.push(Line::styled(
+                    "                  No existing tasks to depend on.",
+                    Style::default().fg(MUTED),
+                ));
+            }
+            for (index, task) in app.tasks.iter().enumerate() {
+                let cursor = dependencies_focused && form.dependency_cursor == index;
+                let checked = form.dependencies.contains(&task.id);
+                lines.push(Line::from(vec![
+                    Span::raw("                "),
+                    Span::styled(
+                        if cursor { "› " } else { "  " },
+                        Style::default().fg(PRIMARY).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        if checked { "■ " } else { "□ " },
+                        Style::default().fg(if checked { PRIMARY } else { MUTED }),
+                    ),
+                    Span::styled(
+                        terminal_safe(&task.title),
+                        if cursor {
+                            Style::default().add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default()
+                        },
+                    ),
+                ]));
+            }
+            (
+                "Create task".to_owned(),
+                PRIMARY,
+                lines,
+                "Tab/Shift+Tab fields  ←/→ priority  ↑/↓ dependency  Enter create  Esc cancel",
+            )
+        }
+        Dialog::Revision { gate, note } => (
+            format!("Request changes · {}", approval_gate_label(*gate)),
+            WARNING,
+            note_dialog("Describe the revision needed:", note),
+            "Enter save  Esc cancel",
+        ),
+        Dialog::Clarify { note } => (
+            "Clarify task".to_owned(),
+            WARNING,
+            note_dialog(
+                "This discards the failed worktree. Add context for replacement specifications:",
+                note,
+            ),
+            "Enter save  Esc cancel",
+        ),
+        Dialog::Abandon { note } => (
+            "Abandon task".to_owned(),
+            ERROR,
+            note_dialog("This marks the task Rejected. Enter the reason:", note),
+            "Enter save  Esc cancel",
+        ),
+    };
+    lines.push(Line::default());
+    lines.push(shortcut_help_line(hints));
+
+    // Size the dialog to its content: wide enough for the form, tall enough for wrapped lines.
+    let screen = frame.area();
+    let width = 84.min(screen.width.saturating_sub(4)).max(20);
+    let inner_width = usize::from(width.saturating_sub(4)).max(1);
+    let content_height = lines
+        .iter()
+        .map(|line| line.width().div_ceil(inner_width).max(1))
+        .sum::<usize>();
+    let height = (content_height as u16 + 3).min(screen.height.saturating_sub(2));
+    let area = Rect {
+        x: screen.x + screen.width.saturating_sub(width) / 2,
+        y: screen.y + screen.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+            Block::bordered()
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(border))
+                .padding(Padding::new(1, 1, 1, 0))
+                .title(Span::styled(
+                    format!(" {title} "),
+                    Style::default().fg(border).add_modifier(Modifier::BOLD),
+                )),
+        ),
         area,
     );
 }
@@ -1880,7 +2334,10 @@ fn shortcut_help_line(hints: &str) -> Line<'static> {
                 shortcut.to_owned(),
                 Style::default().fg(SHORTCUT).add_modifier(Modifier::BOLD),
             ));
-            spans.push(Span::raw(format!(" {description}")));
+            spans.push(Span::styled(
+                format!(" {description}"),
+                Style::default().fg(MUTED),
+            ));
         } else {
             spans.push(Span::styled(
                 hint.to_owned(),
@@ -1891,35 +2348,27 @@ fn shortcut_help_line(hints: &str) -> Line<'static> {
     Line::from(spans)
 }
 
-fn dialog_text(content: String) -> Text<'static> {
-    let Some((body, hints)) = content.rsplit_once("\n\n") else {
-        return Text::from(content);
-    };
-    let mut lines = body
-        .lines()
-        .map(|line| Line::raw(line.to_owned()))
-        .collect::<Vec<_>>();
-    lines.push(Line::default());
-    lines.push(shortcut_help_line(hints));
-    Text::from(lines)
-}
-
-fn agent_activity_item(activity: &AgentActivity) -> ListItem<'static> {
-    let detail = terminal_safe(activity.detail.as_deref().unwrap_or(""));
-    ListItem::new(Line::from(vec![
-        Span::raw(format!(
-            "{}  attempt {}  {} — {} / ",
-            activity.updated_at_unix_secs,
-            activity.attempt,
-            terminal_safe(&activity.agent_name),
-            terminal_safe(&activity.step),
+fn agent_activity_row(activity: &AgentActivity, now: u64) -> Row<'static> {
+    Row::new(vec![
+        Cell::from(Span::styled(
+            age_label(now.saturating_sub(activity.updated_at_unix_secs)),
+            Style::default().fg(MUTED),
         )),
-        Span::styled(
+        Cell::from(Span::styled(
+            activity.attempt.to_string(),
+            Style::default().fg(MUTED),
+        )),
+        Cell::from(terminal_safe(&activity.agent_name)),
+        Cell::from(Span::styled(
+            terminal_safe(&activity.step),
+            Style::default().fg(MUTED),
+        )),
+        Cell::from(Span::styled(
             agent_status_label(&activity.status),
             Style::default().fg(agent_status_color(&activity.status)),
-        ),
-        Span::raw(format!("  {detail}")),
-    ]))
+        )),
+        Cell::from(terminal_safe(activity.detail.as_deref().unwrap_or(""))),
+    ])
 }
 
 fn terminal_safe(value: &str) -> String {
@@ -2171,7 +2620,7 @@ mod tests {
             app.handle_key(KeyCode::Tab);
         }
         let backend = render(&app);
-        assert!(rendered_text_position(&backend, "> Check command:").1 > 0);
+        assert!(rendered_text_position(&backend, "› Check command").1 > 0);
         for character in "./scripts/check.sh  --all".chars() {
             app.handle_key(KeyCode::Char(character));
         }
@@ -2307,7 +2756,7 @@ mod tests {
         assert!(text.contains("feature.txt"));
         assert!(text.contains("check command has not run"));
         let backend = render(&app);
-        rendered_text_position(&backend, "Review — Build");
+        rendered_text_position(&backend, "Review · Build");
         app.handle_key(KeyCode::Down);
         assert_eq!(app.review_scroll, 1);
         app.handle_key(KeyCode::Backspace);
@@ -2984,5 +3433,99 @@ mod tests {
             TaskStatus::Completed
         );
         assert!(repository.join("feature.txt").is_file());
+    }
+
+    #[test]
+    fn workflow_progress_marks_done_current_and_upcoming_steps() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(root.path()).unwrap();
+        let project = manager.create_project("Demo".to_owned(), None).unwrap();
+        let mut task = manager
+            .create_task(
+                project.id,
+                "Build".to_owned(),
+                None,
+                Priority::Medium,
+                Vec::new(),
+            )
+            .unwrap();
+        task.status = TaskStatus::InProgress;
+        task.current_step = Some("code-review".to_owned());
+        let line = super::workflow_progress_line(&task);
+        let text = line.to_string();
+        assert!(text.starts_with("✓ specs ─ ✓ approve specs ─ ✓ code ─ ● review ─ ○ verify"));
+        let span = |label: &str| {
+            line.spans
+                .iter()
+                .find(|span| span.content.ends_with(label))
+                .unwrap()
+                .style
+                .fg
+        };
+        assert_eq!(span("code"), Some(SUCCESS));
+        assert_eq!(span("review"), Some(PRIMARY));
+        assert_eq!(span("merge"), Some(super::MUTED));
+
+        task.status = TaskStatus::Error;
+        assert_eq!(
+            super::workflow_progress_line(&task)
+                .spans
+                .iter()
+                .find(|span| span.content.ends_with("review"))
+                .unwrap()
+                .style
+                .fg,
+            Some(ERROR)
+        );
+        task.status = TaskStatus::Completed;
+        assert!(
+            !super::workflow_progress_line(&task)
+                .to_string()
+                .contains('○')
+        );
+    }
+
+    #[test]
+    fn labels_shorten_paths_and_describe_ages() {
+        assert_eq!(super::age_label(2), "just now");
+        assert_eq!(super::age_label(45), "45s ago");
+        assert_eq!(super::age_label(125), "2m ago");
+        assert_eq!(super::age_label(7_200), "2h ago");
+        assert_eq!(super::age_label(200_000), "2d ago");
+        assert_eq!(super::truncate_start("/a/very/long/path", 8), "…ng/path");
+        assert_eq!(super::truncate_start("short", 8), "short");
+        assert_eq!(super::truncate_end("cargo test --all", 8), "cargo t…");
+    }
+
+    #[test]
+    fn empty_lists_explain_how_to_add_items_and_selection_keeps_status_colors() {
+        let root = tempfile::tempdir().unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+        rendered_text_position(&render(&app), "No projects yet. Press n to create one.");
+
+        let manager = ProjectManager::new(root.path()).unwrap();
+        let project = manager.create_project("Demo".to_owned(), None).unwrap();
+        app.refresh().unwrap();
+        app.handle_key(KeyCode::Enter);
+        rendered_text_position(&render(&app), "No tasks yet. Press n to add one.");
+
+        manager
+            .create_task(
+                project.id,
+                "Build".to_owned(),
+                None,
+                Priority::High,
+                Vec::new(),
+            )
+            .unwrap();
+        app.refresh().unwrap();
+        let backend = render(&app);
+        // The selected row's status badge keeps its color on the selection background.
+        let (x, y) = rendered_text_position(&backend, "○ pending");
+        let cell = backend.buffer().cell((x + 2, y)).unwrap();
+        assert_eq!(cell.fg, WARNING);
+        assert_eq!(cell.bg, super::SELECTION);
+        rendered_text_position(&backend, "Projects › Demo");
+        rendered_text_position(&backend, "○ orchestrator idle");
     }
 }
