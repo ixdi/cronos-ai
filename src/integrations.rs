@@ -1,11 +1,12 @@
 use std::{
     env,
     ffi::{OsStr, OsString},
-    io::{self, BufRead, BufReader, BufWriter, Read, Write},
+    io::{self, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
     sync::mpsc,
     thread,
+    time::{Duration, Instant},
 };
 
 use thiserror::Error;
@@ -88,8 +89,12 @@ pub enum GitError {
     InvalidBranch,
     #[error("Git repository is not clean: {0}")]
     DirtyRepository(String),
+    #[error("base repository has uncommitted changes: {0}")]
+    DirtyBase(String),
     #[error("local merge conflicted: {0}")]
     MergeConflict(String),
+    #[error("local merge failed: {0}")]
+    MergeFailed(String),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -215,7 +220,9 @@ impl GitAdapter {
         if !valid_branch_name(branch) {
             return Err(GitError::InvalidBranch);
         }
-        self.ensure_clean(&repository)?;
+        if !self.is_clean(&repository)? {
+            return Err(GitError::DirtyBase(repository.display().to_string()));
+        }
         self.ensure_clean(worktree)?;
         match self.tools.run_git(&[
             OsStr::new("-C"),
@@ -227,36 +234,252 @@ impl GitAdapter {
         ]) {
             Ok(_) => Ok(()),
             Err(IntegrationError::Failed { stderr, .. }) => {
-                let abort = self.tools.run_git(&[
-                    OsStr::new("-C"),
-                    repository.as_os_str(),
-                    OsStr::new("merge"),
-                    OsStr::new("--abort"),
-                ]);
+                // Only unmerged paths are a conflict the code-generation agent can resolve;
+                // anything else (for example untracked files in the way) needs a human.
+                let conflicted = !self
+                    .git_text(&repository, &["diff", "--name-only", "--diff-filter=U"])
+                    .unwrap_or_default()
+                    .trim()
+                    .is_empty();
+                let merging = self
+                    .git_text(&repository, &["rev-parse", "-q", "--verify", "MERGE_HEAD"])
+                    .is_ok();
+                let abort = if merging {
+                    self.tools
+                        .run_git(&[
+                            OsStr::new("-C"),
+                            repository.as_os_str(),
+                            OsStr::new("merge"),
+                            OsStr::new("--abort"),
+                        ])
+                        .map(|_| ())
+                } else {
+                    Ok(())
+                };
                 let detail = match abort {
-                    Ok(_) => stderr,
+                    Ok(()) => stderr,
                     Err(abort_error) => format!("{stderr}; merge abort failed: {abort_error}"),
                 };
-                Err(GitError::MergeConflict(detail))
+                if conflicted {
+                    Err(GitError::MergeConflict(detail))
+                } else {
+                    Err(GitError::MergeFailed(detail))
+                }
             }
             Err(error) => Err(error.into()),
         }
     }
 
     fn ensure_clean(&self, path: &Path) -> Result<(), GitError> {
-        let output = self.tools.run_git(&[
-            OsStr::new("-C"),
-            path.as_os_str(),
-            OsStr::new("status"),
-            OsStr::new("--porcelain"),
-        ])?;
-        let status = String::from_utf8_lossy(&output.stdout);
-        if status.trim().is_empty() {
+        if self.is_clean(path)? {
             Ok(())
         } else {
             Err(GitError::DirtyRepository(path.display().to_string()))
         }
     }
+
+    fn git_text(&self, path: &Path, args: &[&str]) -> Result<String, GitError> {
+        let mut full = vec![OsStr::new("-C"), path.as_os_str()];
+        full.extend(args.iter().map(OsStr::new));
+        let output = self.tools.run_git(&full)?;
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .trim_end()
+            .to_owned())
+    }
+
+    pub fn status(&self, path: &Path) -> Result<String, GitError> {
+        self.git_text(path, &["status", "--porcelain"])
+    }
+
+    pub fn is_clean(&self, path: &Path) -> Result<bool, GitError> {
+        Ok(self.status(path)?.trim().is_empty())
+    }
+
+    pub fn head(&self, path: &Path) -> Result<String, GitError> {
+        self.git_text(path, &["rev-parse", "HEAD"])
+    }
+
+    pub fn current_branch(&self, path: &Path) -> Result<String, GitError> {
+        self.git_text(path, &["rev-parse", "--abbrev-ref", "HEAD"])
+    }
+
+    /// Object ID of a committed file at HEAD, or None when HEAD has no such file.
+    pub fn committed_blob(&self, path: &Path, file: &str) -> Option<String> {
+        self.git_text(
+            path,
+            &["rev-parse", "-q", "--verify", &format!("HEAD:{file}")],
+        )
+        .ok()
+    }
+
+    /// Commit and file status, used to detect writes by read-only steps.
+    pub fn snapshot(&self, path: &Path) -> Result<String, GitError> {
+        Ok(format!("{}\n{}", self.head(path)?, self.status(path)?))
+    }
+
+    pub fn commit_all(&self, path: &Path, message: &str) -> Result<(), GitError> {
+        self.git_text(path, &["add", "-A"])?;
+        self.git_text(path, &["commit", "-m", message])?;
+        Ok(())
+    }
+
+    /// Keep Cronos result files out of every worktree without touching tracked files.
+    pub fn ensure_local_exclude(&self, repository: &Path, pattern: &str) -> Result<(), GitError> {
+        let common = PathBuf::from(self.git_text(repository, &["rev-parse", "--git-common-dir"])?);
+        let common = if common.is_absolute() {
+            common
+        } else {
+            repository.join(common)
+        };
+        let info = common.join("info");
+        let exclude = info.join("exclude");
+        let current = std::fs::read_to_string(&exclude).unwrap_or_default();
+        if current.lines().any(|line| line.trim() == pattern) {
+            return Ok(());
+        }
+        let io_error = |source| IntegrationError::Io {
+            tool: "git",
+            source,
+        };
+        std::fs::create_dir_all(&info).map_err(io_error)?;
+        let separator = if current.is_empty() || current.ends_with('\n') {
+            ""
+        } else {
+            "\n"
+        };
+        std::fs::write(&exclude, format!("{current}{separator}{pattern}\n")).map_err(io_error)?;
+        Ok(())
+    }
+
+    /// Commits and diff summary of the task branch against the base repository's HEAD.
+    pub fn review_summary(&self, repository: &Path, worktree: &Path) -> Result<String, GitError> {
+        let base = self.head(repository)?;
+        let log = self.git_text(worktree, &["log", "--oneline", &format!("{base}..HEAD")])?;
+        let diff = self.git_text(worktree, &["diff", "--stat", &format!("{base}...HEAD")])?;
+        Ok(format!(
+            "Commits on the task branch:\n{}\n\nDiff summary against the base:\n{}",
+            if log.is_empty() { "(none)" } else { &log },
+            if diff.is_empty() {
+                "(no changes)"
+            } else {
+                &diff
+            },
+        ))
+    }
+}
+
+pub struct CheckOutcome {
+    pub success: bool,
+    pub output_tail: String,
+}
+
+/// Runs a project check command without a shell; output goes to `<worktree>/.cronos/check-output.log`.
+pub fn run_check_command(
+    worktree: &Path,
+    command: &[String],
+    timeout: Duration,
+) -> Result<CheckOutcome, IntegrationError> {
+    let io_error = |source| IntegrationError::Io {
+        tool: "check command",
+        source,
+    };
+    let (program, args) = command.split_first().ok_or(IntegrationError::Io {
+        tool: "check command",
+        source: io::Error::new(io::ErrorKind::InvalidInput, "check command is empty"),
+    })?;
+    let mut program = PathBuf::from(program);
+    // Rust leaves relative program resolution to the platform; anchor paths like ./check.sh to the worktree.
+    if program.is_relative() && program.components().count() > 1 {
+        program = worktree.join(program);
+    }
+    let log_dir = ensure_real_directory(&worktree.join(".cronos")).map_err(io_error)?;
+    let log_path = log_dir.join("check-output.log");
+    let log = create_fresh_file(&log_path).map_err(io_error)?;
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .current_dir(worktree)
+        .stdin(Stdio::null())
+        .stdout(log.try_clone().map_err(io_error)?)
+        .stderr(log.try_clone().map_err(io_error)?);
+    // Own process group, so a timeout also stops the processes the check starts.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    let mut child = command.spawn().map_err(io_error)?;
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().map_err(io_error)? {
+            break Some(status);
+        }
+        if started.elapsed() >= timeout {
+            #[cfg(unix)]
+            let _ = Command::new("kill")
+                .args(["-KILL", &format!("-{}", child.id())])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        thread::sleep(Duration::from_millis(100));
+    };
+    // Read the tail through the handle we created, never by path.
+    let mut log = log;
+    let length = log.seek(SeekFrom::End(0)).map_err(io_error)?;
+    log.seek(SeekFrom::Start(length.saturating_sub(MAX_CHECK_TAIL_BYTES)))
+        .map_err(io_error)?;
+    let mut output = Vec::new();
+    log.read_to_end(&mut output).map_err(io_error)?;
+    let output = String::from_utf8_lossy(&output);
+    let lines = output.lines().collect::<Vec<_>>();
+    let mut output_tail = lines[lines.len().saturating_sub(40)..].join("\n");
+    if status.is_none() {
+        output_tail.push_str(&format!(
+            "\ncheck command exceeded its {}-minute limit",
+            timeout.as_secs() / 60
+        ));
+    }
+    Ok(CheckOutcome {
+        success: status.is_some_and(|status| status.success()),
+        output_tail,
+    })
+}
+
+const MAX_CHECK_TAIL_BYTES: u64 = 256 * 1024;
+
+/// Creates `path` as a directory if needed and refuses symlinks, so Cronos never writes through
+/// a link an agent placed in the worktree.
+pub fn ensure_real_directory(path: &Path) -> io::Result<PathBuf> {
+    match std::fs::create_dir(path) {
+        Ok(()) => {}
+        // Parallel agents create the same directories; whatever exists is checked below.
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} must be a real directory", path.display()),
+        ));
+    }
+    Ok(path.to_path_buf())
+}
+
+/// Replaces `path` with a new empty file. `create_new` never follows a symlink, so a link swapped in
+/// after the removal makes this fail instead of truncating the link target.
+fn create_fresh_file(path: &Path) -> io::Result<std::fs::File> {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(path)
 }
 
 fn valid_branch_name(branch: &str) -> bool {
@@ -433,7 +656,9 @@ impl ToolCommands {
                 OsStr::new("rpc"),
                 OsStr::new("--no-session"),
                 OsStr::new("--no-extensions"),
-                OsStr::new("--no-builtin-tools"),
+                // Read-only file access plus the Cronos workflow tools; no shell, edit, or write.
+                OsStr::new("--tools"),
+                OsStr::new(ORCHESTRATOR_TOOLS),
                 OsStr::new("--no-mcp"),
                 OsStr::new("--no-skills"),
                 OsStr::new("--no-context-files"),
@@ -582,10 +807,16 @@ impl ToolCommands {
         self.run(RequiredTool::Herdr, &args)
     }
 
-    pub fn herdr_prompt_agent(&self, name: &str, prompt: &str) -> Result<Output, IntegrationError> {
+    pub fn herdr_prompt_agent(
+        &self,
+        name: &str,
+        prompt: &str,
+        timeout: Duration,
+    ) -> Result<Output, IntegrationError> {
         if !valid_agent_name(name) {
             return Err(IntegrationError::InvalidAgentName);
         }
+        let timeout_ms = timeout.as_millis().to_string();
         self.run(
             RequiredTool::Herdr,
             &[
@@ -595,7 +826,7 @@ impl ToolCommands {
                 OsStr::new(prompt),
                 OsStr::new("--wait"),
                 OsStr::new("--timeout"),
-                OsStr::new("120000"),
+                OsStr::new(&timeout_ms),
             ],
         )
     }
@@ -640,6 +871,33 @@ impl ToolCommands {
         )
     }
 
+    pub fn herdr_close_pane(&self, pane_id: &str) -> Result<Output, IntegrationError> {
+        if pane_id.is_empty() {
+            return Err(IntegrationError::InvalidHerdrResponse);
+        }
+        self.run(
+            RequiredTool::Herdr,
+            &[OsStr::new("pane"), OsStr::new("close"), OsStr::new(pane_id)],
+        )
+    }
+
+    /// Pane that hosts a named agent, used to clean up agents left by an earlier process.
+    pub fn herdr_agent_pane(&self, name: &str) -> Result<String, IntegrationError> {
+        if !valid_agent_name(name) {
+            return Err(IntegrationError::InvalidAgentName);
+        }
+        let output = self.run(
+            RequiredTool::Herdr,
+            &[OsStr::new("agent"), OsStr::new("get"), OsStr::new(name)],
+        )?;
+        let response: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .map_err(|_| IntegrationError::InvalidHerdrResponse)?;
+        find_string_field(&response, "pane_id")
+            .filter(|pane_id| !pane_id.is_empty())
+            .map(str::to_owned)
+            .ok_or(IntegrationError::InvalidHerdrResponse)
+    }
+
     pub fn herdr_read_agent(&self, name: &str, lines: usize) -> Result<Output, IntegrationError> {
         if !valid_agent_name(name) {
             return Err(IntegrationError::InvalidAgentName);
@@ -663,24 +921,41 @@ impl ToolCommands {
         self.run(RequiredTool::OpenSpec, args)
     }
 
+    /// OpenSpec resolves its root from the working directory, so run it inside the worktree.
+    pub fn run_openspec_in(&self, dir: &Path, args: &[&str]) -> Result<Output, IntegrationError> {
+        let args = args.iter().map(OsStr::new).collect::<Vec<_>>();
+        self.run_in(RequiredTool::OpenSpec, Some(dir), &args)
+    }
+
     pub fn run_git(&self, args: &[&OsStr]) -> Result<Output, IntegrationError> {
         self.run(RequiredTool::Git, args)
     }
 
     fn run(&self, tool: RequiredTool, args: &[&OsStr]) -> Result<Output, IntegrationError> {
+        self.run_in(tool, None, args)
+    }
+
+    fn run_in(
+        &self,
+        tool: RequiredTool,
+        dir: Option<&Path>,
+        args: &[&OsStr],
+    ) -> Result<Output, IntegrationError> {
         let executable = match tool {
             RequiredTool::Pi => &self.pi,
             RequiredTool::Herdr => &self.herdr,
             RequiredTool::OpenSpec => &self.openspec,
             RequiredTool::Git => &self.git,
         };
-        let output = Command::new(executable)
-            .args(args)
-            .output()
-            .map_err(|source| IntegrationError::Io {
-                tool: tool.executable(),
-                source,
-            })?;
+        let mut command = Command::new(executable);
+        command.args(args);
+        if let Some(dir) = dir {
+            command.current_dir(dir);
+        }
+        let output = command.output().map_err(|source| IntegrationError::Io {
+            tool: tool.executable(),
+            source,
+        })?;
         if !output.status.success() {
             return Err(IntegrationError::Failed {
                 tool: tool.executable(),
@@ -690,6 +965,30 @@ impl ToolCommands {
         }
         Ok(output)
     }
+}
+
+const ORCHESTRATOR_TOOLS: &str = "read,cronos_task_state,cronos_agent_profiles,cronos_run_step";
+const WORKFLOW_EXTENSION: &str = include_str!("../extensions/cronos-workflow.ts");
+
+/// Writes the embedded workflow extension to the data directory so the binary does not
+/// depend on its source checkout. Rewrites the file only when its content differs.
+pub fn install_workflow_extension(data_dir: &Path) -> io::Result<PathBuf> {
+    let directory = data_dir.join("extensions");
+    std::fs::create_dir_all(&directory)?;
+    let path = directory.join("cronos-workflow.ts");
+    if std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "workflow extension path must not be a symlink",
+        ));
+    }
+    if std::fs::read_to_string(&path).is_ok_and(|current| current == WORKFLOW_EXTENSION) {
+        return Ok(path);
+    }
+    let temporary = directory.join(format!(".cronos-workflow.{}.tmp", std::process::id()));
+    std::fs::write(&temporary, WORKFLOW_EXTENSION)?;
+    std::fs::rename(&temporary, &path)?;
+    Ok(path)
 }
 
 pub fn herdr_session_available() -> bool {
@@ -765,6 +1064,23 @@ fn find_herdr_status(value: &serde_json::Value) -> Option<&str> {
             object.values().find_map(find_herdr_status)
         }
         serde_json::Value::Array(items) => items.iter().find_map(find_herdr_status),
+        _ => None,
+    }
+}
+
+fn find_string_field<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    match value {
+        serde_json::Value::Object(object) => object
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| {
+                object
+                    .values()
+                    .find_map(|value| find_string_field(value, key))
+            }),
+        serde_json::Value::Array(items) => {
+            items.iter().find_map(|value| find_string_field(value, key))
+        }
         _ => None,
     }
 }
@@ -881,10 +1197,15 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let fake = fake_command(temp.path(), 0);
         let output = commands(fake.clone())
-            .herdr_prompt_agent("reviewer-1", "review; do not execute shell syntax")
+            .herdr_prompt_agent(
+                "reviewer-1",
+                "review; do not execute shell syntax",
+                std::time::Duration::from_secs(30 * 60),
+            )
             .unwrap();
         let stdout = String::from_utf8(output.stdout).unwrap();
         assert!(stdout.contains("<review; do not execute shell syntax>"));
+        assert!(stdout.contains("<1800000>"));
         let pi_args = vec![
             OsString::from("--no-skills"),
             OsString::from("--no-extensions"),
@@ -1228,7 +1549,8 @@ mod tests {
                 OsStr::new("rpc"),
                 OsStr::new("--no-session"),
                 OsStr::new("--no-extensions"),
-                OsStr::new("--no-builtin-tools"),
+                OsStr::new("--tools"),
+                OsStr::new("read,cronos_task_state,cronos_agent_profiles,cronos_run_step"),
                 OsStr::new("--no-mcp"),
                 OsStr::new("--no-skills"),
                 OsStr::new("--no-context-files"),
@@ -1238,5 +1560,116 @@ mod tests {
         );
         assert_eq!(command.get_current_dir(), Some(temp.path()));
         assert_eq!(command.get_envs().count(), 4);
+    }
+
+    #[test]
+    fn embedded_workflow_extension_is_installed_into_the_data_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = super::install_workflow_extension(temp.path()).unwrap();
+        assert_eq!(path, temp.path().join("extensions/cronos-workflow.ts"));
+        let installed = fs::read_to_string(&path).unwrap();
+        assert!(installed.contains("cronos_run_step"));
+        fs::write(&path, "stale").unwrap();
+        super::install_workflow_extension(temp.path()).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), installed);
+    }
+
+    #[test]
+    fn check_command_reports_exit_status_and_output_tail_without_a_shell() {
+        let temp = tempfile::tempdir().unwrap();
+        let script = temp.path().join("check.sh");
+        fs::write(&script, "#!/bin/sh\necho \"checked $1\"\nexit \"$2\"\n").unwrap();
+        let mut permissions = fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&script, permissions).unwrap();
+        let run = |code: &str| {
+            super::run_check_command(
+                temp.path(),
+                &["./check.sh".to_owned(), "a;b".to_owned(), code.to_owned()],
+                std::time::Duration::from_secs(10),
+            )
+            .unwrap()
+        };
+        let passed = run("0");
+        assert!(passed.success);
+        assert_eq!(passed.output_tail, "checked a;b");
+        assert!(!run("3").success);
+        assert!(temp.path().join(".cronos/check-output.log").is_file());
+
+        let slow = super::run_check_command(
+            temp.path(),
+            &["sleep".to_owned(), "5".to_owned()],
+            std::time::Duration::from_millis(200),
+        )
+        .unwrap();
+        assert!(!slow.success);
+        assert!(slow.output_tail.contains("exceeded"));
+    }
+
+    #[test]
+    fn check_command_never_writes_through_a_planted_symlink() {
+        let temp = tempfile::tempdir().unwrap();
+        let victim = temp.path().join("victim.txt");
+        fs::write(&victim, "keep me\n").unwrap();
+        let worktree = temp.path().join("worktree");
+        fs::create_dir_all(worktree.join(".cronos")).unwrap();
+        std::os::unix::fs::symlink(&victim, worktree.join(".cronos/check-output.log")).unwrap();
+        let outcome = super::run_check_command(
+            &worktree,
+            &["echo".to_owned(), "checked".to_owned()],
+            std::time::Duration::from_secs(10),
+        )
+        .unwrap();
+        assert!(outcome.success);
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "keep me\n");
+        assert!(
+            !fs::symlink_metadata(worktree.join(".cronos/check-output.log"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+
+        // A symlinked .cronos directory is refused outright.
+        let linked = temp.path().join("linked");
+        fs::create_dir_all(&linked).unwrap();
+        std::os::unix::fs::symlink(temp.path(), linked.join(".cronos")).unwrap();
+        assert!(
+            super::run_check_command(
+                &linked,
+                &["echo".to_owned()],
+                std::time::Duration::from_secs(10)
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn check_command_timeout_stops_processes_it_started() {
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("survivor");
+        let script = temp.path().join("check.sh");
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\n(sleep 1; touch '{}') &\nsleep 5\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&script, permissions).unwrap();
+        let outcome = super::run_check_command(
+            temp.path(),
+            &["./check.sh".to_owned()],
+            std::time::Duration::from_millis(200),
+        )
+        .unwrap();
+        assert!(!outcome.success);
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        assert!(
+            !marker.exists(),
+            "a child of the check survived its timeout"
+        );
     }
 }

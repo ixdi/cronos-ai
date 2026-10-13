@@ -1,8 +1,8 @@
 use std::{
     error::Error,
     io,
-    path::PathBuf,
-    time::{Duration, Instant},
+    path::{Path, PathBuf},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use crossterm::{
@@ -25,7 +25,8 @@ use crate::{
         AgentActivity, AgentStatus, ApprovalDecision, ApprovalGate, Priority, Project,
         ProjectStatus, Task, TaskId, TaskStatus, WorkflowStep,
     },
-    project::{ProjectError, ProjectManager},
+    project::{MAX_AUTOMATIC_REVISIONS, MergeOutcome, ProjectError, ProjectManager},
+    workflow::{cancel_interrupted_agents, check_program_changed},
 };
 
 const PRIMARY: Color = Color::Rgb(188, 147, 248);
@@ -39,6 +40,7 @@ enum Screen {
     Projects,
     Tasks,
     TaskDetail,
+    Review,
 }
 
 enum Dialog {
@@ -55,6 +57,7 @@ enum ProjectField {
     Name,
     Description,
     Repository,
+    CheckCommand,
 }
 
 impl ProjectField {
@@ -62,15 +65,17 @@ impl ProjectField {
         match self {
             Self::Name => Self::Description,
             Self::Description => Self::Repository,
-            Self::Repository => Self::Name,
+            Self::Repository => Self::CheckCommand,
+            Self::CheckCommand => Self::Name,
         }
     }
 
     fn previous(self) -> Self {
         match self {
-            Self::Name => Self::Repository,
+            Self::Name => Self::CheckCommand,
             Self::Description => Self::Name,
             Self::Repository => Self::Description,
+            Self::CheckCommand => Self::Repository,
         }
     }
 }
@@ -79,6 +84,7 @@ struct ProjectForm {
     name: String,
     description: String,
     repository: String,
+    check_command: String,
     focus: ProjectField,
 }
 
@@ -88,6 +94,7 @@ impl Default for ProjectForm {
             name: String::new(),
             description: String::new(),
             repository: String::new(),
+            check_command: String::new(),
             focus: ProjectField::Name,
         }
     }
@@ -99,6 +106,7 @@ impl ProjectForm {
             ProjectField::Name => &mut self.name,
             ProjectField::Description => &mut self.description,
             ProjectField::Repository => &mut self.repository,
+            ProjectField::CheckCommand => &mut self.check_command,
         }
     }
 }
@@ -189,6 +197,8 @@ struct Dashboard {
     workflow: Option<PiRpcHandle>,
     workflow_task: Option<(crate::model::ProjectId, crate::model::TaskId)>,
     workflow_status: Option<String>,
+    review_text: Vec<String>,
+    review_scroll: u16,
 }
 
 impl Dashboard {
@@ -207,6 +217,8 @@ impl Dashboard {
             workflow: None,
             workflow_task: None,
             workflow_status: None,
+            review_text: Vec::new(),
+            review_scroll: 0,
         })
     }
 
@@ -239,7 +251,7 @@ impl Dashboard {
             self.selected_task = task_id
                 .and_then(|id| self.tasks.iter().position(|task| task.id == id))
                 .unwrap_or_else(|| self.selected_task.min(self.tasks.len().saturating_sub(1)));
-            if self.screen == Screen::TaskDetail && self.tasks.is_empty() {
+            if matches!(self.screen, Screen::TaskDetail | Screen::Review) && self.tasks.is_empty() {
                 self.screen = Screen::Tasks;
             }
         } else {
@@ -254,7 +266,6 @@ impl Dashboard {
                     .min(task.agent_activity.len().saturating_sub(1))
             }
         });
-        self.error = None;
         Ok(())
     }
 
@@ -269,6 +280,8 @@ impl Dashboard {
             self.handle_dialog_key(key);
             return;
         }
+        // Errors stay visible across the periodic refresh until the user acts again.
+        self.error = None;
         if key == KeyCode::Char('q') {
             self.should_quit = true;
             return;
@@ -297,6 +310,24 @@ impl Dashboard {
                     self.screen = Screen::Tasks;
                     self.refresh_for_ui();
                 }
+                Screen::Review => self.screen = Screen::TaskDetail,
+            }
+            return;
+        }
+
+        if self.screen == Screen::Review {
+            match key {
+                KeyCode::Up => self.review_scroll = self.review_scroll.saturating_sub(1),
+                KeyCode::Down => {
+                    let max = u16::try_from(self.review_text.len()).unwrap_or(u16::MAX);
+                    self.review_scroll = self.review_scroll.saturating_add(1).min(max);
+                }
+                KeyCode::PageUp => self.review_scroll = self.review_scroll.saturating_sub(10),
+                KeyCode::PageDown => {
+                    let max = u16::try_from(self.review_text.len()).unwrap_or(u16::MAX);
+                    self.review_scroll = self.review_scroll.saturating_add(10).min(max);
+                }
+                _ => {}
             }
             return;
         }
@@ -307,6 +338,8 @@ impl Dashboard {
                 KeyCode::Char('n') => self.request_revision(),
                 KeyCode::Char('c') => self.open_clarify_dialog(),
                 KeyCode::Char('a') => self.open_abandon_dialog(),
+                KeyCode::Char('t') => self.retry_failed_step(),
+                KeyCode::Char('v') => self.open_review(),
                 _ => self.handle_navigation_key(key),
             }
             return;
@@ -424,6 +457,9 @@ impl Dashboard {
         let Some((project_id, task_id)) = self.selected_ids() else {
             return;
         };
+        if !self.stop_stale_agents(project_id, task_id) {
+            return;
+        }
         match self
             .manager
             .retry_task_with_git(project_id, task_id, &GitAdapter::default())
@@ -438,6 +474,176 @@ impl Dashboard {
             }
             Err(error) => self.error = Some(error.to_string()),
         }
+    }
+
+    fn retry_failed_step(&mut self) {
+        if self.workflow.is_some() {
+            self.error = Some("Wait for the Pi workflow to settle before retrying.".to_owned());
+            return;
+        }
+        let Some((project_id, task_id)) = self.selected_ids() else {
+            return;
+        };
+        if !self.stop_stale_agents(project_id, task_id) {
+            return;
+        }
+        match self.manager.retry_step(project_id, task_id) {
+            Ok(task) => {
+                self.workflow_status = Some(format!(
+                    "Retrying {} in attempt {}",
+                    task.current_step.as_deref().unwrap_or("the failed step"),
+                    task.attempt
+                ));
+                self.continue_task(project_id, task_id);
+                self.refresh_for_ui();
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
+    /// Stops agents a crashed orchestrator left running before a recovery reuses or discards the
+    /// worktree. Returns false, with the reason shown, when a step process still owns the task.
+    fn stop_stale_agents(
+        &mut self,
+        project_id: crate::model::ProjectId,
+        task_id: crate::model::TaskId,
+    ) -> bool {
+        match cancel_interrupted_agents(
+            &self.manager,
+            &ToolCommands::default(),
+            project_id,
+            task_id,
+        ) {
+            Ok(_) => true,
+            Err(error) => {
+                self.error = Some(error.to_string());
+                false
+            }
+        }
+    }
+
+    /// Builds the review text: OpenSpec change, task-branch commits and diff, latest check output.
+    fn open_review(&mut self) {
+        let Some(task) = self.selected_task().cloned() else {
+            return;
+        };
+        let Some(repository) = self
+            .selected_project()
+            .and_then(|project| project.repository.clone())
+        else {
+            self.error = Some("This project has no Git repository to review.".to_owned());
+            return;
+        };
+        let Some(worktree) = task.worktree.clone() else {
+            self.error = Some("This task has no worktree to review yet.".to_owned());
+            return;
+        };
+        let worktree = PathBuf::from(worktree);
+        let change = task.openspec_change();
+        let tools = ToolCommands::default();
+        let spec = tools
+            .run_openspec_in(&worktree, &["show", &change, "--no-interactive"])
+            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+            .or_else(|_| {
+                std::fs::read_to_string(
+                    worktree
+                        .join("openspec/changes")
+                        .join(&change)
+                        .join("proposal.md"),
+                )
+            })
+            .unwrap_or_else(|_| {
+                format!("OpenSpec change {change} is not available (it may be archived).")
+            });
+        let git_adapter = GitAdapter::default();
+        let mut git = git_adapter
+            .review_summary(Path::new(&repository), &worktree)
+            .unwrap_or_else(|error| format!("Could not summarize the task branch: {error}"));
+        if let Some(program) = self
+            .selected_project()
+            .and_then(|project| project.check_command.clone())
+            .and_then(|command| {
+                check_program_changed(&git_adapter, Path::new(&repository), &worktree, &command)
+            })
+        {
+            git = format!(
+                "WARNING: this branch changes the check program {program}. The check ran the agent's version; review it before approving.\n\n{git}"
+            );
+        }
+        let check = std::fs::read_to_string(worktree.join(".cronos/check-output.log"))
+            .map(|output| {
+                let lines = output.lines().collect::<Vec<_>>();
+                lines[lines.len().saturating_sub(40)..].join("\n")
+            })
+            .unwrap_or_else(|_| "The check command has not run for this worktree yet.".to_owned());
+        self.review_text = format!(
+            "Worktree: {}\nOpenSpec change: {change}\n\n== Specification ==\n{spec}\n\n== Task branch ==\n{git}\n\n== Latest check output ==\n{check}",
+            worktree.display()
+        )
+        .lines()
+        .map(terminal_safe)
+        .collect();
+        self.review_scroll = 0;
+        self.error = None;
+        self.screen = Screen::Review;
+    }
+
+    /// Continues an In Progress task: waits at approval gates, merges at local merge,
+    /// otherwise relaunches the orchestrator at the current step.
+    fn continue_task(
+        &mut self,
+        project_id: crate::model::ProjectId,
+        task_id: crate::model::TaskId,
+    ) {
+        let Ok(task) = self.manager.get_task(project_id, task_id) else {
+            return;
+        };
+        let step = task.current_step.as_deref().and_then(WorkflowStep::parse);
+        if task.status != TaskStatus::InProgress
+            || step.is_some_and(WorkflowStep::requires_human_approval)
+        {
+            return;
+        }
+        if step == Some(WorkflowStep::LocalMerge) {
+            self.finish_local_merge(project_id, task_id);
+            return;
+        }
+        self.resume_recovered_task(project_id, task_id);
+    }
+
+    fn finish_local_merge(
+        &mut self,
+        project_id: crate::model::ProjectId,
+        task_id: crate::model::TaskId,
+    ) {
+        match self
+            .manager
+            .merge_and_complete_task(project_id, task_id, &GitAdapter::default())
+        {
+            Ok(MergeOutcome::Completed(_)) => {
+                self.workflow_status =
+                    Some("Task merged locally and completed; nothing was pushed.".to_owned());
+            }
+            Ok(MergeOutcome::BaseDirty(path)) => {
+                self.error = Some(format!(
+                    "The base repository {path} has uncommitted changes. Commit or stash them, then press s on the task list to retry the merge."
+                ));
+            }
+            Ok(MergeOutcome::Conflict(_)) => {
+                self.workflow_status = Some(
+                    "Merge conflicted and was aborted; the task returned to code generation."
+                        .to_owned(),
+                );
+                self.resume_recovered_task(project_id, task_id);
+            }
+            Err(error) => {
+                let _ = self
+                    .manager
+                    .set_task_status(project_id, task_id, TaskStatus::Error);
+                self.error = Some(error.to_string());
+            }
+        }
+        self.refresh_for_ui();
     }
 
     fn resume_recovered_task(
@@ -545,10 +751,17 @@ impl Dashboard {
         };
         let repository =
             (!form.repository.trim().is_empty()).then(|| PathBuf::from(form.repository.trim()));
+        // shortcut: whitespace-split check command (no quoting), point it at a script for complex commands.
+        let check_command = form
+            .check_command
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
         let result = self.manager.create_project_with_repository(
             form.name.clone(),
             (!form.description.trim().is_empty()).then(|| form.description.clone()),
             repository.as_deref(),
+            (!check_command.is_empty()).then_some(check_command),
             &GitAdapter::default(),
         );
         match result {
@@ -777,7 +990,9 @@ impl Dashboard {
                 self.save_approval(gate, ApprovalDecision::Rejected, Some(note));
             }
             Dialog::Clarify { note } if !note.trim().is_empty() => {
-                if let Some((project_id, task_id)) = self.selected_ids() {
+                if let Some((project_id, task_id)) = self.selected_ids()
+                    && self.stop_stale_agents(project_id, task_id)
+                {
                     match self.manager.clarify_task_with_git(
                         project_id,
                         task_id,
@@ -863,16 +1078,34 @@ impl Dashboard {
         let Some(project_id) = self.selected_project().map(|project| project.id) else {
             return;
         };
-        if !herdr_session_available() {
-            self.error =
-                Some("Start Cronos-AI inside a Herdr-managed pane to run tasks.".to_owned());
-            return;
-        }
         if self
             .selected_project()
             .is_none_or(|project| project.repository.is_none())
         {
             self.error = Some("Configure a Git repository before starting tasks.".to_owned());
+            return;
+        }
+        if self
+            .selected_project()
+            .is_none_or(|project| project.check_command.is_none())
+        {
+            self.error = Some(
+                "Configure a check command (cronos-ai project set-check-command) before starting tasks."
+                    .to_owned(),
+            );
+            return;
+        }
+        if !herdr_session_available() {
+            self.error =
+                Some("Start Cronos-AI inside a Herdr-managed pane to run tasks.".to_owned());
+            return;
+        }
+        if let Ok(tasks) = self.manager.list_tasks(project_id)
+            && let Some(task) = tasks
+                .iter()
+                .find(|task| task.status == TaskStatus::InProgress)
+        {
+            self.resume_interrupted_task(project_id, task.id);
             return;
         }
         match self.manager.start_next_task(project_id) {
@@ -897,6 +1130,43 @@ impl Dashboard {
         }
     }
 
+    /// Resumes an In Progress task whose orchestrator is no longer running.
+    fn resume_interrupted_task(
+        &mut self,
+        project_id: crate::model::ProjectId,
+        task_id: crate::model::TaskId,
+    ) {
+        let Ok(task) = self.manager.get_task(project_id, task_id) else {
+            return;
+        };
+        if task
+            .current_step
+            .as_deref()
+            .and_then(WorkflowStep::parse)
+            .is_some_and(WorkflowStep::requires_human_approval)
+        {
+            self.error =
+                Some("The active task is waiting for your approval in its details.".to_owned());
+            return;
+        }
+        match cancel_interrupted_agents(
+            &self.manager,
+            &ToolCommands::default(),
+            project_id,
+            task_id,
+        ) {
+            Ok(cancelled) => {
+                self.workflow_status = Some(format!(
+                    "Resuming {} ({cancelled} interrupted agents cancelled)",
+                    terminal_safe(&task.title)
+                ));
+                self.continue_task(project_id, task_id);
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+        self.refresh_for_ui();
+    }
+
     fn launch_pi_for_task(
         &mut self,
         project_id: crate::model::ProjectId,
@@ -909,9 +1179,8 @@ impl Dashboard {
             .manager
             .validated_task_worktree_path(project_id, task_id)
             .map_err(|error| error.to_string())?;
-        let extension = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("extensions")
-            .join("cronos-workflow.ts");
+        let extension = crate::integrations::install_workflow_extension(self.manager.data_dir())
+            .map_err(|error| format!("could not install the workflow extension: {error}"))?;
         let executable = std::env::current_exe().map_err(|error| error.to_string())?;
         let commands = ToolCommands::default();
         let command = commands
@@ -957,27 +1226,7 @@ impl Dashboard {
                         let current_step =
                             task.current_step.as_deref().and_then(WorkflowStep::parse);
                         if current_step == Some(WorkflowStep::LocalMerge) {
-                            match self.manager.merge_and_complete_task(
-                                project_id,
-                                task_id,
-                                &GitAdapter::default(),
-                            ) {
-                                Ok(_) => {
-                                    self.workflow_status = Some(
-                                        "Task merged locally and completed; nothing was pushed."
-                                            .to_owned(),
-                                    )
-                                }
-                                Err(error) => {
-                                    let _ = self.manager.set_task_status(
-                                        project_id,
-                                        task_id,
-                                        TaskStatus::Error,
-                                    );
-                                    self.error = Some(error.to_string());
-                                }
-                            }
-                            self.refresh_for_ui();
+                            self.finish_local_merge(project_id, task_id);
                         } else if !current_step.is_some_and(WorkflowStep::requires_human_approval) {
                             let _ = self.manager.set_task_status(
                                 project_id,
@@ -1084,23 +1333,27 @@ fn draw(frame: &mut Frame, app: &Dashboard) {
         Screen::Projects => draw_projects(frame, app, areas[1]),
         Screen::Tasks => draw_tasks(frame, app, areas[1]),
         Screen::TaskDetail => draw_task_detail(frame, app, areas[1]),
+        Screen::Review => draw_review(frame, app, areas[1]),
     }
     let help = match app.screen {
         Screen::Projects => "↑/↓ select  Enter open  n new project  r refresh  q quit",
         Screen::Tasks => {
-            "↑/↓ select  Enter details  n new task  s start next ready task  Backspace projects  r refresh  q quit"
+            "↑/↓ select  Enter details  n new task  s start/resume  Backspace projects  r refresh  q quit"
         }
         Screen::TaskDetail
             if app
                 .selected_task()
                 .is_some_and(|task| task.status == TaskStatus::Error) =>
         {
-            "r retry + discard  c clarify + discard  a abandon  Backspace tasks  q quit"
+            "t retry step  r retry + discard  c clarify + discard  v review  a abandon  Backspace tasks  q quit"
         }
         Screen::TaskDetail if app.active_approval_gate().is_some() => {
-            "y approve  n request revision  a abandon  ↑/↓ activity  Backspace tasks  q quit"
+            "v review  y approve  n request revision  a abandon  ↑/↓ activity  Backspace tasks  q quit"
         }
-        Screen::TaskDetail => "a abandon  ↑/↓ activity  Backspace tasks  r refresh  q quit",
+        Screen::TaskDetail => {
+            "v review  a abandon  ↑/↓ activity  Backspace tasks  r refresh  q quit"
+        }
+        Screen::Review => "↑/↓ scroll  PgUp/PgDn page  Backspace details  q quit",
     };
     let mut footer = shortcut_help_line(help).spans;
     if let Some(status) = &app.workflow_status {
@@ -1146,10 +1399,15 @@ fn draw_dialog(frame: &mut Frame, app: &Dashboard) {
             (
                 "Create project".to_owned(),
                 format!(
-                    "{}\n{}\n{}\n\nTab/Shift+Tab fields  Enter create  Esc cancel",
+                    "{}\n{}\n{}\n{}\n\nTab/Shift+Tab fields  Enter create  Esc cancel",
                     field_line(ProjectField::Name, "Name", &form.name),
                     field_line(ProjectField::Description, "Description", &form.description),
                     field_line(ProjectField::Repository, "Git repository", &form.repository),
+                    field_line(
+                        ProjectField::CheckCommand,
+                        "Check command",
+                        &form.check_command
+                    ),
                 ),
             )
         }
@@ -1353,13 +1611,27 @@ fn draw_task_detail(frame: &mut Frame, app: &Dashboard, area: ratatui::layout::R
     let areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(9),
+            Constraint::Length(12),
             Constraint::Length(6),
             Constraint::Min(2),
         ])
         .split(area);
     let description = terminal_safe(task.description.as_deref().unwrap_or("No description."));
-    let current_step = terminal_safe(task.current_step.as_deref().unwrap_or("Not started"));
+    let mut current_step = terminal_safe(task.current_step.as_deref().unwrap_or("Not started"));
+    if task.status == TaskStatus::InProgress
+        && let Some(started) = task
+            .current_step
+            .as_deref()
+            .and_then(|step| task.step_started_at_unix_secs.get(step))
+    {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(*started, |duration| duration.as_secs());
+        current_step.push_str(&format!(
+            " (running {})",
+            elapsed_label(now.saturating_sub(*started))
+        ));
+    }
     let title = terminal_safe(&task.title);
     let summary = Text::from(vec![
         Line::from(vec![
@@ -1387,7 +1659,19 @@ fn draw_task_detail(frame: &mut Frame, app: &Dashboard, area: ratatui::layout::R
             ),
             Span::raw(description),
         ]),
-        Line::from(format!("Attempt: {}", task.attempt)),
+        Line::from(format!(
+            "Attempt: {}  |  Automatic revisions: {}/{MAX_AUTOMATIC_REVISIONS}",
+            task.attempt, task.automatic_revisions
+        )),
+        Line::from(format!(
+            "Worktree: {}",
+            terminal_safe(task.worktree.as_deref().unwrap_or("not created"))
+        )),
+        Line::from(format!(
+            "Branch: {}  |  OpenSpec change: {}",
+            crate::integrations::GitAdapter::worktree_branch(task.id, task.attempt),
+            task.openspec_change()
+        )),
         Line::from(vec![
             Span::raw("Specifications: "),
             Span::styled(
@@ -1465,10 +1749,37 @@ fn draw_task_detail(frame: &mut Frame, app: &Dashboard, area: ratatui::layout::R
     );
 }
 
+fn draw_review(frame: &mut Frame, app: &Dashboard, area: ratatui::layout::Rect) {
+    let title = app.selected_task().map_or("Review".to_owned(), |task| {
+        format!("Review — {}", terminal_safe(&task.title))
+    });
+    frame.render_widget(
+        Paragraph::new(
+            app.review_text
+                .iter()
+                .map(|line| Line::raw(line.clone()))
+                .collect::<Vec<_>>(),
+        )
+        .scroll((app.review_scroll, 0))
+        .block(Block::default().borders(Borders::ALL).title(title)),
+        area,
+    );
+}
+
+fn elapsed_label(seconds: u64) -> String {
+    let (hours, minutes, seconds) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
+    if hours > 0 {
+        format!("{hours}h {minutes:02}m")
+    } else {
+        format!("{minutes}m {seconds:02}s")
+    }
+}
+
 fn recovery_record_line(record: &crate::model::RecoveryRecord) -> Line<'static> {
     let action = match record.action {
         crate::model::RecoveryAction::Retry => "retry",
         crate::model::RecoveryAction::Clarify => "clarification",
+        crate::model::RecoveryAction::RetryStep => "step retry",
     };
     Line::from(format!(
         "Attempt {} — {action}: {}",
@@ -1526,7 +1837,10 @@ fn task_status_color(status: &TaskStatus) -> Color {
 fn agent_status_color(status: &AgentStatus) -> Color {
     match status {
         AgentStatus::Starting | AgentStatus::Running => PRIMARY,
-        AgentStatus::Waiting | AgentStatus::Cancelled | AgentStatus::Blocked => WARNING,
+        AgentStatus::Waiting
+        | AgentStatus::Cancelled
+        | AgentStatus::Blocked
+        | AgentStatus::ChangesRequested => WARNING,
         AgentStatus::Completed => SUCCESS,
         AgentStatus::Failed => ERROR,
     }
@@ -1645,6 +1959,7 @@ fn agent_status_label(status: &AgentStatus) -> &'static str {
         AgentStatus::Running => "running",
         AgentStatus::Waiting => "waiting",
         AgentStatus::Completed => "completed",
+        AgentStatus::ChangesRequested => "changes requested",
         AgentStatus::Failed => "failed",
         AgentStatus::Cancelled => "cancelled",
         AgentStatus::Blocked => "blocked",
@@ -1842,6 +2157,161 @@ mod tests {
         assert_eq!(projects[0].status, ProjectStatus::Active);
         assert_eq!(app.selected_project().unwrap().id, projects[0].id);
         assert!(matches!(app.dialog, Dialog::None));
+    }
+
+    #[test]
+    fn project_form_saves_check_command_as_separate_arguments() {
+        let root = tempfile::tempdir().unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+        app.handle_key(KeyCode::Char('n'));
+        for character in "Factory".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        for _ in 0..3 {
+            app.handle_key(KeyCode::Tab);
+        }
+        let backend = render(&app);
+        assert!(rendered_text_position(&backend, "> Check command:").1 > 0);
+        for character in "./scripts/check.sh  --all".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Enter);
+        let project = &ProjectManager::new(root.path())
+            .unwrap()
+            .list_projects()
+            .unwrap()[0];
+        assert_eq!(
+            project.check_command.as_deref(),
+            Some(&["./scripts/check.sh".to_owned(), "--all".to_owned()][..])
+        );
+    }
+
+    #[test]
+    fn task_details_show_location_progress_and_step_retry() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(root.path()).unwrap();
+        let project = manager.create_project("Demo".to_owned(), None).unwrap();
+        let task = manager
+            .create_task(
+                project.id,
+                "Build".to_owned(),
+                None,
+                Priority::Medium,
+                Vec::new(),
+            )
+            .unwrap();
+        manager.start_next_task(project.id).unwrap().unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+        app.handle_key(KeyCode::Enter);
+        app.handle_key(KeyCode::Enter);
+        let backend = render(&app);
+        rendered_text_position(&backend, "specification-generation (running 0m");
+        rendered_text_position(&backend, "Worktree: not created");
+        rendered_text_position(
+            &backend,
+            &format!("OpenSpec change: {}", task.openspec_change()),
+        );
+        rendered_text_position(&backend, "Automatic revisions: 0/3");
+
+        app.handle_key(KeyCode::Char('v'));
+        assert_eq!(app.screen, Screen::TaskDetail);
+        assert!(app.error.as_deref().unwrap().contains("no Git repository"));
+
+        manager
+            .set_task_status(project.id, task.id, TaskStatus::Error)
+            .unwrap();
+        app.refresh_for_ui();
+        let backend = render(&app);
+        assert_rendered_color(&backend, "t retry step", SHORTCUT);
+        app.handle_key(KeyCode::Char('t'));
+        let resumed = manager.get_task(project.id, task.id).unwrap();
+        assert_eq!(resumed.status, TaskStatus::InProgress, "{:?}", app.error);
+        assert_eq!(resumed.attempt, 1);
+        assert_eq!(
+            resumed.recovery_history.last().unwrap().action,
+            crate::model::RecoveryAction::RetryStep
+        );
+    }
+
+    #[test]
+    fn review_view_shows_task_branch_commits_and_scrolls() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        std::fs::create_dir_all(repository.join("openspec")).unwrap();
+        let git = |dir: &std::path::Path, args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&repository, &["init"]);
+        git(&repository, &["config", "user.name", "Cronos Tests"]);
+        git(
+            &repository,
+            &["config", "user.email", "cronos@example.invalid"],
+        );
+        std::fs::write(
+            repository.join("openspec/config.yaml"),
+            "schema: spec-driven\n",
+        )
+        .unwrap();
+        git(&repository, &["add", "-A"]);
+        git(&repository, &["commit", "-m", "initial"]);
+        let manager = ProjectManager::new(temp.path().join("data")).unwrap();
+        let project = manager
+            .create_project_with_repository(
+                "Demo".to_owned(),
+                None,
+                Some(&repository),
+                None,
+                &crate::integrations::GitAdapter::default(),
+            )
+            .unwrap();
+        let task = manager
+            .create_task(
+                project.id,
+                "Build".to_owned(),
+                None,
+                Priority::Medium,
+                Vec::new(),
+            )
+            .unwrap();
+        manager.start_next_task(project.id).unwrap().unwrap();
+        let worktree = manager
+            .prepare_task_worktree(
+                project.id,
+                task.id,
+                &crate::integrations::GitAdapter::default(),
+            )
+            .unwrap();
+        std::fs::write(worktree.join("feature.txt"), "new\n").unwrap();
+        git(&worktree, &["add", "-A"]);
+        git(&worktree, &["commit", "-m", "feat: add the feature"]);
+
+        let mut app =
+            Dashboard::new(ProjectManager::new(temp.path().join("data")).unwrap()).unwrap();
+        app.handle_key(KeyCode::Enter);
+        app.handle_key(KeyCode::Enter);
+        app.handle_key(KeyCode::Char('v'));
+        assert_eq!(app.screen, Screen::Review);
+        let text = app.review_text.join("\n");
+        assert!(text.contains("feat: add the feature"));
+        assert!(text.contains("feature.txt"));
+        assert!(text.contains("check command has not run"));
+        let backend = render(&app);
+        rendered_text_position(&backend, "Review — Build");
+        app.handle_key(KeyCode::Down);
+        assert_eq!(app.review_scroll, 1);
+        app.handle_key(KeyCode::Backspace);
+        assert_eq!(app.screen, Screen::TaskDetail);
     }
 
     #[test]
@@ -2361,5 +2831,158 @@ mod tests {
             .unwrap();
         app.refresh().unwrap();
         assert_eq!(app.selected_activity, 1);
+    }
+
+    fn git(root: &std::path::Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn openspec_repository(root: &std::path::Path) -> std::path::PathBuf {
+        let repository = root.join("repo");
+        std::fs::create_dir_all(repository.join("openspec")).unwrap();
+        git(&repository, &["init"]);
+        git(&repository, &["config", "user.name", "Cronos Test"]);
+        git(
+            &repository,
+            &["config", "user.email", "cronos@example.invalid"],
+        );
+        std::fs::write(repository.join("openspec/config.yaml"), "schema: x\n").unwrap();
+        git(&repository, &["add", "-A"]);
+        git(&repository, &["commit", "-m", "initial"]);
+        repository
+    }
+
+    #[test]
+    fn starting_the_queue_requires_a_check_command() {
+        let root = tempfile::tempdir().unwrap();
+        let repository = openspec_repository(root.path());
+        let manager = ProjectManager::new(root.path().join("data")).unwrap();
+        let project = manager
+            .create_project_with_repository(
+                "Demo".to_owned(),
+                None,
+                Some(&repository),
+                None,
+                &crate::integrations::GitAdapter::default(),
+            )
+            .unwrap();
+        let task = manager
+            .create_task(
+                project.id,
+                "Needs a check".to_owned(),
+                None,
+                Priority::Medium,
+                Vec::new(),
+            )
+            .unwrap();
+        let mut app =
+            Dashboard::new(ProjectManager::new(root.path().join("data")).unwrap()).unwrap();
+        app.handle_key(KeyCode::Enter);
+        app.handle_key(KeyCode::Char('s'));
+        assert!(app.error.as_deref().unwrap().contains("check command"));
+        assert_eq!(
+            manager.get_task(project.id, task.id).unwrap().status,
+            TaskStatus::Pending
+        );
+    }
+
+    #[test]
+    fn resume_at_local_merge_waits_for_a_clean_base_then_merges() {
+        let root = tempfile::tempdir().unwrap();
+        let repository = openspec_repository(root.path());
+        let data = root.path().join("data");
+        let manager = ProjectManager::new(&data).unwrap();
+        let git_adapter = crate::integrations::GitAdapter::default();
+        let project = manager
+            .create_project_with_repository(
+                "Demo".to_owned(),
+                None,
+                Some(&repository),
+                Some(vec!["true".to_owned()]),
+                &git_adapter,
+            )
+            .unwrap();
+        let task = manager
+            .create_task(
+                project.id,
+                "Merge me".to_owned(),
+                None,
+                Priority::Medium,
+                Vec::new(),
+            )
+            .unwrap();
+        manager.start_next_task(project.id).unwrap().unwrap();
+        let worktree = manager
+            .prepare_task_worktree(project.id, task.id, &git_adapter)
+            .unwrap();
+        std::fs::write(worktree.join("feature.txt"), "done\n").unwrap();
+        git(&worktree, &["add", "feature.txt"]);
+        git(&worktree, &["commit", "-m", "feat: add feature"]);
+        manager
+            .complete_workflow_step(project.id, task.id, WorkflowStep::SpecificationGeneration)
+            .unwrap();
+        manager
+            .record_approval(
+                project.id,
+                task.id,
+                ApprovalGate::Specifications,
+                ApprovalDecision::Approved,
+                None,
+            )
+            .unwrap();
+        for step in [
+            WorkflowStep::CodeGeneration,
+            WorkflowStep::CodeReview,
+            WorkflowStep::Verification,
+        ] {
+            manager
+                .complete_workflow_step(project.id, task.id, step)
+                .unwrap();
+        }
+        manager
+            .record_approval(
+                project.id,
+                task.id,
+                ApprovalGate::FinalCode,
+                ApprovalDecision::Approved,
+                None,
+            )
+            .unwrap();
+        manager
+            .complete_workflow_step(project.id, task.id, WorkflowStep::Documentation)
+            .unwrap();
+
+        let mut app = Dashboard::new(ProjectManager::new(&data).unwrap()).unwrap();
+        app.handle_key(KeyCode::Enter);
+        std::fs::write(repository.join("scratch.txt"), "local edit\n").unwrap();
+        app.resume_interrupted_task(project.id, task.id);
+        assert!(
+            app.error
+                .as_deref()
+                .unwrap()
+                .contains("uncommitted changes")
+        );
+        let waiting = manager.get_task(project.id, task.id).unwrap();
+        assert_eq!(waiting.status, TaskStatus::InProgress);
+        assert_eq!(waiting.current_step.as_deref(), Some("local-merge"));
+
+        std::fs::remove_file(repository.join("scratch.txt")).unwrap();
+        app.resume_interrupted_task(project.id, task.id);
+        assert_eq!(
+            manager.get_task(project.id, task.id).unwrap().status,
+            TaskStatus::Completed
+        );
+        assert!(repository.join("feature.txt").is_file());
     }
 }

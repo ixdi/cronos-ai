@@ -13,6 +13,8 @@ const PROFILE_FILE: &str = "agent-profiles.json";
 const MAX_PROFILE_FILE_BYTES: u64 = 1024 * 1024;
 const MAX_PROFILES: usize = 100;
 const MAX_RESOURCES_PER_PROFILE: usize = 32;
+pub const MAX_TIMEOUT_MINUTES: u32 = 480;
+const MAX_MODEL_CHARS: usize = 128;
 
 #[derive(Clone, Debug, Default)]
 pub struct AgentProfileCatalog {
@@ -31,6 +33,12 @@ pub struct AgentProfile {
     pub extensions: Vec<PathBuf>,
     #[serde(default)]
     pub mcp: Option<McpProfile>,
+    /// Pi `--model` pattern for workers using this profile.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Overrides the step's default agent time limit.
+    #[serde(default)]
+    pub timeout_minutes: Option<u32>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -80,6 +88,12 @@ pub enum AgentProfileError {
         "profile {profile} MCP config must be a regular JSON file with a nonempty mcpServers object: {path}"
     )]
     InvalidMcpConfig { profile: String, path: PathBuf },
+    #[error(
+        "profile {profile} model must be 1-{MAX_MODEL_CHARS} characters of letters, digits, and . _ : / -, starting with a letter or digit"
+    )]
+    InvalidModel { profile: String },
+    #[error("profile {profile} timeout_minutes must be between 1 and {MAX_TIMEOUT_MINUTES}")]
+    InvalidTimeout { profile: String },
 }
 
 #[derive(Deserialize)]
@@ -186,6 +200,23 @@ fn validate_profile(profile: &AgentProfile) -> Result<(), AgentProfileError> {
         }
     }
 
+    if profile
+        .model
+        .as_deref()
+        .is_some_and(|model| !valid_model(model))
+    {
+        return Err(AgentProfileError::InvalidModel {
+            profile: profile.id.clone(),
+        });
+    }
+    if profile
+        .timeout_minutes
+        .is_some_and(|minutes| minutes == 0 || minutes > MAX_TIMEOUT_MINUTES)
+    {
+        return Err(AgentProfileError::InvalidTimeout {
+            profile: profile.id.clone(),
+        });
+    }
     validate_resource_paths(&profile.id, "skills", &profile.skills, false)?;
     validate_resource_paths(&profile.id, "extensions", &profile.extensions, false)?;
     if let Some(mcp) = &profile.mcp {
@@ -266,6 +297,18 @@ fn validate_mcp_config(profile: &str, path: &Path) -> Result<(), AgentProfileErr
     Ok(())
 }
 
+fn valid_model(model: &str) -> bool {
+    // A leading '-' would be read by Pi as an option rather than the model value.
+    model
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_alphanumeric())
+        && model.len() <= MAX_MODEL_CHARS
+        && model
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | ':' | '/' | '-'))
+}
+
 fn valid_profile_id(id: &str) -> bool {
     let mut chars = id.chars();
     matches!(chars.next(), Some('a'..='z'))
@@ -288,6 +331,8 @@ mod tests {
             skills: Vec::new(),
             extensions: Vec::new(),
             mcp: None,
+            model: None,
+            timeout_minutes: None,
         }
     }
 
@@ -324,6 +369,8 @@ mod tests {
                 config: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .join("examples/security-review-mcp.json"),
             }),
+            model: Some("anthropic/claude-sonnet-4:high".to_owned()),
+            timeout_minutes: Some(45),
         }]);
         assert!(catalog.is_ok());
     }
@@ -399,6 +446,23 @@ mod tests {
             AgentProfileCatalog::from_profiles(vec![missing]),
             Err(AgentProfileError::InvalidResourcePath { .. })
         ));
+
+        for model in ["model; rm -rf /", "--extension", "-x"] {
+            let mut bad_model = profile("security-reviewer", &["code-review"]);
+            bad_model.model = Some(model.to_owned());
+            assert!(matches!(
+                AgentProfileCatalog::from_profiles(vec![bad_model]),
+                Err(AgentProfileError::InvalidModel { .. })
+            ));
+        }
+        for minutes in [0, super::MAX_TIMEOUT_MINUTES + 1] {
+            let mut bad_timeout = profile("security-reviewer", &["code-review"]);
+            bad_timeout.timeout_minutes = Some(minutes);
+            assert!(matches!(
+                AgentProfileCatalog::from_profiles(vec![bad_timeout]),
+                Err(AgentProfileError::InvalidTimeout { .. })
+            ));
+        }
     }
 
     #[test]

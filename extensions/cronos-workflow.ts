@@ -4,6 +4,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+// Task records may be up to 1 MiB on disk (storage MAX_JSON_BYTES); leave room for pretty-printing.
+const TASK_JSON_BUFFER = 2 * 1024 * 1024;
 
 const agentSteps = [
 	"specification-generation",
@@ -12,6 +14,14 @@ const agentSteps = [
 	"verification",
 	"documentation",
 ] as const;
+
+// Findings for the next revision must survive several reviewers plus the check command, so keep
+// the current attempt's recent events rather than a fixed handful.
+function currentAttemptActivity(value: any) {
+	return (value.agent_activity ?? [])
+		.filter((event: any) => event.attempt === value.attempt)
+		.slice(-24);
+}
 
 function taskSnapshot(value: any) {
 	return {
@@ -22,9 +32,11 @@ function taskSnapshot(value: any) {
 		dependencies: value.dependencies,
 		status: value.status,
 		attempt: value.attempt,
+		automatic_revisions: value.automatic_revisions ?? 0,
+		openspec_change: `cronos-${String(value.id).replaceAll("-", "").slice(0, 8)}`,
 		current_step: value.current_step,
 		step_started_at_unix_secs: value.step_started_at_unix_secs,
-		agent_activity: value.agent_activity?.slice(-8) ?? [],
+		agent_activity: currentAttemptActivity(value),
 		approval_history: value.approval_history?.slice(-6) ?? [],
 		recovery_history: value.recovery_history?.slice(-5).map((record: any) => ({
 			attempt: record.attempt,
@@ -102,7 +114,7 @@ const taskStateTool = defineTool<
 			const { stdout } = await execFileAsync(binary, args, {
 				signal,
 				timeout: 10_000,
-				maxBuffer: 128 * 1024,
+				maxBuffer: TASK_JSON_BUFFER,
 			});
 			const value = taskSnapshot(JSON.parse(stdout));
 			return {
@@ -142,7 +154,7 @@ const runStepTool = defineTool<
 	name: "cronos_run_step",
 	label: "Run Cronos workflow step",
 	description:
-		"Run the current agent step with independent Pi sub-agents. Call cronos_agent_profiles first and assign a returned profile_id only when its resources fit that agent. Cronos validates ordering, profile IDs, approval gates, task status, and the task worktree, then waits for every result before advancing.",
+		"Run the current agent step with Pi sub-agents. Specification and code generation take exactly one agent; code review, verification, and documentation take one to four independent agents. Call cronos_agent_profiles first and assign a returned profile_id only when its resources fit that agent. Cronos appends its own contract (result file, OpenSpec change, write rules) to each prompt, validates ordering, profiles, approvals, and the worktree, waits for every agent, and decides the next step from their structured results.",
 	parameters: runStepParameters,
 	async execute(_toolCallId, params, signal) {
 		const binary = process.env.CRONOS_AI_BIN || "cronos-ai";
@@ -159,17 +171,17 @@ const runStepTool = defineTool<
 			JSON.stringify(params.agents),
 		];
 		try {
+			// No client timeout: Rust bounds every agent with its step or profile time limit.
 			const { stdout } = await execFileAsync(binary, args, {
 				signal,
-				timeout: 180_000,
-				maxBuffer: 512 * 1024,
+				maxBuffer: TASK_JSON_BUFFER,
 			});
 			const value = JSON.parse(stdout);
 			const snapshot = {
 				status: value.status,
 				attempt: value.attempt,
 				current_step: value.current_step,
-				agent_activity: value.agent_activity?.slice(-8) ?? [],
+				agent_activity: currentAttemptActivity(value),
 			};
 			return {
 				content: [{ type: "text", text: JSON.stringify(snapshot) }],
@@ -192,7 +204,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool(runStepTool);
 
 	pi.on("before_agent_start", (event) => ({
-		systemPrompt: `${event.systemPrompt}\n\nCronos-AI workflow instructions:\n- Read the assigned task using cronos_task_state before acting. On a clarified attempt, apply only the clarification note recorded for the current attempt; older attempts are history, not active instructions.\n- Run only the task's current agent step using cronos_run_step; Rust validates status, step order, approvals, and the task worktree.\n- Wait for each step tool call to finish before continuing. Do not bypass the specification or final-code approval gates; the human handles those in the Cronos TUI.\n- After final-code approval and documentation generation, commit all task changes (implementation and docs) in the task worktree. Rust performs the local merge after Pi settles; do not push or attempt remote publishing.\n- Do not modify task status, approval records, or worktree paths directly.`,
+		systemPrompt: `${event.systemPrompt}\n\nCronos-AI workflow instructions:\n- Read the assigned task using cronos_task_state before acting. On a clarified attempt, apply only the clarification note recorded for the current attempt; older attempts are history, not active instructions.\n- You may use the read tool to inspect the task worktree (for example the task's OpenSpec change under openspec/changes/ and the code) to write specific prompts. You cannot modify files.\n- Run the task's current agent step using cronos_run_step, then read the returned state and keep running steps while the current step is an agent step. Stop when the task reaches an approval gate, local-merge, Error, or Completed.\n- When the task returns to code-generation after review, verification, or a merge conflict, pass the recorded findings (agent_activity with status changes_requested) to the code-generation agent.\n- Do not bypass the specification or final-code approval gates; the human handles those in the Cronos TUI. Rust archives the OpenSpec change, makes the documentation commit, and performs the local merge; nobody pushes.`,
 	}));
 
 	pi.on("session_start", async () => {
