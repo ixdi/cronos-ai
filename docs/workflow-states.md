@@ -4,23 +4,61 @@
 
 Cronos starts at most one task at a time. `start_next_task` selects the highest-priority ready Pending task after checking its dependencies. While a task is In Progress or Error, the queue does not start another task. An Error task must be recovered or explicitly abandoned first.
 
+A project needs a local Git repository with a committed `openspec/` directory (`openspec init`, then commit it) and a check command before its tasks can start.
+
 ## Ordered steps
 
-1. `specification-generation` — Pi submits independent agent plans to `cronos_run_step`; the Rust workflow engine waits for every agent.
-2. `specification-approval` — the human approves or requests revisions in the TUI. Approval advances to code generation; rejection records a note and returns to specification generation while keeping the task In Progress.
-3. `code-generation`
-4. `code-review`
-5. `verification`
-6. `final-approval` — the human approves or requests revisions. Approval advances to documentation; rejection returns to code generation and keeps the task In Progress.
-7. `documentation`
-8. `local-merge` — completion is permitted only after final-code approval and local merge.
+| # | Step | Agents | What Rust enforces |
+|---|---|---|---|
+| 1 | `specification-generation` | exactly 1 | The agent writes and commits OpenSpec change `cronos-<first 8 hex of the task ID>`. The worktree must be clean and `openspec validate <change> --strict` must pass. |
+| 2 | `specification-approval` | human | Approve to continue, or request a revision with a note to return to step 1. |
+| 3 | `code-generation` | exactly 1 | The agent implements the change with tests and commits. The worktree must be clean. |
+| 4 | `code-review` | 1-4 in parallel | Read-only: the commit and file status must not change. |
+| 5 | `verification` | 1-4 in parallel | Read-only. Then Rust runs the project check command in the worktree. |
+| 6 | `final-approval` | human | Approve to continue, or request a revision with a note to return to step 3. |
+| 7 | `documentation` | 1-4 in parallel | Agents edit documentation without committing. Rust archives the OpenSpec change and makes one `docs: document <title>` commit. |
+| 8 | `local-merge` | Rust | Requires a clean base repository and worktree, then runs `git merge --no-ff`. Nothing is pushed. |
 
-The Rust host accepts agent work only for the current agent step. It records Starting and completion activity and advances only after the step barrier succeeds. If an agent fails, siblings are canceled, late results are ignored, and the task becomes Error without advancing. Steps that require human approval cannot be advanced by an agent tool.
+Steps run in order; agents within one step run in parallel and the step waits for all of them. Steps that need a human cannot be advanced by an agent tool.
 
-## Error recovery
+## Agent results and time limits
 
-For an Error task, open task details and press **r** to retry from specification generation or **c** to supply clarification for replacement specifications. Clarification is required to be nonblank. Both actions remove the failed attempt's exact validated Git worktree and branch, create a new attempt, set status back to In Progress, reset the active step to specification generation, invalidate prior-attempt approvals, and assign a fresh worktree. Agent/approval/recovery history remains tagged and auditable; the removed path is retained in recovery metadata. A retry discards previous downstream output; clarification is incorporated into new specifications, which still require human approval.
+Rust appends a fixed contract to every agent prompt: the result file, the OpenSpec change, the step's write rules, and that agents never push or edit Cronos state. Every agent ends by writing `.cronos/results/<step>/<agent>.json`:
 
-After final-code approval, the documentation step runs in the task worktree and commits all task changes. Once Pi settles, Rust verifies clean worktrees and performs a local Git merge; conflicts are aborted and reported as Error. The base repository must be clean before merging. Cronos-AI does not push or publish remotely.
+```json
+{"status": "success" | "changes_requested" | "failed", "summary": "...", "findings": ["..."]}
+```
 
-Each task may keep a validated worktree only at its assigned directory under the Cronos data directory. Pi's project-local extension submits step plans through a narrow internal Rust command; the host validates the task status, current step, approvals, agent names, and worktree before starting Herdr agents. The extension does not expose arbitrary status, approval, or path writes to the model.
+Rust decides the step outcome from these files, never from terminal output. `.cronos/` is listed in the repository's local `info/exclude`, so result files and check output are never committed. Cronos refuses to read or remove result files through a symlinked directory.
+
+Agents run under a time limit: 30 minutes for specification generation, code review, and documentation; 60 minutes for code generation and verification. A profile's `timeout_minutes` overrides it. The check command has a fixed 60-minute limit; on timeout its whole process group is stopped.
+
+## Outcomes
+
+| Event | Result |
+|---|---|
+| An agent crashes, exceeds its limit, blocks on a prompt, or leaves a missing, invalid, or `failed` result | Siblings are cancelled (including any that had not started yet), every pane the step opened is closed, and the task becomes **Error** |
+| A read-only step changed the worktree, a writer left uncommitted work, or OpenSpec validation or archive failed | **Error** |
+| `changes_requested` from review or verification, a failing check command, or a check that leaves new files in the worktree | Findings are recorded, final-code approval for the attempt is cleared, and the task returns to `code-generation` (**In Progress**) |
+| More than 3 automatic revisions in one attempt | **Error**, with the reason recorded in agent activity |
+| Merge conflict | The merge is aborted, the conflict is recorded, and the task returns to `code-generation` to merge the base branch and resolve it (counts as an automatic revision) |
+| Any other merge failure (for example a failing Git hook) | The merge is aborted and the task becomes **Error** |
+| Base repository dirty at merge time | The task waits at `local-merge`; clean the base and press **s** |
+
+If the task branch changes the check program itself (for example `./scripts/check.sh`), the check runs the agent's version. Cronos records a warning in the check-command activity and at the top of the review view so the human sees it before final approval.
+
+## One step process per task
+
+`cronos-ai internal workflow run-step` holds an exclusive per-task lock (`locks/<task-id>.lock` in the data directory) while its agents run. The operating system releases the lock when the process exits, even after a crash. Resume, step retry, retry, and clarification refuse to act while the lock is held. After the lock is free, they first stop any agents the dead process left running and close their panes. A step that finishes after the task was changed by a human (another attempt, a different step, or no longer In Progress) discards its results. Herdr agent names include the attempt, so a new attempt never reuses an older attempt's agents.
+
+## Recovery
+
+| Action | Key | Effect |
+|---|---|---|
+| Retry step | **t** | Error becomes In Progress at the failed step, keeping the attempt, worktree, and approvals. Use it for transient failures. |
+| Retry | **r** | Discards the attempt's worktree and branch and starts a new attempt at specification generation. Downstream outputs are not reused. |
+| Clarify | **c** | Like Retry, plus context that the new specifications must apply. The new specifications need approval again. |
+| Resume | **s** | For an In Progress task with no running orchestrator (for example, after the TUI was closed). Cancels unfinished agents, then retries the merge or restarts Pi at the current step. |
+| Abandon | **a** | Sets Rejected and records a reason. |
+
+Agent, approval, and recovery history stays tagged by attempt; the removed worktree path is kept in recovery history.

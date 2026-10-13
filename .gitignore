@@ -14,5 +14,5 @@ coverage/
 
 /target/
 
-# Keep local OpenSpec planning artifacts out of future commits
-/openspec/
+# OpenSpec config and specs are tracked; working changes stay local
+/openspec/changes/

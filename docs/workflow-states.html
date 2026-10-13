@@ -29,22 +29,154 @@
 			<article class="reference-content">
 <h2 id="task-queue">Task queue</h2>
 <p>Cronos starts at most one task at a time. <code>start_next_task</code> selects the highest-priority ready Pending task after checking its dependencies. While a task is In Progress or Error, the queue does not start another task. An Error task must be recovered or explicitly abandoned first.</p>
+<p>A project needs a local Git repository with a committed <code>openspec/</code> directory (<code>openspec init</code>, then commit it) and a check command before its tasks can start.</p>
 <h2 id="ordered-steps">Ordered steps</h2>
-<ol type="1">
-<li><code>specification-generation</code> — Pi submits independent agent plans to <code>cronos_run_step</code>; the Rust workflow engine waits for every agent.</li>
-<li><code>specification-approval</code> — the human approves or requests revisions in the TUI. Approval advances to code generation; rejection records a note and returns to specification generation while keeping the task In Progress.</li>
-<li><code>code-generation</code></li>
-<li><code>code-review</code></li>
-<li><code>verification</code></li>
-<li><code>final-approval</code> — the human approves or requests revisions. Approval advances to documentation; rejection returns to code generation and keeps the task In Progress.</li>
-<li><code>documentation</code></li>
-<li><code>local-merge</code> — completion is permitted only after final-code approval and local merge.</li>
-</ol>
-<p>The Rust host accepts agent work only for the current agent step. It records Starting and completion activity and advances only after the step barrier succeeds. If an agent fails, siblings are canceled, late results are ignored, and the task becomes Error without advancing. Steps that require human approval cannot be advanced by an agent tool.</p>
-<h2 id="error-recovery">Error recovery</h2>
-<p>For an Error task, open task details and press <strong>r</strong> to retry from specification generation or <strong>c</strong> to supply clarification for replacement specifications. Clarification is required to be nonblank. Both actions remove the failed attempt's exact validated Git worktree and branch, create a new attempt, set status back to In Progress, reset the active step to specification generation, invalidate prior-attempt approvals, and assign a fresh worktree. Agent/approval/recovery history remains tagged and auditable; the removed path is retained in recovery metadata. A retry discards previous downstream output; clarification is incorporated into new specifications, which still require human approval.</p>
-<p>After final-code approval, the documentation step runs in the task worktree and commits all task changes. Once Pi settles, Rust verifies clean worktrees and performs a local Git merge; conflicts are aborted and reported as Error. The base repository must be clean before merging. Cronos-AI does not push or publish remotely.</p>
-<p>Each task may keep a validated worktree only at its assigned directory under the Cronos data directory. Pi's project-local extension submits step plans through a narrow internal Rust command; the host validates the task status, current step, approvals, agent names, and worktree before starting Herdr agents. The extension does not expose arbitrary status, approval, or path writes to the model.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Step</th>
+<th>Agents</th>
+<th>What Rust enforces</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>specification-generation</code></td>
+<td>exactly 1</td>
+<td>The agent writes and commits OpenSpec change <code>cronos-&lt;first 8 hex of the task ID&gt;</code>. The worktree must be clean and <code>openspec validate &lt;change&gt; --strict</code> must pass.</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>specification-approval</code></td>
+<td>human</td>
+<td>Approve to continue, or request a revision with a note to return to step 1.</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>code-generation</code></td>
+<td>exactly 1</td>
+<td>The agent implements the change with tests and commits. The worktree must be clean.</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>code-review</code></td>
+<td>1-4 in parallel</td>
+<td>Read-only: the commit and file status must not change.</td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>verification</code></td>
+<td>1-4 in parallel</td>
+<td>Read-only. Then Rust runs the project check command in the worktree.</td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>final-approval</code></td>
+<td>human</td>
+<td>Approve to continue, or request a revision with a note to return to step 3.</td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>documentation</code></td>
+<td>1-4 in parallel</td>
+<td>Agents edit documentation without committing. Rust archives the OpenSpec change and makes one <code>docs: document &lt;title&gt;</code> commit.</td>
+</tr>
+<tr>
+<td>8</td>
+<td><code>local-merge</code></td>
+<td>Rust</td>
+<td>Requires a clean base repository and worktree, then runs <code>git merge --no-ff</code>. Nothing is pushed.</td>
+</tr>
+</tbody>
+</table>
+<p>Steps run in order; agents within one step run in parallel and the step waits for all of them. Steps that need a human cannot be advanced by an agent tool.</p>
+<h2 id="agent-results-and-time-limits">Agent results and time limits</h2>
+<p>Rust appends a fixed contract to every agent prompt: the result file, the OpenSpec change, the step's write rules, and that agents never push or edit Cronos state. Every agent ends by writing <code>.cronos/results/&lt;step&gt;/&lt;agent&gt;.json</code>:</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode json"><code class="sourceCode json"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span><span class="dt">&quot;status&quot;</span><span class="fu">:</span> <span class="st">&quot;success&quot;</span> <span class="er">|</span> <span class="st">&quot;changes_requested&quot;</span> <span class="er">|</span> <span class="st">&quot;failed&quot;</span><span class="fu">,</span> <span class="dt">&quot;summary&quot;</span><span class="fu">:</span> <span class="st">&quot;...&quot;</span><span class="fu">,</span> <span class="dt">&quot;findings&quot;</span><span class="fu">:</span> <span class="ot">[</span><span class="st">&quot;...&quot;</span><span class="ot">]</span><span class="fu">}</span></span></code></pre></div>
+<p>Rust decides the step outcome from these files, never from terminal output. <code>.cronos/</code> is listed in the repository's local <code>info/exclude</code>, so result files and check output are never committed. Cronos refuses to read or remove result files through a symlinked directory.</p>
+<p>Agents run under a time limit: 30 minutes for specification generation, code review, and documentation; 60 minutes for code generation and verification. A profile's <code>timeout_minutes</code> overrides it. The check command has a fixed 60-minute limit; on timeout its whole process group is stopped.</p>
+<h2 id="outcomes">Outcomes</h2>
+<table>
+<thead>
+<tr>
+<th>Event</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>An agent crashes, exceeds its limit, blocks on a prompt, or leaves a missing, invalid, or <code>failed</code> result</td>
+<td>Siblings are cancelled (including any that had not started yet), every pane the step opened is closed, and the task becomes <strong>Error</strong></td>
+</tr>
+<tr>
+<td>A read-only step changed the worktree, a writer left uncommitted work, or OpenSpec validation or archive failed</td>
+<td><strong>Error</strong></td>
+</tr>
+<tr>
+<td><code>changes_requested</code> from review or verification, a failing check command, or a check that leaves new files in the worktree</td>
+<td>Findings are recorded, final-code approval for the attempt is cleared, and the task returns to <code>code-generation</code> (<strong>In Progress</strong>)</td>
+</tr>
+<tr>
+<td>More than 3 automatic revisions in one attempt</td>
+<td><strong>Error</strong>, with the reason recorded in agent activity</td>
+</tr>
+<tr>
+<td>Merge conflict</td>
+<td>The merge is aborted, the conflict is recorded, and the task returns to <code>code-generation</code> to merge the base branch and resolve it (counts as an automatic revision)</td>
+</tr>
+<tr>
+<td>Any other merge failure (for example a failing Git hook)</td>
+<td>The merge is aborted and the task becomes <strong>Error</strong></td>
+</tr>
+<tr>
+<td>Base repository dirty at merge time</td>
+<td>The task waits at <code>local-merge</code>; clean the base and press <strong>s</strong></td>
+</tr>
+</tbody>
+</table>
+<p>If the task branch changes the check program itself (for example <code>./scripts/check.sh</code>), the check runs the agent's version. Cronos records a warning in the check-command activity and at the top of the review view so the human sees it before final approval.</p>
+<h2 id="one-step-process-per-task">One step process per task</h2>
+<p><code>cronos-ai internal workflow run-step</code> holds an exclusive per-task lock (<code>locks/&lt;task-id&gt;.lock</code> in the data directory) while its agents run. The operating system releases the lock when the process exits, even after a crash. Resume, step retry, retry, and clarification refuse to act while the lock is held. After the lock is free, they first stop any agents the dead process left running and close their panes. A step that finishes after the task was changed by a human (another attempt, a different step, or no longer In Progress) discards its results. Herdr agent names include the attempt, so a new attempt never reuses an older attempt's agents.</p>
+<h2 id="recovery">Recovery</h2>
+<table>
+<thead>
+<tr>
+<th>Action</th>
+<th>Key</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Retry step</td>
+<td><strong>t</strong></td>
+<td>Error becomes In Progress at the failed step, keeping the attempt, worktree, and approvals. Use it for transient failures.</td>
+</tr>
+<tr>
+<td>Retry</td>
+<td><strong>r</strong></td>
+<td>Discards the attempt's worktree and branch and starts a new attempt at specification generation. Downstream outputs are not reused.</td>
+</tr>
+<tr>
+<td>Clarify</td>
+<td><strong>c</strong></td>
+<td>Like Retry, plus context that the new specifications must apply. The new specifications need approval again.</td>
+</tr>
+<tr>
+<td>Resume</td>
+<td><strong>s</strong></td>
+<td>For an In Progress task with no running orchestrator (for example, after the TUI was closed). Cancels unfinished agents, then retries the merge or restarts Pi at the current step.</td>
+</tr>
+<tr>
+<td>Abandon</td>
+<td><strong>a</strong></td>
+<td>Sets Rejected and records a reason.</td>
+</tr>
+</tbody>
+</table>
+<p>Agent, approval, and recovery history stays tagged by attempt; the removed worktree path is kept in recovery history.</p>
 			</article>
 			<div class="hero-actions reference-actions">
 				<a class="button secondary" href="index.html">Return to the user guide</a>
