@@ -57,3 +57,26 @@ An agent profile SHALL be able to select a Pi-compatible MCP configuration conta
 #### Scenario: MCP support is unavailable
 - **WHEN** a profile requests MCP resources but the configured Pi MCP adapter or configuration cannot be used
 - **THEN** Cronos-AI reports the failure and does not start the worker
+
+### Requirement: Manage agent profiles in the TUI
+The TUI SHALL let a user list, create, edit, and delete agent profiles, including their description, allowed workflow steps, skill paths, extension paths, MCP adapter and configuration, model, and time limit. Cronos-AI SHALL validate a profile completely before saving it, SHALL save the catalog atomically, and SHALL let the user open and fix a catalog that contains an invalid profile.
+
+#### Scenario: Create a profile
+- **WHEN** a user creates a valid profile in the TUI
+- **THEN** it is saved to the profile catalog and is available to the next workflow step
+
+#### Scenario: Edit a profile's resources
+- **WHEN** a user adds or removes skill or extension paths, or sets an MCP configuration, and saves
+- **THEN** the catalog contains exactly the edited resources
+
+#### Scenario: Invalid profile is not saved
+- **WHEN** a user saves a profile with a missing resource path, an invalid ID or model, no workflow step, or only one of the MCP adapter and configuration
+- **THEN** the catalog is unchanged and the editor stays open with the error
+
+#### Scenario: Fix a broken catalog
+- **WHEN** the catalog contains a profile whose resource no longer exists
+- **THEN** the TUI lists every profile, marks the invalid one with its error, and lets the user edit or delete it
+
+#### Scenario: Delete a profile
+- **WHEN** a user confirms deleting a profile
+- **THEN** it is removed from the catalog and agents can no longer select it

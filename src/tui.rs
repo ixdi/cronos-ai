@@ -19,7 +19,12 @@ use ratatui::{
     widgets::{Block, BorderType, Cell, Clear, Padding, Paragraph, Row, Table, TableState, Wrap},
 };
 
+mod profiles;
+
+use profiles::{EditorAction, ProfileEditor, ProfileList};
+
 use crate::{
+    agent_profiles::{load_profiles_for_editing, save_edited_profiles},
     integrations::{GitAdapter, PiRpcHandle, ToolCommands, herdr_session_available},
     model::{
         AgentActivity, AgentStatus, ApprovalDecision, ApprovalGate, Priority, Project,
@@ -44,10 +49,13 @@ enum Screen {
     Tasks,
     TaskDetail,
     Review,
+    Profiles,
+    ProfileEditor,
 }
 
 enum Dialog {
     None,
+    DeleteProfile { id: String },
     Revision { gate: ApprovalGate, note: String },
     Clarify { note: String },
     Abandon { note: String },
@@ -202,6 +210,8 @@ struct Dashboard {
     workflow_status: Option<String>,
     review_text: Vec<String>,
     review_scroll: u16,
+    profile_list: ProfileList,
+    profile_editor: Option<ProfileEditor>,
 }
 
 impl Dashboard {
@@ -222,6 +232,8 @@ impl Dashboard {
             workflow_status: None,
             review_text: Vec::new(),
             review_scroll: 0,
+            profile_list: ProfileList::default(),
+            profile_editor: None,
         })
     }
 
@@ -234,6 +246,15 @@ impl Dashboard {
     }
 
     fn refresh(&mut self) -> Result<(), ProjectError> {
+        match self.screen {
+            Screen::Profiles => {
+                self.profile_list.reload(self.manager.data_dir());
+                return Ok(());
+            }
+            // Never reload under an open editor; it holds unsaved changes.
+            Screen::ProfileEditor => return Ok(()),
+            _ => {}
+        }
         let project_id = self.selected_project().map(|project| project.id);
         let task_id = self.selected_task().map(|task| task.id);
         let follow_latest_activity = self.selected_task().is_none_or(|task| {
@@ -285,6 +306,10 @@ impl Dashboard {
         }
         // Errors stay visible across the periodic refresh until the user acts again.
         self.error = None;
+        if self.screen == Screen::ProfileEditor {
+            self.handle_profile_editor_key(key);
+            return;
+        }
         if key == KeyCode::Char('q') {
             self.should_quit = true;
             return;
@@ -314,6 +339,11 @@ impl Dashboard {
                     self.refresh_for_ui();
                 }
                 Screen::Review => self.screen = Screen::TaskDetail,
+                Screen::Profiles => {
+                    self.screen = Screen::Projects;
+                    self.refresh_for_ui();
+                }
+                Screen::ProfileEditor => {}
             }
             return;
         }
@@ -355,6 +385,31 @@ impl Dashboard {
             (Screen::Projects, KeyCode::Char('n')) => {
                 self.error = None;
                 self.dialog = Dialog::CreateProject(ProjectForm::default());
+            }
+            (Screen::Projects, KeyCode::Char('p')) => {
+                self.screen = Screen::Profiles;
+                self.profile_list.selected = 0;
+                self.refresh_for_ui();
+            }
+            (Screen::Profiles, KeyCode::Up | KeyCode::Down) => {
+                self.profile_list.move_selection(key == KeyCode::Down);
+            }
+            (Screen::Profiles, KeyCode::Char('n')) if self.profile_list.load_error().is_none() => {
+                self.profile_editor = Some(ProfileEditor::new());
+                self.screen = Screen::ProfileEditor;
+            }
+            (Screen::Profiles, KeyCode::Enter | KeyCode::Char('e')) => {
+                if let Some(profile) = self.profile_list.selected() {
+                    self.profile_editor = Some(ProfileEditor::edit(profile));
+                    self.screen = Screen::ProfileEditor;
+                }
+            }
+            (Screen::Profiles, KeyCode::Char('d')) => {
+                if let Some(profile) = self.profile_list.selected() {
+                    self.dialog = Dialog::DeleteProfile {
+                        id: profile.id.clone(),
+                    };
+                }
             }
             (Screen::Projects, KeyCode::Up) => {
                 self.selected_project = self.selected_project.saturating_sub(1);
@@ -502,6 +557,72 @@ impl Dashboard {
             }
             Err(error) => self.error = Some(error.to_string()),
         }
+    }
+
+    fn handle_profile_editor_key(&mut self, key: KeyCode) {
+        let Some(editor) = self.profile_editor.as_mut() else {
+            self.screen = Screen::Profiles;
+            return;
+        };
+        match editor.handle_key(key) {
+            EditorAction::None => {}
+            EditorAction::Cancel => self.close_profile_editor(),
+            EditorAction::Save => self.save_profile_editor(),
+        }
+    }
+
+    fn close_profile_editor(&mut self) {
+        self.profile_editor = None;
+        self.screen = Screen::Profiles;
+        self.refresh_for_ui();
+    }
+
+    /// Saves the edited profile into the catalog as it is on disk now, so edits made elsewhere
+    /// since the editor opened are kept.
+    fn save_profile_editor(&mut self) {
+        let Some(editor) = self.profile_editor.as_ref() else {
+            return;
+        };
+        let profile = match editor.to_profile() {
+            Ok(profile) => profile,
+            Err(message) => {
+                self.error = Some(message);
+                return;
+            }
+        };
+        let data_dir = self.manager.data_dir().to_path_buf();
+        let result = load_profiles_for_editing(&data_dir).and_then(|mut profiles| {
+            match editor
+                .original_id
+                .as_deref()
+                .and_then(|id| profiles.iter().position(|existing| existing.id == id))
+            {
+                Some(index) => profiles[index] = profile.clone(),
+                None => profiles.push(profile.clone()),
+            }
+            save_edited_profiles(&data_dir, profiles, Some(&profile.id))
+        });
+        match result {
+            Ok(()) => {
+                self.workflow_status = Some(format!("Saved agent profile {}", profile.id));
+                self.close_profile_editor();
+                self.profile_list.select_id(&profile.id);
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
+    fn delete_profile(&mut self, id: &str) {
+        let data_dir = self.manager.data_dir().to_path_buf();
+        let result = load_profiles_for_editing(&data_dir).and_then(|mut profiles| {
+            profiles.retain(|profile| profile.id != id);
+            save_edited_profiles(&data_dir, profiles, None)
+        });
+        match result {
+            Ok(()) => self.workflow_status = Some(format!("Deleted agent profile {id}")),
+            Err(error) => self.error = Some(error.to_string()),
+        }
+        self.refresh_for_ui();
     }
 
     /// Stops agents a crashed orchestrator left running before a recovery reuses or discards the
@@ -936,6 +1057,18 @@ impl Dashboard {
     }
 
     fn handle_dialog_key(&mut self, key: KeyCode) {
+        if let Dialog::DeleteProfile { id } = &self.dialog {
+            match key {
+                KeyCode::Char('y') => {
+                    let id = id.clone();
+                    self.dialog = Dialog::None;
+                    self.delete_profile(&id);
+                }
+                KeyCode::Char('n') | KeyCode::Esc => self.dialog = Dialog::None,
+                _ => {}
+            }
+            return;
+        }
         match &self.dialog {
             Dialog::CreateProject(_) => {
                 self.handle_project_dialog_key(key);
@@ -958,7 +1091,10 @@ impl Dashboard {
                 | Dialog::Abandon { note } => {
                     note.pop();
                 }
-                Dialog::None | Dialog::CreateProject(_) | Dialog::CreateTask(_) => {}
+                Dialog::None
+                | Dialog::CreateProject(_)
+                | Dialog::CreateTask(_)
+                | Dialog::DeleteProfile { .. } => {}
             }
             return;
         }
@@ -1032,7 +1168,9 @@ impl Dashboard {
                 self.error = Some("An abandonment reason is required.".to_owned());
             }
             Dialog::None => {}
-            Dialog::CreateProject(_) | Dialog::CreateTask(_) => unreachable!(),
+            Dialog::CreateProject(_) | Dialog::CreateTask(_) | Dialog::DeleteProfile { .. } => {
+                unreachable!()
+            }
         }
     }
 
@@ -1337,6 +1475,11 @@ fn draw(frame: &mut Frame, app: &Dashboard) {
         Screen::Tasks => draw_tasks(frame, app, areas[1]),
         Screen::TaskDetail => draw_task_detail(frame, app, areas[1]),
         Screen::Review => draw_review(frame, app, areas[1]),
+        Screen::Profiles => profiles::draw_profiles(frame, &app.profile_list, areas[1]),
+        Screen::ProfileEditor => match &app.profile_editor {
+            Some(editor) => profiles::draw_editor(frame, editor, areas[1]),
+            None => profiles::draw_profiles(frame, &app.profile_list, areas[1]),
+        },
     }
     draw_footer(frame, app, areas[2]);
     draw_dialog(frame, app);
@@ -1344,15 +1487,30 @@ fn draw(frame: &mut Frame, app: &Dashboard) {
 
 /// Brand, breadcrumb of where the user is, and whether an orchestrator is running.
 fn draw_header(frame: &mut Frame, app: &Dashboard, area: Rect) {
-    let mut crumbs = vec![
-        Span::styled(
-            "Cronos-AI",
-            Style::default().fg(PRIMARY).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("  Projects", Style::default().fg(MUTED)),
-    ];
-    if app.screen != Screen::Projects
-        && let Some(project) = app.selected_project()
+    let mut crumbs = vec![Span::styled(
+        "Cronos-AI",
+        Style::default().fg(PRIMARY).add_modifier(Modifier::BOLD),
+    )];
+    if matches!(app.screen, Screen::Profiles | Screen::ProfileEditor) {
+        crumbs.push(Span::styled("  Agent profiles", Style::default().fg(MUTED)));
+        if let Some(editor) = app
+            .profile_editor
+            .as_ref()
+            .filter(|_| app.screen == Screen::ProfileEditor)
+        {
+            crumbs.push(Span::styled(" › ", Style::default().fg(MUTED)));
+            crumbs.push(Span::styled(
+                editor.title(),
+                Style::default().add_modifier(Modifier::BOLD),
+            ));
+        }
+    } else {
+        crumbs.push(Span::styled("  Projects", Style::default().fg(MUTED)));
+    }
+    if matches!(
+        app.screen,
+        Screen::Tasks | Screen::TaskDetail | Screen::Review
+    ) && let Some(project) = app.selected_project()
     {
         crumbs.push(Span::styled(" › ", Style::default().fg(MUTED)));
         crumbs.push(Span::raw(terminal_safe(&project.name)));
@@ -1386,7 +1544,16 @@ fn draw_header(frame: &mut Frame, app: &Dashboard, area: Rect) {
 /// Message line (error or orchestrator status) above the key hints for the current screen.
 fn draw_footer(frame: &mut Frame, app: &Dashboard, area: Rect) {
     let help = match app.screen {
-        Screen::Projects => "↑/↓ select  Enter open  n new project  r refresh  q quit",
+        Screen::Projects => {
+            "↑/↓ select  Enter open  n new project  p agent profiles  r refresh  q quit"
+        }
+        Screen::Profiles => {
+            "↑/↓ select  n new  Enter edit  d delete  Backspace projects  r refresh  q quit"
+        }
+        Screen::ProfileEditor => app
+            .profile_editor
+            .as_ref()
+            .map_or("Esc back", ProfileEditor::hints),
         Screen::Tasks => {
             "↑/↓ select  Enter details  n new task  s start/resume  Backspace projects  r refresh  q quit"
         }
@@ -2052,6 +2219,25 @@ fn note_dialog(prompt: &str, note: &str) -> Vec<Line<'static>> {
 fn draw_dialog(frame: &mut Frame, app: &Dashboard) {
     let (title, border, mut lines, hints) = match &app.dialog {
         Dialog::None => return,
+        Dialog::DeleteProfile { id } => (
+            "Delete agent profile".to_owned(),
+            ERROR,
+            vec![
+                Line::from(vec![
+                    Span::raw("Delete profile "),
+                    Span::styled(
+                        terminal_safe(id),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw("?"),
+                ]),
+                Line::styled(
+                    "Agents can no longer select it. Agents already running keep their resources.",
+                    Style::default().fg(MUTED),
+                ),
+            ],
+            "y delete  n cancel",
+        ),
         Dialog::CreateProject(form) => (
             "Create project".to_owned(),
             PRIMARY,
@@ -3527,5 +3713,183 @@ mod tests {
         assert_eq!(cell.bg, super::SELECTION);
         rendered_text_position(&backend, "Projects › Demo");
         rendered_text_position(&backend, "○ orchestrator idle");
+    }
+
+    fn type_text(app: &mut Dashboard, text: &str) {
+        for character in text.chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+    }
+
+    #[test]
+    fn agent_profiles_are_created_from_the_tui() {
+        let root = tempfile::tempdir().unwrap();
+        let skill = root.path().join("skills/review");
+        std::fs::create_dir_all(&skill).unwrap();
+        let mut app =
+            Dashboard::new(ProjectManager::new(root.path().join("data")).unwrap()).unwrap();
+        app.handle_key(KeyCode::Char('p'));
+        assert_eq!(app.screen, Screen::Profiles);
+        rendered_text_position(&render(&app), "No agent profiles yet.");
+
+        app.handle_key(KeyCode::Char('n'));
+        assert_eq!(app.screen, Screen::ProfileEditor);
+        type_text(&mut app, "reviewer");
+        app.handle_key(KeyCode::Tab);
+        type_text(&mut app, "Reviews code for security");
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Down);
+        app.handle_key(KeyCode::Down);
+        app.handle_key(KeyCode::Char(' '));
+        app.handle_key(KeyCode::Tab);
+        type_text(&mut app, "provider/model");
+        app.handle_key(KeyCode::Tab);
+        type_text(&mut app, "1x5");
+        app.handle_key(KeyCode::Tab);
+        type_text(&mut app, &skill.to_string_lossy());
+        app.handle_key(KeyCode::Enter);
+        // 'q' is text inside the editor, not quit.
+        type_text(&mut app, "q");
+        app.handle_key(KeyCode::Backspace);
+        let backend = render(&app);
+        rendered_text_position(&backend, "New agent profile");
+        rendered_text_position(&backend, &format!("✓ {}", skill.display()));
+        app.handle_key(KeyCode::Enter);
+
+        assert!(!app.should_quit);
+        assert_eq!(app.screen, Screen::Profiles, "{:?}", app.error);
+        let catalog =
+            crate::agent_profiles::AgentProfileCatalog::load(&root.path().join("data")).unwrap();
+        let saved = &catalog.profiles()[0];
+        assert_eq!(saved.id, "reviewer");
+        assert_eq!(saved.steps, vec!["code-review".to_owned()]);
+        assert_eq!(saved.skills, vec![skill.clone()]);
+        assert_eq!(saved.model.as_deref(), Some("provider/model"));
+        assert_eq!(saved.timeout_minutes, Some(15));
+        let backend = render(&app);
+        rendered_text_position(&backend, "✓ ready");
+        rendered_text_position(&backend, "reviewer · resources");
+    }
+
+    #[test]
+    fn invalid_profiles_keep_the_editor_open_and_save_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let mut app = Dashboard::new(ProjectManager::new(&data).unwrap()).unwrap();
+        app.handle_key(KeyCode::Char('p'));
+        app.handle_key(KeyCode::Char('n'));
+        type_text(&mut app, "Bad ID");
+        app.handle_key(KeyCode::Enter);
+        assert_eq!(app.screen, Screen::ProfileEditor);
+        assert!(app.error.as_deref().unwrap().contains("profile ID"));
+
+        for _ in 0..6 {
+            app.handle_key(KeyCode::Backspace);
+        }
+        type_text(&mut app, "writer");
+        app.handle_key(KeyCode::Tab);
+        type_text(&mut app, "Writes code");
+        app.handle_key(KeyCode::Enter);
+        assert!(
+            app.error
+                .as_deref()
+                .unwrap()
+                .contains("at least one agent workflow step")
+        );
+
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Char(' '));
+        for _ in 0..5 {
+            app.handle_key(KeyCode::Tab);
+        }
+        type_text(&mut app, "/definitely/missing/adapter");
+        app.handle_key(KeyCode::Enter);
+        assert!(
+            app.error
+                .as_deref()
+                .unwrap()
+                .contains("MCP adapter and the MCP config")
+        );
+        app.handle_key(KeyCode::Tab);
+        type_text(&mut app, "/definitely/missing/config.json");
+        app.handle_key(KeyCode::Enter);
+        assert!(app.error.as_deref().unwrap().contains("missing"));
+        assert_eq!(app.screen, Screen::ProfileEditor);
+        assert!(!data.join("agent-profiles.json").exists());
+
+        app.handle_key(KeyCode::Esc);
+        assert_eq!(app.screen, Screen::Profiles);
+        assert!(!data.join("agent-profiles.json").exists());
+    }
+
+    #[test]
+    fn a_broken_profile_is_shown_fixed_and_deleted_from_the_tui() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let skill = root.path().join("gone");
+        std::fs::create_dir_all(&skill).unwrap();
+        let profile =
+            |id: &str, skills: Vec<std::path::PathBuf>| crate::agent_profiles::AgentProfile {
+                id: id.to_owned(),
+                description: format!("{id} profile"),
+                steps: vec!["code-review".to_owned()],
+                skills,
+                extensions: Vec::new(),
+                mcp: None,
+                model: None,
+                timeout_minutes: None,
+            };
+        std::fs::create_dir_all(&data).unwrap();
+        crate::agent_profiles::save_profiles(
+            &data,
+            vec![
+                profile("broken", vec![skill.clone()]),
+                profile("docs", Vec::new()),
+            ],
+        )
+        .unwrap();
+        std::fs::remove_dir(&skill).unwrap();
+
+        let mut app = Dashboard::new(ProjectManager::new(&data).unwrap()).unwrap();
+        app.handle_key(KeyCode::Char('p'));
+        let backend = render(&app);
+        assert_rendered_color(&backend, "✕ problem", ERROR);
+        rendered_text_position(&backend, "1 with problems");
+        rendered_text_position(&backend, "missing");
+
+        // Remove the missing skill and save: the profile becomes valid again.
+        app.handle_key(KeyCode::Enter);
+        for _ in 0..5 {
+            app.handle_key(KeyCode::Tab);
+        }
+        app.handle_key(KeyCode::Delete);
+        app.handle_key(KeyCode::Enter);
+        assert_eq!(app.screen, Screen::Profiles, "{:?}", app.error);
+        let catalog = crate::agent_profiles::AgentProfileCatalog::load(&data).unwrap();
+        assert!(catalog.profiles()[0].skills.is_empty());
+
+        // Delete needs confirmation.
+        app.handle_key(KeyCode::Down);
+        app.handle_key(KeyCode::Char('d'));
+        rendered_text_position(&render(&app), "Delete profile docs?");
+        app.handle_key(KeyCode::Char('n'));
+        assert_eq!(
+            crate::agent_profiles::load_profiles_for_editing(&data)
+                .unwrap()
+                .len(),
+            2
+        );
+        app.handle_key(KeyCode::Char('d'));
+        app.handle_key(KeyCode::Char('y'));
+        let remaining = crate::agent_profiles::load_profiles_for_editing(&data).unwrap();
+        assert_eq!(
+            remaining
+                .iter()
+                .map(|profile| profile.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["broken"]
+        );
+        app.handle_key(KeyCode::Backspace);
+        assert_eq!(app.screen, Screen::Projects);
     }
 }

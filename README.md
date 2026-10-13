@@ -15,7 +15,7 @@ It is an opinionated stack with a Rust TUI. Rust owns persisted task state and h
 
 - Manage projects and prioritized, dependency-aware tasks from the CLI and TUI.
 - Monitor task status and agent activity in a terminal dashboard.
-- Assign named Pi skill, extension, and MCP profiles to workflow agents by step.
+- Manage named Pi skill, extension, MCP, model, and time-limit profiles for workflow agents from the TUI.
 - Run one task at a time through specification, implementation, review, verification, approval, documentation, and local merge steps. Agents report structured results; Rust decides each step from them and runs the project's check command before final approval.
 - Send code back for automatic revision (up to 3 per attempt) when reviewers, verifiers, or the check command find problems.
 - Require human approval of specifications and final code, with a review view of the spec, commits, diff, and check output; request revisions, retry a failed step, or recover failed attempts with additional context.
@@ -89,7 +89,9 @@ The data directory can be selected with `--data-dir DIR` or `CRONOS_AI_DATA_DIR`
 
 ## Agent resource profiles
 
-To assign Pi skills, extensions, or MCP servers to particular workflow agents, copy the example catalog into Cronos-AI's data directory and add absolute paths to the resources you want:
+Profiles give workflow agents their Pi skills, extensions, MCP servers, model, and time limit. Manage them in the dashboard: press **p** on the project list to list, create, edit, and delete profiles. The editor checks every path before saving and shows which resources are missing.
+
+You can also copy the example catalog into Cronos-AI's data directory and edit it by hand:
 
 ```sh
 profile_dir="${CRONOS_AI_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/cronos-ai}"

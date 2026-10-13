@@ -1,10 +1,10 @@
 use std::{
     fs::{self, File},
-    io::Read,
+    io::{Read, Write},
     path::{Path, PathBuf},
 };
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::model::WorkflowStep;
@@ -21,27 +21,35 @@ pub struct AgentProfileCatalog {
     profiles: Vec<AgentProfile>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentProfile {
     pub id: String,
     pub description: String,
     pub steps: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<PathBuf>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extensions: Vec<PathBuf>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp: Option<McpProfile>,
     /// Pi `--model` pattern for workers using this profile.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// Overrides the step's default agent time limit.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_minutes: Option<u32>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+impl AgentProfile {
+    /// Checks the profile on its own: ID, description, steps, model, time limit, and that every
+    /// resource path exists. Duplicate IDs are checked when the catalog is saved.
+    pub fn validate(&self) -> Result<(), AgentProfileError> {
+        validate_profile(self)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpProfile {
     pub adapter: PathBuf,
@@ -96,46 +104,115 @@ pub enum AgentProfileError {
     InvalidTimeout { profile: String },
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct AgentProfileFile {
     version: u64,
     profiles: Vec<AgentProfile>,
 }
 
+/// Path of the catalog, refusing a symlink or a non-file in its place.
+fn catalog_path(data_dir: &Path) -> Result<(PathBuf, bool), AgentProfileError> {
+    let path = data_dir.join(PROFILE_FILE);
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            Err(AgentProfileError::InvalidResourcePath {
+                profile: "catalog".to_owned(),
+                kind: "profile catalog",
+                path,
+            })
+        }
+        Ok(_) => Ok((path, true)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok((path, false)),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Parses and version-checks the catalog without validating its profiles.
+fn read_catalog(data_dir: &Path) -> Result<Vec<AgentProfile>, AgentProfileError> {
+    let (path, exists) = catalog_path(data_dir)?;
+    if !exists {
+        return Ok(Vec::new());
+    }
+    let mut bytes = Vec::new();
+    File::open(&path)?
+        .take(MAX_PROFILE_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_PROFILE_FILE_BYTES {
+        return Err(AgentProfileError::CatalogTooLarge);
+    }
+    let file: AgentProfileFile = serde_json::from_slice(&bytes)?;
+    if file.version != 1 {
+        return Err(AgentProfileError::UnsupportedVersion(file.version));
+    }
+    Ok(file.profiles)
+}
+
+/// Profiles as stored, without validation, so an editor can show and fix an invalid catalog.
+pub fn load_profiles_for_editing(data_dir: &Path) -> Result<Vec<AgentProfile>, AgentProfileError> {
+    read_catalog(data_dir)
+}
+
+/// Validates the whole catalog and replaces the file atomically, so a step loading it at the
+/// same time reads either the old or the new catalog.
+pub fn save_profiles(
+    data_dir: &Path,
+    profiles: Vec<AgentProfile>,
+) -> Result<AgentProfileCatalog, AgentProfileError> {
+    let catalog = AgentProfileCatalog::from_profiles(profiles)?;
+    write_catalog(data_dir, &catalog.profiles)?;
+    Ok(catalog)
+}
+
+/// Saves an edit made in the TUI. The `edited` profile must be fully valid and every ID valid and
+/// unique; other profiles are kept as they are, so one broken profile never blocks fixing another.
+pub fn save_edited_profiles(
+    data_dir: &Path,
+    profiles: Vec<AgentProfile>,
+    edited: Option<&str>,
+) -> Result<(), AgentProfileError> {
+    if profiles.len() > MAX_PROFILES {
+        return Err(AgentProfileError::TooManyProfiles);
+    }
+    let mut ids = std::collections::HashSet::with_capacity(profiles.len());
+    for profile in &profiles {
+        if !valid_profile_id(&profile.id) || !ids.insert(&profile.id) {
+            return Err(AgentProfileError::InvalidProfileId(profile.id.clone()));
+        }
+        if edited == Some(profile.id.as_str()) {
+            validate_profile(profile)?;
+        }
+    }
+    write_catalog(data_dir, &profiles)
+}
+
+fn write_catalog(data_dir: &Path, profiles: &[AgentProfile]) -> Result<(), AgentProfileError> {
+    let (path, _) = catalog_path(data_dir)?;
+    let file = AgentProfileFile {
+        version: 1,
+        profiles: profiles.to_vec(),
+    };
+    let mut bytes = serde_json::to_vec_pretty(&file)?;
+    bytes.push(b'\n');
+    if bytes.len() as u64 > MAX_PROFILE_FILE_BYTES {
+        return Err(AgentProfileError::CatalogTooLarge);
+    }
+    let mut temporary = tempfile::NamedTempFile::new_in(data_dir)?;
+    temporary.write_all(&bytes)?;
+    temporary.as_file().sync_all()?;
+    temporary
+        .persist(&path)
+        .map_err(|error| AgentProfileError::Io(error.error))?;
+    Ok(())
+}
+
 impl AgentProfileCatalog {
     pub fn load(data_dir: &Path) -> Result<Self, AgentProfileError> {
-        let path = data_dir.join(PROFILE_FILE);
-        let metadata = match fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
-                return Err(AgentProfileError::InvalidResourcePath {
-                    profile: "catalog".to_owned(),
-                    kind: "profile catalog",
-                    path,
-                });
-            }
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Self::default());
-            }
-            Err(error) => return Err(error.into()),
-        };
-        if metadata.len() > MAX_PROFILE_FILE_BYTES {
-            return Err(AgentProfileError::CatalogTooLarge);
-        }
+        Self::from_profiles(read_catalog(data_dir)?)
+    }
 
-        let mut bytes = Vec::new();
-        File::open(&path)?
-            .take(MAX_PROFILE_FILE_BYTES + 1)
-            .read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > MAX_PROFILE_FILE_BYTES {
-            return Err(AgentProfileError::CatalogTooLarge);
-        }
-        let file: AgentProfileFile = serde_json::from_slice(&bytes)?;
-        if file.version != 1 {
-            return Err(AgentProfileError::UnsupportedVersion(file.version));
-        }
-        Self::from_profiles(file.profiles)
+    pub fn profiles(&self) -> &[AgentProfile] {
+        &self.profiles
     }
 
     pub fn from_profiles(profiles: Vec<AgentProfile>) -> Result<Self, AgentProfileError> {
@@ -502,5 +579,100 @@ mod tests {
             AgentProfileCatalog::from_profiles(vec![oversized]),
             Err(AgentProfileError::InvalidMcpConfig { .. })
         ));
+    }
+
+    #[test]
+    fn saved_catalogs_round_trip_without_empty_fields() {
+        let temp = tempfile::tempdir().unwrap();
+        let skill = temp.path().join("review-skill");
+        fs::create_dir_all(&skill).unwrap();
+        let mut reviewer = profile("reviewer", &["code-review", "verification"]);
+        reviewer.skills.push(skill.clone());
+        reviewer.model = Some("provider/model".to_owned());
+        reviewer.timeout_minutes = Some(20);
+        let plain = profile("writer", &["code-generation"]);
+
+        let saved =
+            super::save_profiles(temp.path(), vec![reviewer.clone(), plain.clone()]).unwrap();
+        assert_eq!(saved.profiles(), &[reviewer.clone(), plain.clone()]);
+        let json = fs::read_to_string(temp.path().join("agent-profiles.json")).unwrap();
+        assert!(json.contains("\"version\": 1"));
+        assert!(!json.contains("extensions") && !json.contains("mcp"));
+        assert_eq!(
+            AgentProfileCatalog::load(temp.path()).unwrap().profiles(),
+            &[reviewer, plain]
+        );
+        // No temporary files are left next to the catalog.
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn invalid_catalogs_open_for_editing_but_are_never_saved() {
+        let temp = tempfile::tempdir().unwrap();
+        let skill = temp.path().join("skill");
+        fs::create_dir_all(&skill).unwrap();
+        let mut broken = profile("broken", &["code-review"]);
+        broken.skills.push(skill.clone());
+        super::save_profiles(temp.path(), vec![broken.clone()]).unwrap();
+        let before = fs::read(temp.path().join("agent-profiles.json")).unwrap();
+        fs::remove_dir(&skill).unwrap();
+
+        // Workflow loading rejects the catalog, but the editor still sees every profile.
+        assert!(AgentProfileCatalog::load(temp.path()).is_err());
+        let editable = super::load_profiles_for_editing(temp.path()).unwrap();
+        assert_eq!(editable, vec![broken.clone()]);
+        assert!(matches!(
+            editable[0].validate(),
+            Err(AgentProfileError::InvalidResourcePath { .. })
+        ));
+
+        for profiles in [
+            editable.clone(),
+            vec![
+                profile("same", &["code-review"]),
+                profile("same", &["verification"]),
+            ],
+            vec![profile("no-steps", &[])],
+        ] {
+            assert!(super::save_profiles(temp.path(), profiles).is_err());
+            assert_eq!(
+                fs::read(temp.path().join("agent-profiles.json")).unwrap(),
+                before
+            );
+        }
+
+        // An edit to another profile is saved and keeps the broken one for later fixing.
+        let mut profiles = editable.clone();
+        profiles.push(profile("other", &["documentation"]));
+        super::save_edited_profiles(temp.path(), profiles.clone(), Some("other")).unwrap();
+        assert_eq!(
+            super::load_profiles_for_editing(temp.path()).unwrap(),
+            profiles
+        );
+        // The edited profile itself must be valid, and IDs must stay unique.
+        assert!(
+            super::save_edited_profiles(temp.path(), profiles.clone(), Some("broken")).is_err()
+        );
+        let mut duplicated = profiles.clone();
+        duplicated.push(profile("other", &["code-review"]));
+        assert!(super::save_edited_profiles(temp.path(), duplicated, None).is_err());
+
+        // Removing the bad path makes it savable again.
+        let mut fixed = editable[0].clone();
+        fixed.skills.clear();
+        super::save_profiles(temp.path(), vec![fixed]).unwrap();
+        assert!(AgentProfileCatalog::load(temp.path()).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_catalog_is_never_written_through() {
+        let temp = tempfile::tempdir().unwrap();
+        let elsewhere = temp.path().join("elsewhere.json");
+        fs::write(&elsewhere, "keep").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, temp.path().join("agent-profiles.json")).unwrap();
+        assert!(super::save_profiles(temp.path(), vec![profile("a", &["code-review"])]).is_err());
+        assert!(super::load_profiles_for_editing(temp.path()).is_err());
+        assert_eq!(fs::read_to_string(&elsewhere).unwrap(), "keep");
     }
 }

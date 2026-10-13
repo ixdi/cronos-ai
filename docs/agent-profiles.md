@@ -2,7 +2,28 @@
 
 Cronos-AI profiles let different workflow agents load only the Pi skills, extensions, and MCP servers appropriate to their role. Rust validates each selected profile against the active workflow step before any worker starts.
 
-## Create the profile catalog
+## Manage profiles in the TUI
+
+On the project list, press **p** to open **Agent profiles**. The table lists every profile with its allowed steps, number of skills and extensions, MCP, model, time limit, and whether it is ready. The panel below shows the selected profile's resource paths, marking each one ✓ (exists) or ✕ (missing).
+
+| Key | Action |
+|---|---|
+| **n** | Create a profile |
+| **Enter** or **e** | Edit the selected profile |
+| **d** | Delete the selected profile (confirm with **y**) |
+| **r** | Reload the catalog from disk |
+| **Backspace**/**Esc** | Back to projects |
+
+The editor has fields for the ID, description, steps, model, time limit, skills, extensions, MCP adapter, and MCP config, with help for the focused field on the right:
+
+- **Tab**/**Shift+Tab** move between fields; in text fields **↑/↓** do too. **Enter** saves and **Esc** discards.
+- **Steps:** **↑/↓** choose a step and **Space** toggles it.
+- **Skills** and **Extensions:** type a path and press **Enter** to add it; with nothing typed, **Enter** saves. **↑/↓** select a path and **Delete** removes it. A leading `~/` expands to your home directory.
+- **MCP adapter** and **MCP config** must both be set or both empty.
+
+Saving checks the profile completely, including that every path exists, and keeps the editor open with the error if something is wrong. The catalog is written atomically, so a step starting at the same moment reads the old or the new version. If the catalog already contains a broken profile, for example because a skill was moved, the TUI still opens it, marks the profile as a problem, and lets you fix or delete it; other profiles can be edited meanwhile. Until it is fixed, workflow steps cannot load the catalog.
+
+## Create the profile catalog by hand
 
 Cronos-AI reads `agent-profiles.json` from its data directory:
 
@@ -10,7 +31,7 @@ Cronos-AI reads `agent-profiles.json` from its data directory:
 - otherwise, `$XDG_DATA_HOME/cronos-ai`, or `~/.local/share/cronos-ai` when `XDG_DATA_HOME` is unset;
 - on Windows, `%APPDATA%/cronos-ai`.
 
-Copy the example catalog, then edit the copy:
+You can also write the file yourself. Copy the example catalog, then edit the copy:
 
 ```sh
 profile_dir="${CRONOS_AI_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/cronos-ai}"

@@ -39,7 +39,7 @@ The OpenSpec specs in `openspec/specs/` are the source of truth for behavior. Th
 | Herdr | Runs each worker as a Pi agent in its own pane; prompt, wait with time limit, read, cancel | Implemented |
 | OpenSpec | One change per task; validated after specs and archived during documentation | Implemented |
 | Git worktrees | One worktree and branch per attempt; local merge only | Implemented |
-| Agent profiles | Per-step Pi skills, extensions, MCP config, model, and time limit | Implemented |
+| Agent profiles | Per-step Pi skills, extensions, MCP config, model, and time limit; managed in the TUI (`p`) or by editing `agent-profiles.json` | Implemented |
 | Jev | Prioritization and dependency model | Future (built-in priority/dependency ordering is used) |
 | Remote push / GitHub | Publishing after merge | Future (users push manually) |
 | Release numbers, changelog per release | Versioning of merged work | Future |
@@ -143,6 +143,7 @@ Pi keeps running agent steps until the task reaches an approval gate, local merg
   - Task details: status, step, elapsed time, attempt and automatic-revision count, worktree, branch, OpenSpec change, approvals, recoveries, and agent activity.
   - Review view (`v`): the OpenSpec change, task-branch commits, diff summary against the base, and the latest check output.
   - Approvals and revision notes, recovery actions, and abandonment.
+  - Agent profiles screen (`p`): list, create, edit, and delete profiles; each resource path is checked, and a broken catalog can be opened and fixed.
   - A semantic color palette that keeps text labels.
   - A one-second refresh.
 - **Future:**

@@ -28,14 +28,54 @@
 			</div>
 			<article class="reference-content">
 <p>Cronos-AI profiles let different workflow agents load only the Pi skills, extensions, and MCP servers appropriate to their role. Rust validates each selected profile against the active workflow step before any worker starts.</p>
-<h2 id="create-the-profile-catalog">Create the profile catalog</h2>
+<h2 id="manage-profiles-in-the-tui">Manage profiles in the TUI</h2>
+<p>On the project list, press <strong>p</strong> to open <strong>Agent profiles</strong>. The table lists every profile with its allowed steps, number of skills and extensions, MCP, model, time limit, and whether it is ready. The panel below shows the selected profile's resource paths, marking each one ✓ (exists) or ✕ (missing).</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>n</strong></td>
+<td>Create a profile</td>
+</tr>
+<tr>
+<td><strong>Enter</strong> or <strong>e</strong></td>
+<td>Edit the selected profile</td>
+</tr>
+<tr>
+<td><strong>d</strong></td>
+<td>Delete the selected profile (confirm with <strong>y</strong>)</td>
+</tr>
+<tr>
+<td><strong>r</strong></td>
+<td>Reload the catalog from disk</td>
+</tr>
+<tr>
+<td><strong>Backspace</strong>/<strong>Esc</strong></td>
+<td>Back to projects</td>
+</tr>
+</tbody>
+</table>
+<p>The editor has fields for the ID, description, steps, model, time limit, skills, extensions, MCP adapter, and MCP config, with help for the focused field on the right:</p>
+<ul>
+<li><strong>Tab</strong>/<strong>Shift+Tab</strong> move between fields; in text fields <strong>↑/↓</strong> do too. <strong>Enter</strong> saves and <strong>Esc</strong> discards.</li>
+<li><strong>Steps:</strong> <strong>↑/↓</strong> choose a step and <strong>Space</strong> toggles it.</li>
+<li><strong>Skills</strong> and <strong>Extensions:</strong> type a path and press <strong>Enter</strong> to add it; with nothing typed, <strong>Enter</strong> saves. <strong>↑/↓</strong> select a path and <strong>Delete</strong> removes it. A leading <code>~/</code> expands to your home directory.</li>
+<li><strong>MCP adapter</strong> and <strong>MCP config</strong> must both be set or both empty.</li>
+</ul>
+<p>Saving checks the profile completely, including that every path exists, and keeps the editor open with the error if something is wrong. The catalog is written atomically, so a step starting at the same moment reads the old or the new version. If the catalog already contains a broken profile, for example because a skill was moved, the TUI still opens it, marks the profile as a problem, and lets you fix or delete it; other profiles can be edited meanwhile. Until it is fixed, workflow steps cannot load the catalog.</p>
+<h2 id="create-the-profile-catalog-by-hand">Create the profile catalog by hand</h2>
 <p>Cronos-AI reads <code>agent-profiles.json</code> from its data directory:</p>
 <ul>
 <li><code>CRONOS_AI_DATA_DIR</code>, when set;</li>
 <li>otherwise, <code>$XDG_DATA_HOME/cronos-ai</code>, or <code>~/.local/share/cronos-ai</code> when <code>XDG_DATA_HOME</code> is unset;</li>
 <li>on Windows, <code>%APPDATA%/cronos-ai</code>.</li>
 </ul>
-<p>Copy the example catalog, then edit the copy:</p>
+<p>You can also write the file yourself. Copy the example catalog, then edit the copy:</p>
 <div class="sourceCode" id="cb1"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="va">profile_dir</span><span class="op">=</span><span class="st">&quot;</span><span class="va">${CRONOS_AI_DATA_DIR</span><span class="op">:-</span><span class="va">${XDG_DATA_HOME</span><span class="op">:-</span><span class="va">$HOME</span>/.local/share<span class="va">}</span>/cronos-ai<span class="va">}</span><span class="st">&quot;</span></span>
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="fu">mkdir</span> <span class="at">-p</span> <span class="st">&quot;</span><span class="va">$profile_dir</span><span class="st">&quot;</span></span>
 <span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="fu">cp</span> examples/agent-profiles.json <span class="st">&quot;</span><span class="va">$profile_dir</span><span class="st">/agent-profiles.json&quot;</span></span></code></pre></div>
