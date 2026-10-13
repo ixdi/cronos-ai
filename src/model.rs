@@ -14,6 +14,8 @@ const MAX_WORKTREE_PATH_CHARS: usize = 4_096;
 pub const MAX_AGENT_EVENTS: usize = 100;
 pub const MAX_APPROVAL_RECORDS: usize = 100;
 pub const MAX_RECOVERY_RECORDS: usize = 50;
+pub const MAX_CHECK_COMMAND_ARGS: usize = 64;
+const MAX_CHECK_COMMAND_ARG_CHARS: usize = 4_096;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(transparent)]
@@ -73,6 +75,9 @@ pub struct Project {
     pub task_ids: Vec<TaskId>,
     #[serde(default)]
     pub repository: Option<String>,
+    /// Program and arguments run without a shell in the task worktree during verification.
+    #[serde(default)]
+    pub check_command: Option<Vec<String>>,
     pub created_at_unix_secs: u64,
     pub updated_at_unix_secs: u64,
 }
@@ -90,6 +95,26 @@ impl Project {
             self.repository.as_deref(),
             MAX_WORKTREE_PATH_CHARS,
         )?;
+        if let Some(command) = &self.check_command {
+            if command.is_empty() || command.len() > MAX_CHECK_COMMAND_ARGS {
+                return Err(ModelError::InvalidCheckCommand);
+            }
+            for argument in command {
+                validate_optional_text(
+                    "check command argument",
+                    Some(argument),
+                    MAX_CHECK_COMMAND_ARG_CHARS,
+                )?;
+                if argument.contains('\0') {
+                    return Err(ModelError::InvalidCheckCommand);
+                }
+            }
+            validate_required_text(
+                "check command program",
+                &command[0],
+                MAX_CHECK_COMMAND_ARG_CHARS,
+            )?;
+        }
 
         let mut task_ids = HashSet::with_capacity(self.task_ids.len());
         if self.task_ids.iter().any(|id| !task_ids.insert(id)) {
@@ -107,6 +132,7 @@ pub enum AgentStatus {
     Running,
     Waiting,
     Completed,
+    ChangesRequested,
     Failed,
     Cancelled,
     Blocked,
@@ -238,6 +264,7 @@ pub struct ApprovalRecord {
 pub enum RecoveryAction {
     Retry,
     Clarify,
+    RetryStep,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -273,9 +300,17 @@ pub struct Task {
     pub attempt: u32,
     #[serde(default)]
     pub recovery_history: Vec<RecoveryRecord>,
+    /// Automatic returns to code generation in the current attempt.
+    #[serde(default)]
+    pub automatic_revisions: u32,
 }
 
 impl Task {
+    /// Name of the single OpenSpec change that holds this task's specifications.
+    pub fn openspec_change(&self) -> String {
+        format!("cronos-{}", &self.id.0.simple().to_string()[..8])
+    }
+
     pub fn is_approved(&self, gate: ApprovalGate) -> bool {
         self.approval_history
             .iter()
@@ -396,6 +431,8 @@ pub enum ModelError {
     MissingApprovalNote,
     #[error("task contains more than {MAX_RECOVERY_RECORDS} recovery records")]
     TooManyRecoveryRecords,
+    #[error("check command must have a program and at most {MAX_CHECK_COMMAND_ARGS} arguments")]
+    InvalidCheckCommand,
 }
 
 fn default_attempt() -> u32 {
@@ -457,6 +494,7 @@ mod tests {
             worktree: None,
             attempt: 1,
             recovery_history: Vec::new(),
+            automatic_revisions: 0,
             created_at_unix_secs: 0,
             updated_at_unix_secs: 0,
         }
@@ -472,11 +510,22 @@ mod tests {
             status: ProjectStatus::Active,
             task_ids: vec![duplicate_id, duplicate_id],
             repository: None,
+            check_command: None,
             created_at_unix_secs: 0,
             updated_at_unix_secs: 0,
         };
 
         assert_eq!(project.validate(), Err(ModelError::DuplicateTaskId));
+        project.task_ids.pop();
+        project.check_command = Some(Vec::new());
+        assert_eq!(project.validate(), Err(ModelError::InvalidCheckCommand));
+        project.check_command = Some(vec![" ".to_owned()]);
+        assert_eq!(
+            project.validate(),
+            Err(ModelError::BlankText("check command program"))
+        );
+        project.check_command = Some(vec!["./scripts/check.sh".to_owned()]);
+        assert_eq!(project.validate(), Ok(()));
         project.name = "  ".to_owned();
         assert_eq!(
             project.validate(),
@@ -512,6 +561,7 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(project.repository, None);
+        assert_eq!(project.check_command, None);
     }
 
     #[test]
@@ -523,8 +573,12 @@ mod tests {
         object.remove("abandonment_note");
         object.remove("attempt");
         object.remove("recovery_history");
+        object.remove("automatic_revisions");
         let task: Task = serde_json::from_value(value).unwrap();
         assert!(task.agent_activity.is_empty());
+        assert_eq!(task.automatic_revisions, 0);
+        assert!(task.openspec_change().starts_with("cronos-"));
+        assert_eq!(task.openspec_change().len(), "cronos-".len() + 8);
     }
 
     #[test]

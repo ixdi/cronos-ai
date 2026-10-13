@@ -16,8 +16,9 @@ It is an opinionated stack with a Rust TUI. Rust owns persisted task state and h
 - Manage projects and prioritized, dependency-aware tasks from the CLI and TUI.
 - Monitor task status and agent activity in a terminal dashboard.
 - Assign named Pi skill, extension, and MCP profiles to workflow agents by step.
-- Run one task at a time through specification, implementation, review, verification, approval, documentation, and local merge steps.
-- Require human approval of specifications and final code; request revisions or recover failed attempts with additional context.
+- Run one task at a time through specification, implementation, review, verification, approval, documentation, and local merge steps. Agents report structured results; Rust decides each step from them and runs the project's check command before final approval.
+- Send code back for automatic revision (up to 3 per attempt) when reviewers, verifiers, or the check command find problems.
+- Require human approval of specifications and final code, with a review view of the spec, commits, diff, and check output; request revisions, retry a failed step, or recover failed attempts with additional context.
 - Give each attempt an isolated local Git worktree. After final approval, changes are merged locally; Cronos-AI never pushes to a remote.
 
 ![Workflow diagram](design/workflow.svg)
@@ -29,8 +30,8 @@ On startup, Cronos-AI checks for required tools and prompts if any are missing; 
 - Rust TUI for the dashboard, project and task management.
 - Pi agent to orchestrate workflow steps.
 - Herdr to manage agents and their work.
-- OpenSpec as single source of truth.
-- A Git repository for each project that will run tasks (a worktree for each).
+- OpenSpec as single source of truth. Each project repository needs a committed `openspec/` directory (`openspec init`, then commit).
+- A Git repository and a check command (for example `./scripts/check.sh`) for each project that will run tasks. Each attempt gets its own worktree.
 
 ## Build and run
 
@@ -42,6 +43,7 @@ Create a project linked to a repository and add a task:
 
 ```sh
 ./target/release/cronos-ai project create demo --repository /path/to/repository
+./target/release/cronos-ai project set-check-command <PROJECT_ID> -- ./scripts/check.sh
 ./target/release/cronos-ai task create <PROJECT_ID> "Build the feature" --priority high
 ```
 
@@ -53,11 +55,11 @@ The commands print JSON containing the project and task IDs. After building, sta
 
 From a regular terminal, the launcher creates or attaches to the dedicated `cronos-ai` Herdr session, starts Cronos-AI in its own workspace, and opens Herdr. When run inside a Herdr pane, it starts the TUI directly in that pane. For a TUI in the current terminal without the Herdr launcher, run `./target/release/cronos-ai` directly; supervised task execution requires Herdr.
 
-Select the project with **Enter**, press **s** on its task list to start the next ready task, then open the task to monitor progress. Review and approve the specification and final-code gates in the TUI.
+Select the project with **Enter**, press **s** on its task list to start the next ready task, then open the task to monitor progress. At the specification and final-code gates, press **v** to review the work and **y** or **n** to approve or request a revision. If the TUI was closed while a task ran, **s** resumes it.
 
 You can also create projects and tasks directly in the dashboard:
 
-1. On the project list, press **n**. Enter a project name and optionally a description and local Git repository path. Use **Tab**/**Shift+Tab** to move between fields, **Enter** to save, or **Esc** to cancel.
+1. On the project list, press **n**. Enter a project name and optionally a description, local Git repository path, and check command. Use **Tab**/**Shift+Tab** to move between fields, **Enter** to save, or **Esc** to cancel.
 2. Select the project with **Enter**. On its task list, press **n** to create a task. Enter a title and optional description; priority defaults to **Medium**. Use **Tab**/**Shift+Tab** to move between fields, **←/→** to change priority, and **↑/↓** plus **Space** to select task dependencies.
 3. Press **Enter** to save. The task remains **Pending**; press **s** when you are ready to start the next ready task. Configure a local Git repository before starting work if you did not provide one when creating the project.
 
@@ -90,11 +92,21 @@ cargo test
 ./scripts/check.sh
 ```
 
-The check script runs formatting, Clippy, all targets' tests, and `cargo audit`. The end-to-end workflow test uses a temporary local Git repository and fake agent adapter:
+The check script runs formatting, Clippy, all targets' tests, and `cargo audit`. End-to-end tests use temporary Git repositories with fake agents and a fake `herdr`:
 
 ```sh
-cargo test --test workflow_e2e
+cargo test --test workflow_e2e           # the full per-task workflow
+cargo test --test herdr_agents_e2e       # Herdr agent lifecycle, cancellation, step lock
+cargo test --test project_management_e2e # the CLI as a user drives it
 ```
+
+The live smoke test starts one real Pi agent through Herdr. Run it by hand inside an isolated Herdr session:
+
+```sh
+CRONOS_LIVE_SMOKE=1 cargo test --test live_smoke -- --ignored --nocapture
+```
+
+Workers run with your operating-system permissions; see the [trust boundary](docs/integration-contracts.md#trust-boundary) before running untrusted work.
 
 ## Documentation
 

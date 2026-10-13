@@ -5,7 +5,7 @@ use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command};
 use cronos_ai::{
     agent_profiles::AgentProfileCatalog,
     integrations::{GitAdapter, ToolCommands},
-    model::{Priority, ProjectId, TaskId, WorkflowStep},
+    model::{ApprovalDecision, ApprovalGate, Priority, ProjectId, TaskId, WorkflowStep},
     project::ProjectManager,
     workflow::{AgentPlan, HerdrAgentAdapter, WorkflowEngine},
 };
@@ -36,7 +36,9 @@ fn init_repository(root: &Path) {
         &["config", "user.email", "cronos-e2e@example.invalid"],
     );
     fs::write(root.join("README.md"), "profile test\n").unwrap();
-    git(root, &["add", "README.md"]);
+    fs::create_dir_all(root.join("openspec")).unwrap();
+    fs::write(root.join("openspec/config.yaml"), "schema: spec-driven\n").unwrap();
+    git(root, &["add", "README.md", "openspec"]);
     git(root, &["commit", "-m", "initial"]);
 }
 
@@ -49,6 +51,10 @@ CALL_LOG="${{HERDR_LOG}}.$$"
 printf '%s\0' "$@" > "$CALL_LOG"
 if [ "$1" = "pane" ] && [ "$2" = "split" ]; then
   printf '{{"result":{{"pane":{{"pane_id":"w1:p3"}}}}}}'
+elif [ "$1" = "agent" ] && [ "$2" = "prompt" ]; then
+  result=$(printf '%s\n' "$4" | sed -n 's/.*write your result as JSON to `\([^`]*\)`.*/\1/p')
+  mkdir -p "$(dirname "$result")"
+  printf '{{"status":"success","summary":"completed by fake agent"}}' > "$result"
 elif [ "$1" = "agent" ] && [ "$2" = "get" ]; then
   printf '{{"status":"done"}}'
 elif [ "$1" = "agent" ] && [ "$2" = "read" ]; then
@@ -81,12 +87,7 @@ fn load_and_run_step(
     let profiles = AgentProfileCatalog::load(data_dir)?;
     let adapter = HerdrAgentAdapter::with_tools_and_profiles(tools, profiles.clone());
     let engine = WorkflowEngine::with_profiles(ProjectManager::new(data_dir)?, adapter, profiles);
-    engine.run_step(
-        project_id,
-        task_id,
-        WorkflowStep::SpecificationGeneration,
-        agents,
-    )?;
+    engine.run_step(project_id, task_id, WorkflowStep::CodeReview, agents)?;
     Ok(())
 }
 
@@ -153,18 +154,20 @@ fn workflow_launches_each_profile_with_only_its_resources_and_rejects_bad_mcp_be
         "profiles": [
             {
                 "id": "spec-writer",
-                "description": "Writes specifications",
-                "steps": ["specification-generation"],
+                "description": "Reviews code quality",
+                "steps": ["code-review"],
                 "skills": [writer_skill],
                 "extensions": [writer_extension]
             },
             {
                 "id": "spec-reviewer",
-                "description": "Reviews specifications with documentation search",
-                "steps": ["specification-generation"],
+                "description": "Reviews code with documentation search",
+                "steps": ["code-review"],
                 "skills": [reviewer_skill],
                 "extensions": [reviewer_extension],
-                "mcp": { "adapter": mcp_adapter, "config": mcp_config }
+                "mcp": { "adapter": mcp_adapter, "config": mcp_config },
+                "model": "provider/review-model",
+                "timeout_minutes": 15
             }
         ]
     });
@@ -177,7 +180,13 @@ fn workflow_launches_each_profile_with_only_its_resources_and_rejects_bad_mcp_be
     let manager = ProjectManager::new(&data_dir).unwrap();
     let git = GitAdapter::default();
     let project = manager
-        .create_project_with_repository("Profile E2E".to_owned(), None, Some(&repository), &git)
+        .create_project_with_repository(
+            "Profile E2E".to_owned(),
+            None,
+            Some(&repository),
+            Some(vec!["true".to_owned()]),
+            &git,
+        )
         .unwrap();
     let task = manager
         .create_task(
@@ -191,6 +200,21 @@ fn workflow_launches_each_profile_with_only_its_resources_and_rejects_bad_mcp_be
     manager.start_next_task(project.id).unwrap();
     manager
         .prepare_task_worktree(project.id, task.id, &git)
+        .unwrap();
+    manager
+        .complete_workflow_step(project.id, task.id, WorkflowStep::SpecificationGeneration)
+        .unwrap();
+    manager
+        .record_approval(
+            project.id,
+            task.id,
+            ApprovalGate::Specifications,
+            ApprovalDecision::Approved,
+            None,
+        )
+        .unwrap();
+    manager
+        .complete_workflow_step(project.id, task.id, WorkflowStep::CodeGeneration)
         .unwrap();
 
     let herdr = temp.path().join("fake-herdr");
@@ -270,6 +294,37 @@ fn workflow_launches_each_profile_with_only_its_resources_and_rejects_bad_mcp_be
     ));
     assert!(!reviewer.contains(&writer_skill.to_string_lossy().into_owned()));
     assert!(!reviewer.contains(&writer_extension.to_string_lossy().into_owned()));
+    assert!(contains_pair(reviewer, "--model", "provider/review-model"));
+    assert!(!writer.contains(&"--model".to_owned()));
+
+    let prompts = logged_calls(&log)
+        .into_iter()
+        .filter(|args| args.starts_with(&["agent".to_owned(), "prompt".to_owned()]))
+        .collect::<Vec<_>>();
+    assert_eq!(prompts.len(), 2);
+    assert!(
+        prompts
+            .iter()
+            .all(|args| args[3].contains("Cronos-AI contract"))
+    );
+    // Default code-review limit is 30 minutes; the reviewer profile sets 15.
+    assert!(
+        prompts
+            .iter()
+            .any(|args| contains_pair(args, "--timeout", "1800000"))
+    );
+    assert!(
+        prompts
+            .iter()
+            .any(|args| contains_pair(args, "--timeout", "900000"))
+    );
+    let reviewed = manager.get_task(project.id, task.id).unwrap();
+    assert_eq!(reviewed.current_step.as_deref(), Some("verification"));
+    let closed = logged_calls(&log)
+        .into_iter()
+        .filter(|args| args.starts_with(&["pane".to_owned(), "close".to_owned()]))
+        .count();
+    assert_eq!(closed, 2);
 
     let invalid_dir = temp.path().join("invalid-profile-data");
     fs::create_dir_all(&invalid_dir).unwrap();

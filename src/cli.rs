@@ -52,6 +52,12 @@ enum ProjectAction {
         #[arg(long, value_name = "PATH")]
         repository: PathBuf,
     },
+    /// Set the program and arguments run (without a shell) in the task worktree during verification.
+    SetCheckCommand {
+        id: String,
+        #[arg(last = true, required = true, value_name = "PROGRAM [ARGS]...")]
+        command: Vec<String>,
+    },
     Select {
         id: String,
     },
@@ -202,6 +208,7 @@ pub fn run() -> Result<Option<PathBuf>, Box<dyn Error>> {
                     name,
                     description,
                     repository.as_deref(),
+                    None,
                     &GitAdapter::default(),
                 )?)?;
             }
@@ -212,6 +219,9 @@ pub fn run() -> Result<Option<PathBuf>, Box<dyn Error>> {
                     &repository,
                     &GitAdapter::default(),
                 )?)?;
+            }
+            ProjectAction::SetCheckCommand { id, command } => {
+                print_json(&manager.set_project_check_command(parse_project_id(&id)?, command)?)?;
             }
             ProjectAction::Select { id } => {
                 print_json(&manager.select_project(parse_project_id(&id)?)?)?;
@@ -572,6 +582,35 @@ mod tests {
                 "./repo",
             ])
             .is_ok()
+        );
+        let Cli {
+            command:
+                Some(super::Command::Project {
+                    action: super::ProjectAction::SetCheckCommand { command, .. },
+                }),
+            ..
+        } = Cli::try_parse_from([
+            "cronos-ai",
+            "project",
+            "set-check-command",
+            "00000000-0000-0000-0000-000000000000",
+            "--",
+            "./scripts/check.sh",
+            "--all",
+        ])
+        .unwrap()
+        else {
+            panic!("expected set-check-command");
+        };
+        assert_eq!(command, ["./scripts/check.sh", "--all"]);
+        assert!(
+            Cli::try_parse_from([
+                "cronos-ai",
+                "project",
+                "set-check-command",
+                "00000000-0000-0000-0000-000000000000",
+            ])
+            .is_err()
         );
         assert!(
             Cli::try_parse_from([

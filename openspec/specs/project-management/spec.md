@@ -1,0 +1,128 @@
+# project-management Specification
+
+## Purpose
+
+Lets a user create and manage local Cronos-AI projects and tasks, persist their state, and monitor workflow progress through the CLI/TUI.
+
+## Requirements
+
+### Requirement: Project management
+The system SHALL let a user create, view, update, select, and archive projects, and SHALL preserve project data between launches.
+
+#### Scenario: Reopen a project
+- **WHEN** a user selects a previously created project after restarting Cronos-AI
+- **THEN** the project and its saved tasks are available with their prior state
+
+#### Scenario: Archive a project
+- **WHEN** a user archives a project
+- **THEN** the project is no longer offered as active work and its stored history remains available
+
+### Requirement: Task management
+The system SHALL let a user add tasks to a project and view their priority, dependencies, and current status.
+
+#### Scenario: Create a task
+- **WHEN** a user adds a task to a project
+- **THEN** the task is saved with a unique identity and an initial Pending status
+
+#### Scenario: Respect task dependencies
+- **WHEN** a task depends on another task that is not complete
+- **THEN** the dependent task is not selected for execution
+
+### Requirement: Workflow monitoring
+The system SHALL show the selected project's tasks, statuses, and current workflow activity, and SHALL refresh that information as the workflow changes.
+
+#### Scenario: View task progress
+- **WHEN** a user views a project while a task is running
+- **THEN** the task status and active workflow step are visible
+
+### Requirement: Required-tool prompt
+At startup, the system SHALL detect missing required tools and prompt the user to install them before attempting to use the affected workflow.
+
+#### Scenario: Required tool is missing
+- **WHEN** a required tool is unavailable
+- **THEN** the user is told which tool is missing and prompted to install it before the affected workflow proceeds
+
+### Requirement: TUI project creation
+The TUI SHALL let a user create a project from the project list with a nonblank name and optional description and local Git repository path. It SHALL persist valid submissions and refresh the project list; invalid submissions SHALL show an error and remain available for correction without saving a project.
+
+#### Scenario: Create a project
+- **WHEN** a user submits a valid project name, optional description, and optional repository path
+- **THEN** the project is saved as active and appears in the project list
+
+#### Scenario: Correct invalid project details
+- **WHEN** a user submits a blank name or an invalid repository path
+- **THEN** the TUI shows the validation error, preserves the entered details for correction, and does not create a project
+
+#### Scenario: Cancel project creation
+- **WHEN** a user cancels project creation before submitting
+- **THEN** no project is created and the project list remains unchanged
+
+### Requirement: TUI task creation
+The TUI SHALL let a user create a task from an active project's task list with a nonblank title, optional description, priority, and dependencies on tasks in that project. A successful creation SHALL save the task as Pending, show it in the task list, and not start its workflow.
+
+#### Scenario: Create a task
+- **WHEN** a user submits a valid task with a title and selected task details
+- **THEN** the task is saved as Pending with the chosen priority and dependencies, and appears in the task list without starting its workflow
+
+#### Scenario: Use task creation defaults
+- **WHEN** a user creates a task without setting priority or dependencies
+- **THEN** the task uses Medium priority and has no dependencies
+
+#### Scenario: Correct invalid task details
+- **WHEN** a user submits a blank title or invalid task details
+- **THEN** the TUI shows the validation error, preserves the entered details for correction, and does not create a task
+
+#### Scenario: Cancel task creation
+- **WHEN** a user cancels task creation before submitting
+- **THEN** no task is created and the task list remains unchanged
+
+#### Scenario: Archived project cannot receive a task
+- **WHEN** a user requests task creation for an archived project
+- **THEN** the TUI explains that the project is archived and does not create a task
+
+### Requirement: Persistent branded TUI title
+The TUI SHALL display the title `Cronos-AI` at the top of every dashboard screen using the primary color `#BC93F8`.
+
+#### Scenario: Show the application title
+- **WHEN** the user views the projects, tasks, or task-details screen
+- **THEN** `Cronos-AI` is visible above the screen content in the primary color
+
+### Requirement: Semantic TUI palette
+The TUI SHALL use primary `#BC93F8` for the title and primary emphasis, warning `#FFB86C` for pending or attention-needed states, error `#FE5654` for failed states and error feedback, shortcut `#DE6EB1` for keyboard hints, and success `#006A63` for completed or approved outcomes.
+
+#### Scenario: Render workflow states with semantic colors
+- **WHEN** the dashboard displays pending or attention-needed work, an error, or a completed or approved outcome
+- **THEN** it uses the corresponding warning, error, or success color from the defined palette
+
+#### Scenario: Distinguish keyboard hints
+- **WHEN** the TUI displays keyboard shortcut hints
+- **THEN** the shortcut labels use `#DE6EB1` while the action descriptions remain readable
+
+### Requirement: Preserve text cues alongside color
+The TUI SHALL retain textual status, error, outcome, and keyboard-action labels so their meaning does not depend on color.
+
+#### Scenario: Read dashboard meaning without color
+- **WHEN** the terminal cannot display the palette colors distinctly
+- **THEN** status, error, outcome, and keyboard-action text still communicates the same meaning
+
+### Requirement: Project check command
+A project SHALL store an optional check command as a program and arguments, run without a shell. Users SHALL set it from the CLI or the TUI project form. Starting tasks SHALL require a configured check command.
+
+#### Scenario: Configure a check command
+- **WHEN** a user sets a project's check command
+- **THEN** it is saved as separate arguments and shown with the project
+
+#### Scenario: Start without a check command
+- **WHEN** a user starts a task in a project without a check command
+- **THEN** the TUI explains that a check command is required and starts nothing
+
+### Requirement: Approval review view
+Task details SHALL show the worktree path, branch, OpenSpec change, and the current step's elapsed time. A review view SHALL show the task's OpenSpec change, its commits and diff summary against the base, and the latest check-command output.
+
+#### Scenario: Review before approving
+- **WHEN** a task waits at an approval gate and the user opens the review view
+- **THEN** the specification, commits, diff summary, and latest check output are visible without leaving the TUI
+
+#### Scenario: See step progress
+- **WHEN** a user views a running task
+- **THEN** the elapsed time of the current step is visible

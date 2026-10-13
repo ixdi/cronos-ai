@@ -237,7 +237,7 @@
        y1="90"
        x2="1350"
        y2="430"
-       gradientTransform="translate(194.5999)" />
+       gradientTransform="translate(214.38393)" />
   </defs>
   <g
      id="g3"
@@ -294,10 +294,10 @@
   <g
      font-family="Inter, ui-sans-serif, system-ui, '-apple-system', BlinkMacSystemFont, 'Segoe UI', sans-serif"
      id="g28"
-     transform="translate(110.81222,-82.568542)">
+     transform="translate(91.028195,-82.568542)">
     <g
        id="g5"
-       transform="translate(36.791817)">
+       transform="translate(56.575844)">
       <text
          x="128"
          y="215"
@@ -322,7 +322,7 @@
            id="tspan6">AI</tspan></text>
     </g>
     <path
-       d="m 326.5999,243 h 80"
+       d="m 346.38393,243 h 80"
        stroke="url(#teal)"
        stroke-width="4"
        stroke-linecap="round"
@@ -337,9 +337,9 @@
        letter-spacing="4.6"
        id="text22"><tspan
          style="font-style:normal;font-variant:normal;font-weight:500;font-stretch:normal;font-family:'Inter 18pt';-inkscape-font-specification:'Inter 18pt Medium'"
-         id="tspan7">SUPERVISED SOFTWARE FACTORY</tspan></text>
+         id="tspan7">SUPERVISED AI SOFTWARE FACTORY</tspan></text>
     <text
-       x="210.43288"
+       x="230.2169"
        y="332"
        fill="#d7e2f0"
        font-size="22px"

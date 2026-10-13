@@ -35,6 +35,16 @@ Use absolute paths to existing skill files/directories and Pi extension files/di
 "extensions": ["/home/alice/.pi/agent/extensions/review-tools.ts"]
 ```
 
+Two optional fields tune the worker itself:
+
+- `model`: passed to Pi as `--model`. It starts with a letter or digit and contains only letters, digits, and `. _ : / -`, for example `"anthropic/claude-sonnet-5-5"`.
+- `timeout_minutes`: the agent's time limit, 1 to 480 minutes, replacing the step default (30 minutes for specification generation, code review, and documentation; 60 for code generation and verification). An agent that exceeds it is cancelled and fails the step.
+
+```json
+"model": "provider/review-model",
+"timeout_minutes": 15
+```
+
 The complete, schema-valid catalog is in [`examples/agent-profiles.json`](../examples/agent-profiles.json). Copy it and add actual resource paths; an empty profile is valid but adds no optional resources.
 
 ## Assign a profile to an agent

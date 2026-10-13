@@ -3,70 +3,89 @@ config:
   layout: dagre
 ---
 flowchart LR
- subgraph host["Cronos Rust host · state owner"]
-        queue["Ready queue<br>Priority + dependencies<br>One active task in MVP"]
-        state[("Project + task JSON")]
-        workspace["Per-attempt worktree<br>and local branch"]
-        stepRunner["Workflow host<br>Validates status, step,<br>approval and worktree"]
-        approval{{"Human approval<br>Specs + final code"}}
-        merger["Clean checks<br>Local merge"]
-  end
- subgraph pi["Pi orchestrator"]
-        session["Pi RPC session"]
-        extension["Cronos workflow extension"]
-  end
- subgraph herdr["Herdr agent runtime"]
-        agents["Agents for current step<br>Concurrent within the step"]
-  end
-    human(["Human operator"]) --> tui["Cronos CLI / TUI"]
-    tui -- create and select project, create task --> queue
-    queue -- load and persist --> state
-    queue -- assign attempt --> workspace
-    queue -- launch assigned task --> session
-    workspace --> repository@{ label: "User's local Git repository" }
-    session --> extension
-    extension -- "read-only task query" --> state
-    extension -- run current step --> stepRunner
-    stepRunner -- start step agents --> agents
-    agents -- results; wait for all --> stepRunner
-    agents -- work in assigned worktree --> workspace
-    agents -- specification step --> openspec["OpenSpec"]
-    stepRunner -- validated step and activity updates --> state
-    stepRunner -- approval step reached --> approval
-    tui -- approve or request revision --> approval
-    approval -- validated decision --> state
-    approval -- continue or revise --> stepRunner
-    stepRunner -- documentation changes committed --> workspace
-    stepRunner -- after final approval and docs --> merger
-    merger <-- worktree and local merge --> repository
-    merger -- success --> completed(["Completed"])
-    completed --> state
-    agents -. failure: cancel siblings .-> error(["Error"])
-    merger -. conflict: abort merge .-> error
-    error -- human retries or clarifies --> workspace
-    error -- human abandons --> rejected(["Rejected"])
-    rejected --> state
+  human(["Human operator"])
+  tui["Cronos CLI / TUI<br>Review view · approvals<br>resume · recovery"]
 
-    repository@{ shape: cylinder}
-     human:::person
-     tui:::person
-     queue:::host
-     state:::host
-     workspace:::host
-     stepRunner:::host
-     approval:::host
-     merger:::host
-     session:::agent
-     extension:::agent
-     agents:::agent
-     openspec:::external
-     repository:::external
-     completed:::success
-     error:::failure
-     rejected:::failure
-    classDef person fill:#F1F5FA,stroke:#667A90,color:#16283D,stroke-width:1.5px
-    classDef host fill:#EAF5F4,stroke:#188C83,color:#153C42,stroke-width:1.5px
-    classDef agent fill:#F0EEFA,stroke:#7966B5,color:#302950,stroke-width:1.5px
-    classDef external fill:#FFF4E3,stroke:#C38A3E,color:#4B371F,stroke-width:1.5px
-    classDef success fill:#E7F6EC,stroke:#39935B,color:#183E27,stroke-width:1.5px
-    classDef failure fill:#FFF0ED,stroke:#CB6A56,color:#55271F,stroke-width:1.5px
+  subgraph host["Cronos Rust host · state owner"]
+    queue["Ready queue<br>Priority + dependencies<br>One active task in MVP"]
+    state[("Project + task JSON<br>check command · revisions")]
+    workspace["Per-attempt worktree<br>local branch · .cronos/ excluded"]
+    stepRunner["Workflow engine<br>Per-task step lock · agent limits<br>prompt contract · JSON results<br>worktree checks"]
+    check["Project check command<br>after verification agents<br>no shell · process group"]
+    revision(["Automatic revision<br>back to code generation<br>max 3 per attempt"])
+    approval{{"Human approval<br>Specs + final code"}}
+    archive["Archive OpenSpec change<br>single docs commit"]
+    merger["Local merge<br>dirty base waits"]
+  end
+
+  subgraph pi["Pi orchestrator · read-only"]
+    session["Pi RPC session<br>read + Cronos tools only"]
+    extension["Embedded workflow extension"]
+  end
+
+  subgraph herdr["Herdr agent runtime"]
+    agents["Step agents<br>1 writer, or 1-4 review / verify / docs<br>per-step time limits<br>one pane each, closed after"]
+  end
+
+  openspec["OpenSpec<br>one change per task"]
+  repository[("User's local Git repository<br>committed openspec/")]
+  completed(["Completed"])
+  error(["Error"])
+  rejected(["Rejected"])
+
+  human --> tui
+  tui -->|create project, task, check command| queue
+  queue -->|load and persist| state
+  queue -->|assign attempt| workspace
+  queue -->|launch or resume task| session
+  workspace --> repository
+
+  session --> extension
+  extension -->|read-only task query| state
+  extension -->|run current step| stepRunner
+  stepRunner -->|prompt + Rust contract| agents
+  agents -->|JSON result files; wait for all| stepRunner
+  agents -->|work in assigned worktree| workspace
+  agents -->|specification step| openspec
+  stepRunner -->|verification passed| check
+  stepRunner -->|changes_requested| revision
+  check -->|non-zero exit or leftover files| revision
+  revision --> stepRunner
+  check -->|passed| approval
+  stepRunner -->|validated step and activity| state
+  stepRunner -->|specs validated| approval
+  tui -->|review, approve or request revision| approval
+  approval -->|validated decision| state
+  approval -->|continue or revise| stepRunner
+  stepRunner -->|documentation agents done| archive
+  archive --> workspace
+  archive -->|after Pi settles| merger
+  merger <-->|worktree and local merge| repository
+  merger -->|success| completed
+  merger -. conflict: abort .-> revision
+  merger -. other merge failure: abort .-> error
+  completed --> state
+
+  agents -. crash, timeout, invalid or failed result: cancel siblings .-> error
+  stepRunner -. worktree or OpenSpec check failed .-> error
+  revision -. limit reached .-> error
+  error -->|stop stale agents, then retry step: same attempt| stepRunner
+  error -->|retry or clarify: new attempt| workspace
+  error -->|human abandons| rejected
+  rejected --> state
+
+  classDef person fill:#F1F5FA,stroke:#667A90,color:#16283D,stroke-width:1.5px
+  classDef host fill:#EAF5F4,stroke:#188C83,color:#153C42,stroke-width:1.5px
+  classDef agent fill:#F0EEFA,stroke:#7966B5,color:#302950,stroke-width:1.5px
+  classDef external fill:#FFF4E3,stroke:#C38A3E,color:#4B371F,stroke-width:1.5px
+  classDef success fill:#E7F6EC,stroke:#39935B,color:#183E27,stroke-width:1.5px
+  classDef failure fill:#FFF0ED,stroke:#CB6A56,color:#55271F,stroke-width:1.5px
+  classDef loop fill:#FFF8E8,stroke:#C9962B,color:#4B371F,stroke-width:1.5px
+
+  class human,tui person
+  class queue,state,workspace,stepRunner,check,approval,archive,merger host
+  class revision loop
+  class session,extension,agents agent
+  class openspec,repository external
+  class completed success
+  class error,rejected failure

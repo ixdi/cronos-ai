@@ -18,6 +18,19 @@ use crate::{
     storage::{ProjectStore, StoreError},
 };
 
+/// Automatic returns to code generation allowed per attempt before the task stops with Error.
+pub const MAX_AUTOMATIC_REVISIONS: u32 = 3;
+
+/// Result of a local-merge attempt.
+#[derive(Debug)]
+pub enum MergeOutcome {
+    Completed(Task),
+    /// The base repository has uncommitted changes; the task waits at local merge.
+    BaseDirty(String),
+    /// The merge conflicted and was aborted; the task returned to code generation.
+    Conflict(Task),
+}
+
 #[derive(Debug, Error)]
 pub enum ProjectError {
     #[error(transparent)]
@@ -78,6 +91,25 @@ pub enum ProjectError {
     Git(#[from] GitError),
     #[error("system clock is before the Unix epoch")]
     InvalidSystemTime,
+    #[error(
+        "the repository has no committed openspec/ directory; run `openspec init` and commit openspec/ before starting tasks"
+    )]
+    OpenSpecNotInitialized,
+    #[error("automatic revision limit ({MAX_AUTOMATIC_REVISIONS}) reached for this attempt")]
+    AutomaticRevisionLimit,
+    #[error("a check command needs a program")]
+    CheckCommandRequired,
+    #[error(
+        "a workflow step is still running for this task in another process; wait for it to finish"
+    )]
+    TaskBusy,
+}
+
+/// Exclusive per-task lock held while a workflow step runs. The operating system releases it when
+/// the holder exits, so a crashed process never leaves the task locked.
+#[derive(Debug)]
+pub struct TaskLock {
+    _file: fs::File,
 }
 
 pub struct ProjectManager {
@@ -95,12 +127,38 @@ impl ProjectManager {
         self.store.root()
     }
 
+    /// Takes the task's step lock, failing with `TaskBusy` when another process holds it.
+    pub fn lock_task(&self, task_id: TaskId) -> Result<TaskLock, ProjectError> {
+        let directory =
+            crate::integrations::ensure_real_directory(&self.store.root().join("locks"))
+                .map_err(StoreError::Io)?;
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(directory.join(format!("{}.lock", task_id.0)))
+            .map_err(StoreError::Io)?;
+        // A child forked by another thread shares the lock until it execs, so a lock released a
+        // moment ago can look held. Real holders run a whole step; a short retry tells them apart.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(TaskLock { _file: file }),
+                Err(fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(fs::TryLockError::WouldBlock) => return Err(ProjectError::TaskBusy),
+                Err(fs::TryLockError::Error(error)) => return Err(StoreError::Io(error).into()),
+            }
+        }
+    }
+
     pub fn create_project(
         &self,
         name: String,
         description: Option<String>,
     ) -> Result<Project, ProjectError> {
-        self.create_project_with_repository(name, description, None, &GitAdapter::default())
+        self.create_project_with_repository(name, description, None, None, &GitAdapter::default())
     }
 
     pub fn create_project_with_repository(
@@ -108,6 +166,7 @@ impl ProjectManager {
         name: String,
         description: Option<String>,
         repository: Option<&Path>,
+        check_command: Option<Vec<String>>,
         git: &GitAdapter,
     ) -> Result<Project, ProjectError> {
         let repository = repository
@@ -124,6 +183,7 @@ impl ProjectManager {
             status: ProjectStatus::Active,
             task_ids: Vec::new(),
             repository,
+            check_command,
             created_at_unix_secs: now,
             updated_at_unix_secs: now,
         };
@@ -172,6 +232,26 @@ impl ProjectManager {
             return Err(ProjectError::RepositoryChanged);
         }
         Ok(root)
+    }
+
+    pub fn set_project_check_command(
+        &self,
+        project_id: ProjectId,
+        command: Vec<String>,
+    ) -> Result<Project, ProjectError> {
+        if command.is_empty() {
+            return Err(ProjectError::CheckCommandRequired);
+        }
+        let mut project = self.store.load_project(project_id)?;
+        project.check_command = Some(command);
+        project.updated_at_unix_secs = now_unix_secs()?;
+        project.validate()?;
+        self.store.save_project(&project)?;
+        Ok(project)
+    }
+
+    pub fn get_project(&self, project_id: ProjectId) -> Result<Project, ProjectError> {
+        Ok(self.store.load_project(project_id)?)
     }
 
     pub fn list_projects(&self) -> Result<Vec<Project>, ProjectError> {
@@ -258,6 +338,7 @@ impl ProjectManager {
             worktree: None,
             attempt: 1,
             recovery_history: Vec::new(),
+            automatic_revisions: 0,
             created_at_unix_secs: now,
             updated_at_unix_secs: now,
         };
@@ -309,7 +390,13 @@ impl ProjectManager {
             return Err(ProjectError::InvalidTaskWorktree);
         }
         let branch = GitAdapter::worktree_branch(task.id, task.attempt);
+        git.ensure_local_exclude(&repository, crate::workflow::CRONOS_EXCLUDE_PATTERN)?;
         git.add_worktree(&repository, &worktree, &branch)?;
+        // Worktrees contain only committed files, so this also rejects an uncommitted openspec/.
+        if !worktree.join("openspec").is_dir() {
+            let _ = git.discard_attempt(&repository, &worktree, &branch);
+            return Err(ProjectError::OpenSpecNotInitialized);
+        }
         task.worktree = Some(worktree.to_string_lossy().into_owned());
         task.updated_at_unix_secs = now_unix_secs()?;
         if let Err(error) = self.store.save_task(&task) {
@@ -543,7 +630,7 @@ impl ProjectManager {
         project_id: ProjectId,
         task_id: TaskId,
         git: &GitAdapter,
-    ) -> Result<Task, ProjectError> {
+    ) -> Result<MergeOutcome, ProjectError> {
         let task = self.store.load_task(project_id, task_id)?;
         if task.status != TaskStatus::InProgress
             || task.current_step.as_deref() != Some(WorkflowStep::LocalMerge.as_str())
@@ -554,12 +641,167 @@ impl ProjectManager {
         let project = self.store.load_project(project_id)?;
         let repository = self.repository_path(&project, git)?;
         let worktree = self.validated_task_worktree_path(project_id, task_id)?;
-        git.merge_worktree(
+        match git.merge_worktree(
             &repository,
             &worktree,
             &GitAdapter::worktree_branch(task.id, task.attempt),
-        )?;
-        self.complete_workflow_step(project_id, task_id, WorkflowStep::LocalMerge)
+        ) {
+            Ok(()) => Ok(MergeOutcome::Completed(self.complete_workflow_step(
+                project_id,
+                task_id,
+                WorkflowStep::LocalMerge,
+            )?)),
+            Err(GitError::DirtyBase(path)) => Ok(MergeOutcome::BaseDirty(path)),
+            Err(GitError::MergeConflict(detail)) => {
+                let branch = git.current_branch(&repository)?;
+                self.record_agent_activity(
+                    project_id,
+                    task_id,
+                    "cronos".to_owned(),
+                    WorkflowStep::LocalMerge.as_str().to_owned(),
+                    AgentStatus::ChangesRequested,
+                    Some(
+                        format!(
+                            "Local merge into {branch} conflicted and was aborted. Merge {branch} into the task branch, resolve the conflicts, and commit. {detail}"
+                        )
+                        .chars()
+                        .take(2_000)
+                        .collect(),
+                    ),
+                )?;
+                Ok(MergeOutcome::Conflict(
+                    self.request_automatic_revision(project_id, task_id)?,
+                ))
+            }
+            Err(GitError::MergeFailed(detail)) => {
+                self.record_agent_activity(
+                    project_id,
+                    task_id,
+                    "cronos".to_owned(),
+                    WorkflowStep::LocalMerge.as_str().to_owned(),
+                    AgentStatus::Failed,
+                    Some(
+                        format!("Local merge failed and needs a human: {detail}")
+                            .chars()
+                            .take(2_000)
+                            .collect(),
+                    ),
+                )?;
+                self.set_task_status(project_id, task_id, TaskStatus::Error)?;
+                Err(GitError::MergeFailed(detail).into())
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Returns an in-progress task to code generation after review, verification, or merge findings.
+    /// Final-code approval of the attempt is cleared because the code will change.
+    pub fn request_automatic_revision(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> Result<Task, ProjectError> {
+        let mut task = self.store.load_task(project_id, task_id)?;
+        if task.status != TaskStatus::InProgress {
+            return Err(ProjectError::TaskNotInProgress(task.status));
+        }
+        let now = now_unix_secs()?;
+        task.updated_at_unix_secs = now;
+        if task.automatic_revisions >= MAX_AUTOMATIC_REVISIONS {
+            task.agent_activity.push(AgentActivity {
+                attempt: task.attempt,
+                agent_name: "cronos".to_owned(),
+                step: task.current_step.clone().unwrap_or_default(),
+                status: AgentStatus::Failed,
+                detail: Some(format!(
+                    "Automatic revision limit ({MAX_AUTOMATIC_REVISIONS}) reached for attempt {}; review the findings, then retry the step or the task.",
+                    task.attempt
+                )),
+                updated_at_unix_secs: now,
+            });
+            if task.agent_activity.len() > MAX_AGENT_EVENTS {
+                task.agent_activity.remove(0);
+            }
+            task.status = TaskStatus::Error;
+            task.validate()?;
+            self.store.save_task(&task)?;
+            return Err(ProjectError::AutomaticRevisionLimit);
+        }
+        task.automatic_revisions += 1;
+        let attempt = task.attempt;
+        task.approval_history.retain(|record| {
+            !(record.gate == ApprovalGate::FinalCode && record.attempt == attempt)
+        });
+        let step = WorkflowStep::CodeGeneration.as_str().to_owned();
+        task.current_step = Some(step.clone());
+        task.step_started_at_unix_secs.insert(step, now);
+        task.validate()?;
+        self.store.save_task(&task)?;
+        Ok(task)
+    }
+
+    /// Resumes an Error task at its failed step, keeping the attempt, worktree, and approvals.
+    pub fn retry_step(&self, project_id: ProjectId, task_id: TaskId) -> Result<Task, ProjectError> {
+        let _lock = self.lock_task(task_id)?;
+        let mut task = self.store.load_task(project_id, task_id)?;
+        if task.status != TaskStatus::Error {
+            return Err(ProjectError::TaskNotInError(task.status));
+        }
+        let step = task
+            .current_step
+            .clone()
+            .ok_or(ProjectError::UnexpectedWorkflowStep {
+                expected: WorkflowStep::SpecificationGeneration,
+                actual: None,
+            })?;
+        if WorkflowStep::parse(&step).is_none() {
+            return Err(ProjectError::UnknownWorkflowStep(step));
+        }
+        if task.worktree.is_some() {
+            self.validated_task_worktree_path(project_id, task_id)?;
+        }
+        let now = now_unix_secs()?;
+        task.status = TaskStatus::InProgress;
+        task.step_started_at_unix_secs.insert(step, now);
+        task.recovery_history.push(RecoveryRecord {
+            attempt: task.attempt,
+            action: RecoveryAction::RetryStep,
+            note: None,
+            discarded_worktree: None,
+            resumed_at_unix_secs: now,
+        });
+        if task.recovery_history.len() > MAX_RECOVERY_RECORDS {
+            task.recovery_history.remove(0);
+        }
+        task.updated_at_unix_secs = now;
+        task.validate()?;
+        self.store.save_task(&task)?;
+        Ok(task)
+    }
+
+    /// Agents of the current attempt and step that started but never reported an outcome.
+    pub fn interrupted_agents(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+    ) -> Result<Vec<String>, ProjectError> {
+        let task = self.store.load_task(project_id, task_id)?;
+        let Some(step) = task.current_step.as_deref() else {
+            return Ok(Vec::new());
+        };
+        let mut last = std::collections::BTreeMap::new();
+        for activity in task
+            .agent_activity
+            .iter()
+            .filter(|activity| activity.attempt == task.attempt && activity.step == step)
+        {
+            last.insert(activity.agent_name.clone(), activity.status.clone());
+        }
+        Ok(last
+            .into_iter()
+            .filter(|(_, status)| matches!(status, AgentStatus::Starting | AgentStatus::Running))
+            .map(|(name, _)| name)
+            .collect())
     }
 
     pub fn retry_task(&self, project_id: ProjectId, task_id: TaskId) -> Result<Task, ProjectError> {
@@ -622,6 +864,8 @@ impl ProjectManager {
         note: Option<String>,
         git: Option<&GitAdapter>,
     ) -> Result<Task, ProjectError> {
+        // Never discard a worktree while a step process may still be working in it.
+        let _lock = self.lock_task(task_id)?;
         let mut task = self.store.load_task(project_id, task_id)?;
         if task.status != TaskStatus::Error {
             return Err(ProjectError::TaskNotInError(task.status));
@@ -654,6 +898,7 @@ impl ProjectManager {
             now,
         );
         task.worktree = None;
+        task.automatic_revisions = 0;
         task.recovery_history.push(RecoveryRecord {
             attempt,
             action,
@@ -779,7 +1024,7 @@ fn now_unix_secs() -> Result<u64, ProjectError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProjectError, ProjectManager};
+    use super::{MergeOutcome, ProjectError, ProjectManager};
     use crate::integrations::GitAdapter;
     use crate::model::{
         AgentStatus, ApprovalDecision, ApprovalGate, MAX_AGENT_EVENTS, Priority, ProjectId,
@@ -810,7 +1055,9 @@ mod tests {
         git_fixture(root, &["config", "user.name", "Cronos Tests"]);
         git_fixture(root, &["config", "user.email", "cronos@example.invalid"]);
         fs::write(root.join("README.md"), "base\n").unwrap();
-        git_fixture(root, &["add", "README.md"]);
+        fs::create_dir_all(root.join("openspec")).unwrap();
+        fs::write(root.join("openspec/config.yaml"), "schema: spec-driven\n").unwrap();
+        git_fixture(root, &["add", "README.md", "openspec"]);
         git_fixture(root, &["commit", "-m", "initial"]);
     }
 
@@ -937,7 +1184,13 @@ mod tests {
         let manager = ProjectManager::new(&data).unwrap();
         let git = GitAdapter::default();
         let project = manager
-            .create_project_with_repository("Factory".to_owned(), None, Some(&repository), &git)
+            .create_project_with_repository(
+                "Factory".to_owned(),
+                None,
+                Some(&repository),
+                Some(vec!["true".to_owned()]),
+                &git,
+            )
             .unwrap();
         let task = manager
             .create_task(
@@ -996,7 +1249,13 @@ mod tests {
         let manager = ProjectManager::new(temp.path().join("data")).unwrap();
         let git = GitAdapter::default();
         let project = manager
-            .create_project_with_repository("Factory".to_owned(), None, Some(&repository), &git)
+            .create_project_with_repository(
+                "Factory".to_owned(),
+                None,
+                Some(&repository),
+                Some(vec!["true".to_owned()]),
+                &git,
+            )
             .unwrap();
         let task = manager
             .create_task(
@@ -1020,13 +1279,205 @@ mod tests {
         ));
         complete_to_local_merge(&manager, project.id, task.id);
 
-        let completed = manager
-            .merge_and_complete_task(project.id, task.id, &git)
-            .unwrap();
+        // Result files under .cronos/ are locally excluded and never block the merge.
+        fs::create_dir_all(worktree.join(".cronos/results")).unwrap();
+        fs::write(worktree.join(".cronos/results/x.json"), "{}").unwrap();
+        fs::write(repository.join("scratch.txt"), "uncommitted\n").unwrap();
+        assert!(matches!(
+            manager.merge_and_complete_task(project.id, task.id, &git),
+            Ok(MergeOutcome::BaseDirty(_))
+        ));
+        let waiting = manager.get_task(project.id, task.id).unwrap();
+        assert_eq!(waiting.status, TaskStatus::InProgress);
+        assert_eq!(waiting.current_step.as_deref(), Some("local-merge"));
+        fs::remove_file(repository.join("scratch.txt")).unwrap();
+
+        let Ok(MergeOutcome::Completed(completed)) =
+            manager.merge_and_complete_task(project.id, task.id, &git)
+        else {
+            panic!("expected a completed merge");
+        };
         assert_eq!(completed.status, TaskStatus::Completed);
         assert_eq!(
             fs::read_to_string(repository.join("generated.txt")).unwrap(),
             "merged output\n"
+        );
+    }
+
+    #[test]
+    fn merge_conflict_returns_the_task_to_code_generation_without_final_approval() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        init_git_fixture(&repository);
+        let manager = ProjectManager::new(temp.path().join("data")).unwrap();
+        let git = GitAdapter::default();
+        let project = manager
+            .create_project_with_repository(
+                "Factory".to_owned(),
+                None,
+                Some(&repository),
+                Some(vec!["true".to_owned()]),
+                &git,
+            )
+            .unwrap();
+        let task = manager
+            .create_task(
+                project.id,
+                "Build".to_owned(),
+                None,
+                Priority::High,
+                Vec::new(),
+            )
+            .unwrap();
+        manager.start_next_task(project.id).unwrap().unwrap();
+        let worktree = manager
+            .prepare_task_worktree(project.id, task.id, &git)
+            .unwrap();
+        fs::write(worktree.join("README.md"), "task version\n").unwrap();
+        git_fixture(&worktree, &["commit", "-am", "task change"]);
+        fs::write(repository.join("README.md"), "base version\n").unwrap();
+        git_fixture(&repository, &["commit", "-am", "base change"]);
+        complete_to_local_merge(&manager, project.id, task.id);
+
+        let Ok(MergeOutcome::Conflict(task)) =
+            manager.merge_and_complete_task(project.id, task.id, &git)
+        else {
+            panic!("expected a merge conflict");
+        };
+        assert_eq!(task.status, TaskStatus::InProgress);
+        assert_eq!(task.current_step.as_deref(), Some("code-generation"));
+        assert_eq!(task.automatic_revisions, 1);
+        assert!(!task.is_approved(ApprovalGate::FinalCode));
+        assert!(task.is_approved(ApprovalGate::Specifications));
+        assert!(
+            task.agent_activity
+                .last()
+                .unwrap()
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("conflicted")
+        );
+        assert_eq!(
+            fs::read_to_string(repository.join("README.md")).unwrap(),
+            "base version\n"
+        );
+    }
+
+    #[test]
+    fn worktree_requires_committed_openspec_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        fs::create_dir_all(&repository).unwrap();
+        git_fixture(&repository, &["init"]);
+        git_fixture(&repository, &["config", "user.name", "Cronos Tests"]);
+        git_fixture(
+            &repository,
+            &["config", "user.email", "cronos@example.invalid"],
+        );
+        fs::write(repository.join("README.md"), "base\n").unwrap();
+        git_fixture(&repository, &["add", "README.md"]);
+        git_fixture(&repository, &["commit", "-m", "initial"]);
+        // An untracked openspec/ is not enough: worktrees only contain committed files.
+        fs::create_dir_all(repository.join("openspec")).unwrap();
+        let manager = ProjectManager::new(temp.path().join("data")).unwrap();
+        let git = GitAdapter::default();
+        let project = manager
+            .create_project_with_repository(
+                "Factory".to_owned(),
+                None,
+                Some(&repository),
+                None,
+                &git,
+            )
+            .unwrap();
+        let task = manager
+            .create_task(
+                project.id,
+                "Build".to_owned(),
+                None,
+                Priority::High,
+                Vec::new(),
+            )
+            .unwrap();
+        manager.start_next_task(project.id).unwrap().unwrap();
+        assert!(matches!(
+            manager.prepare_task_worktree(project.id, task.id, &git),
+            Err(ProjectError::OpenSpecNotInitialized)
+        ));
+        let task = manager.get_task(project.id, task.id).unwrap();
+        assert!(task.worktree.is_none());
+        let common = repository.join(".git/info/exclude");
+        assert!(
+            fs::read_to_string(common)
+                .unwrap()
+                .lines()
+                .any(|line| line == ".cronos/")
+        );
+    }
+
+    #[test]
+    fn retry_step_keeps_attempt_approvals_and_step_and_resume_finds_interrupted_agents() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(root.path()).unwrap();
+        let project = manager.create_project("Factory".to_owned(), None).unwrap();
+        let task = manager
+            .create_task(
+                project.id,
+                "Build".to_owned(),
+                None,
+                Priority::High,
+                Vec::new(),
+            )
+            .unwrap();
+        manager.start_next_task(project.id).unwrap().unwrap();
+        manager
+            .complete_workflow_step(project.id, task.id, WorkflowStep::SpecificationGeneration)
+            .unwrap();
+        manager
+            .record_approval(
+                project.id,
+                task.id,
+                ApprovalGate::Specifications,
+                ApprovalDecision::Approved,
+                None,
+            )
+            .unwrap();
+        for (agent, status) in [
+            ("builder", AgentStatus::Starting),
+            ("helper", AgentStatus::Starting),
+            ("helper", AgentStatus::Completed),
+        ] {
+            manager
+                .record_agent_activity(
+                    project.id,
+                    task.id,
+                    agent.to_owned(),
+                    "code-generation".to_owned(),
+                    status,
+                    None,
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            manager.interrupted_agents(project.id, task.id).unwrap(),
+            ["builder"]
+        );
+        assert!(matches!(
+            manager.retry_step(project.id, task.id),
+            Err(ProjectError::TaskNotInError(TaskStatus::InProgress))
+        ));
+        manager
+            .set_task_status(project.id, task.id, TaskStatus::Error)
+            .unwrap();
+        let resumed = manager.retry_step(project.id, task.id).unwrap();
+        assert_eq!(resumed.status, TaskStatus::InProgress);
+        assert_eq!(resumed.attempt, 1);
+        assert_eq!(resumed.current_step.as_deref(), Some("code-generation"));
+        assert!(resumed.is_approved(ApprovalGate::Specifications));
+        assert_eq!(
+            resumed.recovery_history.last().unwrap().action,
+            RecoveryAction::RetryStep
         );
     }
 

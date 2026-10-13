@@ -1,178 +1,181 @@
 # Cronos-AI - AI Software Factory
 
-It is a pi-mono workflow that processes each task through an ordered sequence of steps.
+Cronos-AI is an opinionated, human-supervised software factory. It takes the tasks of a project through an ordered workflow of AI agents and human approval gates, and produces committed, verified, and documented changes in a local Git repository.
 
-It is an opinionated framework to create projects and process their tasks. In the first implementation, tasks are handled one at a time. Within each task, workflow steps run sequentially: a step starts only after the preceding step is complete. Independent sub-agents assigned to the same step run in parallel, and the workflow advances after they finish.
+- **Rust** owns persisted state, validated transitions, human approvals, and all Git and OpenSpec bookkeeping.
+- **Pi** orchestrates the active task.
+- **Herdr** runs the worker agents.
+- **OpenSpec** holds each task's specifications.
 
-Each project consists of several tasks, and each task follows the defined workflow steps, allowing tasks to be processed efficiently and accurately.
+The OpenSpec specs in `openspec/specs/` are the source of truth for behavior. This document explains the design and labels each feature as **Implemented** (in the MVP) or **Future** (designed but not built). Diagrams:
+- `design/architecture.mmd`, rendered as `design/LLD_mermaid.png`: the as-built architecture.
+- `design/workflow.drawio`, `design/workflow.svg`, `design/workflow.png`: the per-task step sequence inside the future parallel feature-track model.
 
-Each project and each task have a status, which is updated as the workflow progresses. The status of each task is
-tracked in the project JSON file, allowing for easy monitoring. The status are:
+## Execution model
 
-- Pending: The task is waiting to be processed.
-- In Progress: The task is currently being processed.
-- Completed: The task has been successfully completed.
-- Rejected: The entire task has been explicitly abandoned and will not be processed further. Rejecting an approval step is not a task-level rejection; the task remains In Progress while it is revised.
-- Error: A failure stopped the task workflow; any sibling agents still running in that step are canceled, and a human must decide whether to retry or clarify the context.
+- **Implemented:**
+  - One task runs at a time.
+  - Within a task, steps run sequentially; a step starts only after the previous one finishes.
+  - Independent agents within one step run in parallel.
+- **Future:** several tasks run in parallel on separate feature tracks. The step order within each task does not change.
+
+## Task statuses
+
+| Status | Meaning |
+|---|---|
+| Pending | Waiting in the ready queue (priority, then creation time; dependencies must be Completed). |
+| In Progress | The workflow is running, waiting at an approval gate, waiting for a clean base repository at local merge, or interrupted and resumable. Approval rejections and automatic revisions keep this status. |
+| Completed | Final approval, documentation, and the local merge succeeded. |
+| Rejected | A human explicitly abandoned the whole task. Rejecting an approval step is a revision, not Rejected. |
+| Error | The workflow stopped. Running sibling agents were cancelled, and a human chooses step retry, retry from specs, clarification, or abandonment. |
 
 ## Technologies
 
-- pi mono agent as orchestrator to manage the workflow and coordinate the execution of tasks.
-- JSON project file format to store the tasks and several json files with the tasks associated data, allowing for easy manipulation and retrieval of information.
-- Each task follows a defined workflow steps.
-- herdr to review what is happening in the workflow and to manage the sub-agents.
-- jev to prioritize the tasks and manage the dependencies between them.
-- openspec to generate the specifications for each task.
-- sub-agents pi extension to create sub-agents for each task step, allowing independent work within a step to run in parallel. The workflow advances to the next step only after the current step's sub-agents have reported their results.
-  - Each task follows the defined steps, including prompt generation, code generation, code review, verification, and human approval. Those steps run sequentially; independent sub-agents within a step run in parallel.
-- Each step agent type can have its own specific model, allowing for flexibility and adaptability in the workflow.
-  - Each agent also has its own blueprint context, with extensions, mcp servers and skills, allowing for better understanding and execution of the tasks.
-- A project is attached to a github repository. The commits after the human approval follow the commitlint and are uniquely and well-defined, allowing for easy tracking and management of the codebase.
-- changelog follows the conventional commits format, allowing for easy tracking of changes and updates to the
-  codebase.
-- A Dashboard tui is used to create projects and with one selected, visualize the workflow's progress and provide real-time updates on the status of each task.
-  - Use ratatui to create the dashboard tui.
+| Component | Role | Status |
+|---|---|---|
+| Rust CLI + Ratatui TUI | Projects, tasks, monitoring, approvals, recovery, review view | Implemented |
+| Pi (RPC mode) | Orchestrator with the read-only `read` tool and the Cronos workflow tools only | Implemented |
+| Embedded Pi extension | `cronos_task_state`, `cronos_agent_profiles`, `cronos_run_step`; written to the data directory at launch | Implemented |
+| Herdr | Runs each worker as a Pi agent in its own pane; prompt, wait with time limit, read, cancel | Implemented |
+| OpenSpec | One change per task; validated after specs and archived during documentation | Implemented |
+| Git worktrees | One worktree and branch per attempt; local merge only | Implemented |
+| Agent profiles | Per-step Pi skills, extensions, MCP config, model, and time limit | Implemented |
+| Jev | Prioritization and dependency model | Future (built-in priority/dependency ordering is used) |
+| Remote push / GitHub | Publishing after merge | Future (users push manually) |
+| Release numbers, changelog per release | Versioning of merged work | Future |
 
-## Dashboard
+## Projects
 
-A Dashboard TUI is used to manage projects, to create, select, update or delete projects.
+- **Implemented:**
+  - Create, list, select, update, and archive projects.
+  - A project stores a local Git repository and a **check command**: a program and arguments run without a shell, for example `./scripts/check.sh`. Both are required before tasks start.
+  - The repository must contain a committed `openspec/` directory, created with `openspec init`.
+- **Future, project definition:** the project stores product requirements (functional and non-functional). A Pi agent uses OpenSpec explore to turn them into specifications and generates one task per requirement. Today, users write tasks by hand.
 
-For each project it can visualize the workflow's progress, like a kanban, and provide real-time updates on the status of each task. This ensures that the work remains organized and efficient, even when handling a large number of tasks and that the human knows what is happening in each moment.
+## Workflow
 
-The dashboard uses a simple, modern, dark and intuitive tui interface to display the tasks, their priorities, and their current status. It allows for easy tracking of the workflow's progress and provides visibility into the overall task management process.
+### Project-level steps
 
-The tui shows some analytics about the tasks, including the number of tasks in each status, the average time taken to complete tasks, and the overall progress of the workflow. This provides valuable insights into the workflow's performance and allows for data-driven decision-making.
+1. **Task collection.**
+   - *Implemented:* tasks are entered in the TUI or CLI.
+   - *Future:* cleaning, deduplication, normalization, and more input sources.
+2. **Task prioritization.**
+   - *Implemented:* priority (high, medium, low), dependencies within the same project, and a ready queue that never starts a task before its dependencies are Completed.
+   - *Future:* Jev-based ranking.
 
-It also allows to click in each task to see the details of the task, including its specifications, code, diffs, and any associated resources. This provides a comprehensive view of each task and allows for easy access to the information needed for effective task management.
+### Per-task steps
 
-It also allows humans to approve or reject work at specified approval steps. Rejecting an approval step sends the task through its revision loop without setting the task-level Rejected status; that status is reserved for abandoning the entire task.
+Each step lists its agents and the rules Rust enforces.
 
-It allows to insert some notes, descriptions, or comments about the task, which can be used to provide additional
-context or information for the task. This ensures that all relevant information is captured and easily accessible for future reference if it is approved or it is used as a reference for the next loop when a step is rejected in a human approval step.
+| # | Step | Agents | Rust-enforced rules |
+|---|---|---|---|
+| 1 | `specification-generation` | exactly 1 | The agent writes OpenSpec change `cronos-<task-id prefix>` and commits it. The worktree must be clean. `openspec validate --strict` must pass. |
+| 2 | `specification-approval` | human | Approve to continue to step 3, or request a revision with a note to return to step 1. |
+| 3 | `code-generation` | exactly 1 | The agent implements the change with tests and commits (Conventional Commit). The worktree must be clean. |
+| 4 | `code-review` | 1-4 in parallel | Read-only: Rust compares `HEAD` and file status before and after the step. |
+| 5 | `verification` | 1-4 in parallel | Read-only. Afterwards, Rust runs the project check command in the worktree (60-minute limit, whole process group stopped on timeout). The check must not leave new files in the worktree. |
+| 6 | `final-approval` | human | Approve to continue to step 7, or request a revision with a note to return to step 3. |
+| 7 | `documentation` | 1-4 in parallel | Agents write documentation files without committing. Rust archives the OpenSpec change (syncing its specs) and makes one `docs: document <title>` commit. |
+| 8 | `local-merge` | Rust | Requires a clean base and worktree, then runs `git merge --no-ff`. Nothing is pushed. |
 
-A history of the task is also maintained, allowing for easy tracking of changes and updates over time. This ensures that all relevant information is captured and easily accessible for future reference. The tui can show this history in a simple and intuitive way, allowing for easy navigation and access to the information needed for effective task management.
+**Prompts.** Pi writes each agent's task-specific prompt. It can read the worktree to do this, but cannot change it. Rust appends a fixed **contract** to every prompt, which states:
+- the result file;
+- the OpenSpec change name;
+- the step's write and commit rules;
+- that agents must never push or edit Cronos state.
 
-The tui allows to insert a new task definition, which can be used to add new tasks to the workflow. This ensures that the workflow remains flexible and adaptable to changing requirements and allows for easy expansion of the task list. This will be used as the input for the first step of the workflow, which is the tasks collection step.
+**Results.** Every agent ends by writing `.cronos/results/<step>/<agent>.json`:
 
-The status of each task is also displayed in the Dashboard TUI, providing real-time updates on the progress of the workflow.
+```json
+{"status": "success" | "changes_requested" | "failed", "summary": "...", "findings": ["..."]}
+```
+
+Rust decides the step outcome from these files, never from terminal output. `.cronos/` is listed in the repository's local `info/exclude`, so result files and check output are never committed.
+
+**Time limits.**
+- Defaults: 30 minutes for specification generation, review, and documentation; 60 minutes for code generation and verification.
+- A profile's `timeout_minutes` overrides the default for agents using that profile.
+- The TUI shows how long the current step has been running.
+
+### Failures and automatic revisions
+
+| Event | Result |
+|---|---|
+| Agent crash, Herdr error, time limit exceeded, blocked prompt, or missing, invalid, or `failed` result | Cancel siblings (cancellation is sticky, so a sibling that has not started never starts), close every pane the step opened, set **Error** |
+| A read-only step changed the worktree, a writer left uncommitted work, or OpenSpec validation or archive failed | **Error** |
+| `changes_requested` from review or verification, a failing check command, or a check that leaves new files in the worktree | Record the findings, clear the attempt's final-code approval, and return to `code-generation` (**In Progress**) |
+| More than 3 automatic revisions in one attempt | **Error**, with the reason recorded in agent activity |
+| Merge conflict | Abort the merge, record the conflict, and return to `code-generation` so the agent merges the base branch and resolves it (counts as an automatic revision) |
+| Any other merge failure (no unmerged paths, for example a failing Git hook) | Abort the merge and set **Error** |
+| Base repository dirty at merge time | Stay at `local-merge`; the user cleans up and presses `s` |
+| The task branch changed the check program | The check runs that version; a warning is recorded and shown at the top of the review view |
+
+Pi keeps running agent steps until the task reaches an approval gate, local merge, Error, or Completed. After an approval, the TUI starts Pi again.
+
+### One step process per task
+
+- `run-step` holds an exclusive per-task OS file lock (`<data>/locks/<task-id>.lock`) for the whole step. The OS releases it when the process exits, even after a crash.
+- Resume, step retry, retry, and clarification refuse to act while the lock is held. Once it is free, they stop agents the dead process left running (found through `herdr agent get`) and close their panes.
+- After its agents finish, a step reloads the task. If the attempt, step, or status changed meanwhile, it discards its results instead of writing them.
+- Herdr agent names include a stable FNV-1a hash of the task ID, attempt, and agent name, so a new attempt never reuses an older attempt's agents.
+
+### Human recovery
+
+| Action | Effect |
+|---|---|
+| Retry step (`t`) | Error becomes In Progress at the failed step, keeping the attempt, worktree, and approvals. Use it for transient failures. Like `r`, `c`, and `s`, it first stops stale agents and waits for any running step process. |
+| Retry (`r`) | Discards the attempt's worktree and branch and starts a new attempt at specification generation. Downstream outputs are not reused. |
+| Clarify (`c`) | Like Retry, plus context that the new specifications must apply. The new specifications need approval again. |
+| Resume (`s`) | For an In Progress task with no running orchestrator (for example, after the TUI was closed). Marks unfinished agents as cancelled, then retries the merge or restarts Pi at the current step. |
+| Abandon (`a`) | Sets Rejected and records a reason. |
+
+## OpenSpec usage
+
+- **One change per task.** Each task's change is named `cronos-` followed by the first 8 hex characters of the task UUID. Revisions and step retries update the same change; a new attempt starts again from the base branch.
+- **Spec sync timing.** Documentation archives the change on the task branch, so the synced main specs arrive in the base branch with the local merge. If two tasks change the same capability, the merge conflicts and follows the conflict path above.
+- **This repository's own specs.** Cronos-AI tracks `openspec/config.yaml` and `openspec/specs/` in Git. Working changes (`openspec/changes/`) stay local.
+
+## Dashboard (TUI)
+
+- **Implemented:**
+  - Project list and creation form (name, description, repository, check command).
+  - Task list and creation form (title, description, priority, dependencies).
+  - Task details: status, step, elapsed time, attempt and automatic-revision count, worktree, branch, OpenSpec change, approvals, recoveries, and agent activity.
+  - Review view (`v`): the OpenSpec change, task-branch commits, diff summary against the base, and the latest check output.
+  - Approvals and revision notes, recovery actions, and abandonment.
+  - A semantic color palette that keeps text labels.
+  - A one-second refresh.
+- **Future:**
+  - A kanban view of task statuses.
+  - Analytics such as counts per status, average completion time, and overall progress.
+  - Inline diffs per file.
+  - A web dashboard.
 
 ## Storage
 
-A core JSON file is used for each project to store the tasks of a project and their associated data, allowing for easy manipulation and retrieval of information. The JSON file is structured in a way that allows for easy access to the tasks and their associated data. It also contains the project definition, including the product requirements, functionals and not-functionals. An id is created for each project in the core json, which is used to identify the project and its tasks. This ensures that each project is uniquely identifiable and allows for easy tracking and management of the projects.
+- **Projects:** `projects/<id>/project.json` holds the project definition, repository, check command, and task IDs.
+- **Tasks:** `projects/<id>/tasks/<task-id>.json` holds:
+  - the task fields and the step timestamps;
+  - bounded agent activity, approval, and recovery histories;
+  - the attempt number and the automatic-revision count;
+  - the worktree path.
+- **Writes and validation:** writes are atomic; records are validated when loaded; symlinks and oversized files are rejected.
+- **Code:** never stored in JSON. It lives in the attempt worktree under the data directory.
+- **Future:** project requirements, prompts, and resource snapshots per task.
 
-An id is created for each task in the core json, which is used to identify the task and its associated data in the JSON file. This ensures that each task is uniquely identifiable and allows for easy tracking and management of the tasks.
+## Trust boundary
 
-In the core json there is also a field for the timestamp of the task and for each of its steps, allowing for easy
-tracking of the workflow's progress and providing visibility into the overall task management process and analysis.
+- **What Rust enforces:** Cronos tools cannot change task status, approvals, or worktree paths. Rust validates every step, profile, and transition, and checks worktree rules after each step.
+- **What it cannot enforce:** workers are full Pi sessions with shell access, running with the user's operating-system permissions. A worker's shell could edit Cronos data files, leave the worktree, weaken tests or the check program, or push. Cronos never writes or deletes through symlinks agents place in `.cronos/`, and it flags a changed check program, but the human gates and the review view are the real protection.
+- **Recommendation:** run Cronos-AI as a dedicated OS user or in a container for untrusted work.
 
-For each task, a new json file with its id name is created in the tasks folder. It includes their inputs, specifications, promps, associated resources and others. It don't save the code in the JSON file, but it saves the path to the git worktree where the code is stored. This allows for easy access to the code and ensures that it is organized and accessible for future reference.
+## Future work
 
-## Project definition
-
-Allows to create the json core file with the project definition, including the product requirements, functionals and not-functionals.
-
-It uses a pi agent that uses openspec to explore the requirements and generate the specifications for the project. This ensures that the project is well-defined and aligned with the overall objectives of the workflow.
-
-For each requirement, a new task is created in the project core json file, allowing for easy tracking and management of the tasks. The tasks are then processed through the defined workflow steps, ensuring that each task is completed accurately and efficiently.
-
-A project can be archived, which means that it is no longer active and will not be processed in the workflow.
-
-## Steps for each project
-
-Each step needs its own model, context, and skills to process tasks and execute the workflow. Within a task, steps run in their defined order, and the next step waits until the current step is complete. Independent sub-agents within a step run in parallel. The first implementation processes one task at a time; parallel execution of multiple tasks is a later approach.
-
-### 1. Tasks Collection
-
-The first step involves gathering tasks from user input. In the future more sources will be added.
-
-- Task cleaning is performed to remove any irrelevant or duplicate tasks.
-- Task transformation is applied to standardize the format of the tasks, making them easier to analyze.
-- Task analysis is conducted to extract meaningful insights and patterns from the collected tasks.
-- The collected tasks are then stored in a structured JSON file format for further processing.
-
-### 2. Task Prioritization
-
-In this step, the collected tasks are evaluated based on their importance and urgency. A prioritization algorithm is applied to rank the tasks accordingly. This ensures that the most critical tasks are addressed first, optimizing the workflow's efficiency.
-
-A priority field is attached to each task in the JSON file, indicating its rank in the overall task list. This
-allows for easy identification of high-priority tasks and facilitates effective cache task management.
-
-It must take into account the dependencies between tasks, ensuring that tasks are executed in the correct order and that two dependency tasks can not run in parallel if one depends on the other.
-
-Jev model is used in this step.
-
-### 3. Prompt Generation
-
-Once the next task is selected, a prompt is generated for it, providing clear instructions and context for the agent responsible for execution.
-
-The prompt is passed to the sub-agents extension, which creates the agents assigned to the task's current step. Independent agents in that step may run in parallel; the workflow waits for the step to finish before starting the next one.
-
-### 3. Sub-agents workflow
-
-For each task, sub-agents handle the work assigned to each workflow step. Independent sub-agents within the same step operate concurrently and report their results before the workflow advances. In the first implementation, only one task is processed at a time; parallel execution across multiple tasks is planned for a later approach.
-
-If a sub-agent fails, cancel the other agents still running in that step, stop the workflow, and mark the task Error. A human chooses whether to retry or clarify the context. Retrying starts again at spec generation; outputs downstream of the specs from the previous attempt are discarded and not reused. Clarifying the context creates or replaces the specs, which require human approval before the workflow continues to code generation. When the human decision resumes processing, the task status changes from Error to In Progress.
-
-Herdr is used to manage the sub-agents and review their activities. The Dashboard html page is updated in real-time to reflect the progress of each sub-agent, providing visibility into the overall workflow.
-
-A new git worktree is used in this step. It is identified by the task id and is used to store the code generated for each task. This allows for easy tracking and management of the codebase, ensuring that each task's code is organized and accessible.
-
-#### 3.1 Sub-agent Specs
-
-Specs are generated for the task, including detailed descriptions, requirements, and any necessary resources. This step ensures that each task is well-defined and ready for execution.
-
-Openspec is used to generate the specifications.
-
-#### 3.2 Human Approval
-
-A human approval step is included to review and validate the generated specs before proceeding with task execution.
-This ensures that the tasks are aligned with the overall objectives and meet the necessary quality standards.
-
-If the human clarifies the context, specs are created or replaced using that context. The human must approve the resulting specs before the workflow continues to code generation.
-
-#### 3.3 Code generation
-
-Once the specs are approved, code is generated for the task. This may involve writing scripts, creating functions, or developing algorithms to accomplish the task's objectives.
-
-#### 3.4 Code Review
-
-After the code is generated, independent code-review agents run in parallel within this step. The workflow proceeds to verification only after all review agents have reported their results.
-
-- Code quality checks are conducted to ensure that the code adheres to best practices and coding standards.
-- Performance optimization is carried out to enhance the efficiency and speed of the code.
-- Testing is performed to verify, including unit tests, and integration tests, to ensure that the code functions correctly
-
-#### 3.5 Verification
-
-After the code review, verification steps are performed to ensure that the code meets the specified
-requirements and functions as intended. The following sub-agents are involved in this process and run in parallel:
-
-- Security checks are performed to identify and mitigate any potential vulnerabilities in the code.
-- E2E testing is conducted to validate the overall functionality and that the code meets the specified requirements.
-
-#### 3.6 Human aproval
-
-After the verification steps, a final human approval is required to validate the code before deployment. This step
-ensures that the code meets the necessary quality standards and aligns with the overall objectives of the workflow.
-
-If the human does not approve the code, the workflow returns to the code generation step to address the issues or concerns raised during review. The task remains In Progress while the code is revised and resubmitted for approval.
-
-The human can also request changes, notes, or others about the code, which will be addressed in the next iteration of the workflow. The inputs are introduced into the tui.
-
-#### 3.7 Documentation
-
-After the code is approved successfully, documentation is generated to provide clear instructions and information about the code.
-First in this step the agent will archive the specs from openspec in the task, create the needed commits to reflect the changes in the git worktree. A new release number is attached to this task.
-
-After that, there are several sub-agents that run in parallel to generate the documentation. including:
-
-- User guides are created to provide step-by-step instructions for using the code and its features.
-- Technical documentation is generated to provide detailed information about the code's functions, parameters, and usage.
-- Technical specifications are created to provide in-depth information about the code's architecture, design, and
-- Changelog is generated to document any changes or updates made to the code, ensuring that users are aware of the latest features and improvements.
-
-#### 3.8 Merge and Push
-
-If human approve is successfull, after documentation finishes, this step merge the worktree into the main and push to the github repository.
-
-The task is marked as completed in the JSON file, and the workflow continues to the next task in the queue.
+- Parallel tasks on feature tracks, with conflict-aware scheduling.
+- Requirement-driven project definition and task generation.
+- Jev-based prioritization.
+- Optional remote push or PR creation after merge; release numbering; changelog per release.
+- Kanban, analytics, and inline diff views in the TUI.
+- Parallel code-generation agents in separate sub-worktrees with a deterministic merge.
+- A configurable check-command time limit.
+- Sandboxed workers.

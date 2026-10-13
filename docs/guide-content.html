@@ -37,9 +37,11 @@
 						<pre><code>cargo build --release
 ./target/release/cronos-ai project create demo \
   --repository /path/to/repository
+./target/release/cronos-ai project set-check-command &lt;PROJECT_ID&gt; \
+  -- ./scripts/check.sh
 ./target/release/cronos-ai task create &lt;PROJECT_ID&gt; \
   "Build the feature" --priority high</code></pre>
-						<p class="small">Use the project ID printed by <code>project create</code>. The task command prints its task ID as JSON.</p>
+						<p class="small">Use the project ID printed by <code>project create</code>. The repository needs a committed <code>openspec/</code> directory, and the check command runs without a shell after verification. The task command prints its task ID as JSON.</p>
 					</article>
 				</div>
 				<ol class="steps" style="margin-top:22px">
@@ -49,9 +51,9 @@
 					choose the project with <kbd>Enter</kbd>; on its task list press <kbd>s</kbd>
 					to start the next ready task.</span></li>
 					<li><span><strong>Follow the task:</strong>
-					open it with <kbd>Enter</kbd>. The details page shows its current status, step, decisions, and agent activity.</span></li>
+					open it with <kbd>Enter</kbd>. The details page shows its status, step and elapsed time, worktree, branch, OpenSpec change, decisions, and agent activity. Press <kbd>v</kbd> for the review view.</span></li>
 				</ol>
-				<p class="small" style="margin-top:18px">You can also create a project from the TUI: press <kbd>n</kbd> on the project list, enter its required name and optional description or Git repository path, then press <kbd>Enter</kbd>. Use <kbd>Tab</kbd> to move between fields or <kbd>Esc</kbd> to cancel; validation errors leave the form open so you can correct them.</p>
+				<p class="small" style="margin-top:18px">You can also create a project from the TUI: press <kbd>n</kbd> on the project list, enter its required name and optional description, Git repository path, and check command, then press <kbd>Enter</kbd>. Use <kbd>Tab</kbd> to move between fields or <kbd>Esc</kbd> to cancel; validation errors leave the form open so you can correct them.</p>
 				<p class="small" style="margin-top:12px">On a project's task list, press <kbd>n</kbd> to add a task. Enter its title and optional description; priority defaults to Medium and dependencies can be selected from same-project tasks. Use <kbd>←</kbd>/<kbd>→</kbd> to change priority, <kbd>↑</kbd>/<kbd>↓</kbd> and <kbd>Space</kbd> to choose dependencies, then <kbd>Enter</kbd> to create or <kbd>Esc</kbd> to cancel. New tasks remain Pending; press <kbd>s</kbd> separately to start ready work.</p>
 				<p class="small" style="margin-top:18px">Existing projects can be linked before work starts with <code>project set-repository &lt;PROJECT_ID&gt; --repository /path/to/repository</code>.</p>
 			</section>
@@ -63,9 +65,9 @@
 					<p>A project can contain many features and tasks. In the current MVP, the queue runs one task at a time; independent agents within the active step can run in parallel. The editable feature-track diagram describes the target project-level parallel model.</p>
 				</div>
 				<div class="grid">
-					<article class="card"><h3>1. Specifications</h3><p>Pi orchestrates specification agents. OpenSpec is used for spec creation. The task waits at a human approval gate before code generation.</p></article>
-					<article class="card"><h3>2. Build and verify</h3><p>Code generation, code review, and verification run sequentially. Agents assigned to the same step can work concurrently.</p></article>
-					<article class="card"><h3>3. Approve and complete</h3><p>Final-code approval unlocks documentation. After documentation is committed, Rust checks the worktrees and performs a local merge.</p></article>
+					<article class="card"><h3>1. Specifications</h3><p>One agent writes and commits the task's OpenSpec change; Rust requires <code>openspec validate --strict</code> to pass. The task waits at a human approval gate before code generation.</p></article>
+					<article class="card"><h3>2. Build and verify</h3><p>One agent implements and commits; 1-4 read-only reviewers and verifiers run in parallel, then Rust runs the check command. Findings or a failing check send the code back automatically, up to 3 times per attempt.</p></article>
+					<article class="card"><h3>3. Approve and complete</h3><p>Final-code approval unlocks documentation. Rust archives the OpenSpec change, makes one documentation commit, and merges locally. A merge conflict returns the task to code generation.</p></article>
 				</div>
 				<div class="notice" role="note"><strong>Local only:</strong>
 				Cronos-AI does not push to a remote. A successful local merge marks the task Completed; publishing remains your Git operation.</div>
@@ -91,12 +93,14 @@
 						<thead><tr><th>Task status</th><th>Meaning</th><th>What you can do</th></tr></thead>
 						<tbody>
 							<tr><td><span class="status">Pending</span></td><td>Waiting to be selected by the ready queue.</td><td>Priority and dependencies determine when it becomes ready.</td></tr>
-							<tr><td><span class="status active">In Progress</span></td><td>The active workflow is running or waiting at an approval gate.</td><td><kbd>y</kbd>
+							<tr><td><span class="status active">In Progress</span></td><td>The active workflow is running, waiting at an approval gate, waiting for a clean base at local merge, or interrupted.</td><td><kbd>v</kbd>
+							reviews the work; <kbd>y</kbd>
 							approves; <kbd>n</kbd>
-							requests revision and asks for a note.</td></tr>
-							<tr><td><span class="status error">Error</span></td><td>A failure stopped the workflow; remaining agents in that step are cancelled.</td><td><kbd>r</kbd>
+							requests revision and asks for a note; <kbd>s</kbd> on the task list resumes an interrupted task or retries the merge.</td></tr>
+							<tr><td><span class="status error">Error</span></td><td>A failure stopped the workflow; remaining agents in that step are cancelled.</td><td><kbd>t</kbd>
+							retries only the failed step, keeping the attempt; <kbd>r</kbd>
 							retries specs; <kbd>c</kbd>
-							supplies clarification and regenerates specs. Both discard the failed attempt's worktree and branch.</td></tr>
+							supplies clarification and regenerates specs. <kbd>r</kbd> and <kbd>c</kbd> discard the failed attempt's worktree and branch.</td></tr>
 							<tr><td><span class="status done">Completed</span></td><td>Required steps and local merge succeeded.</td><td>Inspect the result in the project repository.</td></tr>
 							<tr><td><span class="status error">Rejected</span></td><td>A human explicitly abandoned the whole task.</td><td>Enter a reason when pressing <kbd>a</kbd>
 								in task details.</td></tr>
@@ -119,76 +123,91 @@
 				<div class="diagram-frame">
 					<pre class="mermaid" id="architecture-diagram">flowchart LR
   human(["Human operator"])
-  tui["Cronos CLI / TUI"]
+  tui["Cronos CLI / TUI&lt;br/&gt;Review view · approvals&lt;br/&gt;resume · recovery"]
 
   subgraph host["Cronos Rust host · state owner"]
     queue["Ready queue&lt;br/&gt;Priority + dependencies&lt;br/&gt;One active task in MVP"]
-    state[("Project + task JSON")]
-    workspace["Per-attempt worktree&lt;br/&gt;and local branch"]
-    stepRunner["Workflow host&lt;br/&gt;Validates status, step,&lt;br/&gt;approval and worktree"]
+    state[("Project + task JSON&lt;br/&gt;check command · revisions")]
+    workspace["Per-attempt worktree&lt;br/&gt;local branch · .cronos/ excluded"]
+    stepRunner["Workflow engine&lt;br/&gt;Per-task step lock · agent limits&lt;br/&gt;prompt contract · JSON results&lt;br/&gt;worktree checks"]
+    check["Project check command&lt;br/&gt;after verification agents&lt;br/&gt;no shell · process group"]
+    revision(["Automatic revision&lt;br/&gt;back to code generation&lt;br/&gt;max 3 per attempt"])
     approval{{"Human approval&lt;br/&gt;Specs + final code"}}
-    merger["Clean checks&lt;br/&gt;Local merge"]
+    archive["Archive OpenSpec change&lt;br/&gt;single docs commit"]
+    merger["Local merge&lt;br/&gt;dirty base waits"]
   end
 
-  subgraph pi["Pi orchestrator"]
-    session["Pi RPC session"]
-    extension["Cronos workflow extension"]
+  subgraph pi["Pi orchestrator · read-only"]
+    session["Pi RPC session&lt;br/&gt;read + Cronos tools only"]
+    extension["Embedded workflow extension"]
   end
 
   subgraph herdr["Herdr agent runtime"]
-    agents["Agents for current step&lt;br/&gt;Concurrent within the step"]
+    agents["Step agents&lt;br/&gt;1 writer, or 1-4 review / verify / docs&lt;br/&gt;per-step time limits&lt;br/&gt;one pane each, closed after"]
   end
 
-  openspec["OpenSpec"]
-  repository[("User's local Git repository")]
+  openspec["OpenSpec&lt;br/&gt;one change per task"]
+  repository[("User's local Git repository&lt;br/&gt;committed openspec/")]
   completed(["Completed"])
   error(["Error"])
   rejected(["Rejected"])
 
   human --&gt; tui
-  tui --&gt;|create and select project, create task| queue
+  tui --&gt;|create project, task, check command| queue
   queue --&gt;|load and persist| state
   queue --&gt;|assign attempt| workspace
-  queue --&gt;|launch assigned task| session
+  queue --&gt;|launch or resume task| session
   workspace --&gt; repository
 
   session --&gt; extension
   extension --&gt;|read-only task query| state
   extension --&gt;|run current step| stepRunner
-  stepRunner --&gt;|start step agents| agents
-  agents --&gt;|results; wait for all| stepRunner
+  stepRunner --&gt;|prompt + Rust contract| agents
+  agents --&gt;|JSON result files; wait for all| stepRunner
   agents --&gt;|work in assigned worktree| workspace
   agents --&gt;|specification step| openspec
-  stepRunner --&gt;|validated step and activity updates| state
-  stepRunner --&gt;|approval step reached| approval
-  tui --&gt;|approve or request revision| approval
+  stepRunner --&gt;|verification passed| check
+  stepRunner --&gt;|changes_requested| revision
+  check --&gt;|non-zero exit or leftover files| revision
+  revision --&gt; stepRunner
+  check --&gt;|passed| approval
+  stepRunner --&gt;|validated step and activity| state
+  stepRunner --&gt;|specs validated| approval
+  tui --&gt;|review, approve or request revision| approval
   approval --&gt;|validated decision| state
   approval --&gt;|continue or revise| stepRunner
-  stepRunner --&gt;|documentation changes committed| workspace
-  stepRunner --&gt;|after final approval and docs| merger
+  stepRunner --&gt;|documentation agents done| archive
+  archive --&gt; workspace
+  archive --&gt;|after Pi settles| merger
   merger &lt;--&gt;|worktree and local merge| repository
   merger --&gt;|success| completed
+  merger -. conflict: abort .-&gt; revision
+  merger -. other merge failure: abort .-&gt; error
   completed --&gt; state
 
-  agents -. failure: cancel siblings .-&gt; error
-  merger -. conflict: abort merge .-&gt; error
-  error --&gt;|human retries or clarifies| workspace
+  agents -. crash, timeout, invalid or failed result: cancel siblings .-&gt; error
+  stepRunner -. worktree or OpenSpec check failed .-&gt; error
+  revision -. limit reached .-&gt; error
+  error --&gt;|stop stale agents, then retry step: same attempt| stepRunner
+  error --&gt;|retry or clarify: new attempt| workspace
   error --&gt;|human abandons| rejected
   rejected --&gt; state
 
-  classDef person fill:#F1F5FA,stroke:#667A90,color:#16283D,stroke-width:1.5px;
-  classDef host fill:#EAF5F4,stroke:#188C83,color:#153C42,stroke-width:1.5px;
-  classDef agent fill:#F0EEFA,stroke:#7966B5,color:#302950,stroke-width:1.5px;
-  classDef external fill:#FFF4E3,stroke:#C38A3E,color:#4B371F,stroke-width:1.5px;
-  classDef success fill:#E7F6EC,stroke:#39935B,color:#183E27,stroke-width:1.5px;
-  classDef failure fill:#FFF0ED,stroke:#CB6A56,color:#55271F,stroke-width:1.5px;
+  classDef person fill:#F1F5FA,stroke:#667A90,color:#16283D,stroke-width:1.5px
+  classDef host fill:#EAF5F4,stroke:#188C83,color:#153C42,stroke-width:1.5px
+  classDef agent fill:#F0EEFA,stroke:#7966B5,color:#302950,stroke-width:1.5px
+  classDef external fill:#FFF4E3,stroke:#C38A3E,color:#4B371F,stroke-width:1.5px
+  classDef success fill:#E7F6EC,stroke:#39935B,color:#183E27,stroke-width:1.5px
+  classDef failure fill:#FFF0ED,stroke:#CB6A56,color:#55271F,stroke-width:1.5px
+  classDef loop fill:#FFF8E8,stroke:#C9962B,color:#4B371F,stroke-width:1.5px
 
-  class human,tui person;
-  class queue,state,workspace,stepRunner,approval,merger host;
-  class session,extension,agents agent;
-  class openspec,repository external;
-  class completed success;
-  class error,rejected failure;</pre>
+  class human,tui person
+  class queue,state,workspace,stepRunner,check,approval,archive,merger host
+  class revision loop
+  class session,extension,agents agent
+  class openspec,repository external
+  class completed success
+  class error,rejected failure</pre>
 					<p id="mermaid-status" class="diagram-status" role="status" aria-live="polite">Loading architecture diagram…</p>
 				</div>
 				<div class="diagram-links">
