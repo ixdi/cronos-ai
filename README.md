@@ -124,7 +124,7 @@ Workers run with your operating-system permissions; see the [trust boundary](doc
 
 ## Documentation
 
-- [User guide](docs/index.html) (open in a browser)
+- [User guide](https://ixdi.github.io/cronos-ai/) (open in a browser)
 - [Project/task commands and end-to-end use](docs/project-task-commands.md)
 - [TUI monitoring and controls](docs/monitoring.md)
 - [Workflow-agent profiles](docs/agent-profiles.md)
