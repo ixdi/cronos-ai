@@ -14,6 +14,7 @@ It is an opinionated stack with a Rust TUI. Rust owns persisted task state and h
 ## What it does
 
 - Manage projects and prioritized, dependency-aware tasks from the CLI and TUI.
+- Record a project's functional and non-functional requirements and let a read-only Pi planner propose the tasks that cover them; nothing is created until you approve the plan.
 - Monitor task status and agent activity in a terminal dashboard.
 - Manage named Pi skill, extension, MCP, model, and time-limit profiles for workflow agents from the TUI.
 - Run one task at a time through specification, implementation, review, verification, approval, documentation, and local merge steps. Agents report structured results; Rust decides each step from them and runs the project's check command before final approval.
@@ -64,6 +65,15 @@ You can also create projects and tasks directly in the dashboard:
 1. On the project list, press **n**. Enter a project name and optionally a description, local Git repository path, and check command. Use **Tab**/**Shift+Tab** to move between fields, **Enter** to save, or **Esc** to cancel.
 2. Select the project with **Enter**. On its task list, press **n** to create a task. Enter a title and optional description; priority defaults to **Medium**. Use **Tab**/**Shift+Tab** to move between fields, **←/→** to change priority, and **↑/↓** plus **Space** to select task dependencies.
 3. Press **Enter** to save. The task remains **Pending**; press **s** when you are ready to start the next ready task.
+
+Or let Cronos-AI plan the tasks: on the task list press **g** to open the project's requirements, add them with **n**, and press **p** to run the planner. It reads the repository and its OpenSpec specs in the background and proposes tasks with priorities and dependencies; press **y** to create them or **x** to discard the plan. From the CLI:
+
+```sh
+./target/release/cronos-ai requirement add <PROJECT_ID> "Users can export any report as CSV"
+./target/release/cronos-ai requirement add <PROJECT_ID> --kind non-functional "Exports finish within 2 seconds"
+./target/release/cronos-ai project plan <PROJECT_ID>        # proposes a plan; creates nothing
+./target/release/cronos-ai project plan-apply <PROJECT_ID>  # creates the planned tasks
+```
 
 The project form is only for new projects. To add a repository, check command, or check time limit to an existing project, use the CLI:
 

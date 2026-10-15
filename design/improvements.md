@@ -23,7 +23,7 @@ Rule applied: the specs and code are the truth. `design/design.md` now labels ev
 | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Push to GitHub                        | Future; the MVP merges locally only.                                                                                                                                 |
 | HTML real-time dashboard              | Future; the TUI is the dashboard.                                                                                                                                    |
-| Project definition from requirements  | Future; tasks are hand-written.                                                                                                                                      |
+| Project definition from requirements  | Implemented: a read-only Pi planner proposes tasks from the project's requirements; a human applies or discards the plan.                                          |
 | Step list numbering and scope         | Project-level steps (collection, prioritization) are separated from the 8 per-task steps. The duplicate "3." is removed. Prompt generation is part of orchestration. |
 | Model per step                        | Implemented through profile `model`.                                                                                                                                 |
 | Release number and changelog per task | Future, as per-release versioning, so parallel tasks don't conflict.                                                                                                 |
@@ -45,7 +45,7 @@ Rule applied: the specs and code are the truth. `design/design.md` now labels ev
 2. **What makes an agent fail?**
    - A crash, a timeout, a blocked prompt, a missing or invalid result, or a `failed` result: the task goes to Error.
    - `changes_requested` from review or verification, or a failing check command: the task loops back to code generation automatically, at most 3 times per attempt.
-3. **Which part is the product?** The per-task supervised pipeline is the MVP product. Requirement-driven project definition is future work.
+3. **Which part is the product?** The per-task supervised pipeline is the core product; requirement-driven planning feeds it reviewed tasks.
 4. **Is a clean base repository required?** Yes, but only at the moment of the merge. A dirty base makes the task wait at local merge; pressing `s` retries.
 
 ## Suggested improvements

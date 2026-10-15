@@ -51,15 +51,15 @@ The OpenSpec specs in `openspec/specs/` are the source of truth for behavior. Th
   - Create, list, select, update, and archive projects.
   - A project stores a local Git repository and a **check command**: a program and arguments run without a shell, for example `./scripts/check.sh`. Both are required before tasks start.
   - The repository must contain a committed `openspec/` directory, created with `openspec init`.
-- **Future, project definition:** the project stores product requirements (functional and non-functional). A Pi agent uses OpenSpec explore to turn them into specifications and generates one task per requirement. Today, users write tasks by hand.
+- **Implemented, project definition:** the project stores product requirements (functional and non-functional). A read-only Pi planner (`project plan`, or `p` on the TUI requirements screen) reads the repository and its OpenSpec specs with the embedded `cronos-project-planning` skill and proposes tasks covering every requirement, with priorities, dependencies, and requirement links. Rust validates the plan and keeps it pending; a human applies or discards it. Each planned task then gets its own OpenSpec change in specification generation.
 
 ## Workflow
 
 ### Project-level steps
 
 1. **Task collection.**
-   - *Implemented:* tasks are entered in the TUI or CLI.
-   - *Future:* cleaning, deduplication, normalization, and more input sources.
+   - *Implemented:* tasks are entered in the TUI or CLI, or planned from requirements. Requirement and task text is normalized (trimmed, whitespace collapsed); a duplicate requirement or a task duplicating an open task is rejected.
+   - *Future:* more input sources, such as issue trackers.
 2. **Task prioritization.**
    - *Implemented:* priority (high, medium, low), dependencies within the same project, and a ready queue that never starts a task before its dependencies are Completed.
    - *Future:* Jev-based ranking.
@@ -153,7 +153,7 @@ Pi keeps running agent steps until the task reaches an approval gate, local merg
 
 ## Storage
 
-- **Projects:** `projects/<id>/project.json` holds the project definition, repository, check command, and task IDs.
+- **Projects:** `projects/<id>/project.json` holds the project definition, requirements, repository, check command, publishing settings, and task IDs; `projects/<id>/plan.json` holds a plan waiting for approval.
 - **Tasks:** `projects/<id>/tasks/<task-id>.json` holds:
   - the task fields and the step timestamps;
   - bounded agent activity, approval, and recovery histories;
@@ -173,7 +173,6 @@ Pi keeps running agent steps until the task reaches an approval gate, local merg
 ## Future work
 
 - Parallel tasks on feature tracks, with conflict-aware scheduling.
-- Requirement-driven project definition and task generation.
 - Jev-based prioritization.
 - Parallel code-generation agents in separate sub-worktrees with a deterministic merge.
 - Sandboxed workers.

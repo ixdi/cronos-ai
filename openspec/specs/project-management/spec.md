@@ -18,15 +18,19 @@ The system SHALL let a user create, view, update, select, and archive projects, 
 - **THEN** the project is no longer offered as active work and its stored history remains available
 
 ### Requirement: Task management
-The system SHALL let a user add tasks to a project and view their priority, dependencies, and current status.
+The system SHALL let a user add tasks to a project and view their priority, dependencies, and current status. Task titles SHALL be trimmed and their whitespace collapsed, and a task whose title matches an open task (one that is not Completed or Rejected) SHALL be rejected.
 
 #### Scenario: Create a task
 - **WHEN** a user adds a task to a project
-- **THEN** the task is saved with a unique identity and an initial Pending status
+- **THEN** the task is saved with a unique identity, a normalized title, and an initial Pending status
 
 #### Scenario: Respect task dependencies
 - **WHEN** a task depends on another task that is not complete
 - **THEN** the dependent task is not selected for execution
+
+#### Scenario: Reject a duplicate open task
+- **WHEN** a user adds a task whose title matches an open task, ignoring case and spacing
+- **THEN** no task is created and the user is told the task already exists
 
 ### Requirement: Workflow monitoring
 The system SHALL show the selected project's tasks, statuses, and current workflow activity, and SHALL refresh that information as the workflow changes. The task list SHALL offer a table and a kanban board grouped by status, and SHALL summarize the project's progress: completed tasks out of those not abandoned, the average time to complete a task, and the number of tasks in Error.
@@ -184,3 +188,33 @@ A project SHALL store a publish mode of `local`, `push`, or `pull-request`, defa
 #### Scenario: Reject an unsafe remote name
 - **WHEN** a user sets a remote name such as `-c` or `my remote`
 - **THEN** the project is unchanged and the user sees why the name was rejected
+
+### Requirement: Project requirements
+A project SHALL store functional and non-functional requirements that users add, list, and remove from the CLI or the TUI. Requirement text SHALL be normalized, and a requirement that matches an existing one, ignoring case and spacing, SHALL be rejected.
+
+#### Scenario: Add a requirement
+- **WHEN** a user adds a non-functional requirement
+- **THEN** it is saved with its kind and normalized text and listed with the project
+
+#### Scenario: Reject a duplicate requirement
+- **WHEN** a user adds a requirement that differs from an existing one only in case or spacing
+- **THEN** the project is unchanged and the user is told it is already listed
+
+### Requirement: Plan tasks from requirements
+The system SHALL run a read-only Pi planner in the project repository to propose tasks for the project's requirements, SHALL validate the proposal, and SHALL create tasks only after a human applies it. A valid plan SHALL cover every requirement, reference only known requirements and planned tasks, have no dependency cycle, and propose at most 50 tasks. Applying SHALL create tasks dependencies first, link them to their requirements, and reuse an open task with the same title.
+
+#### Scenario: Plan and apply
+- **WHEN** the planner proposes a valid plan and the user applies it
+- **THEN** its tasks are created with their priorities, dependencies, and requirement links, and the pending plan is cleared
+
+#### Scenario: Review before creating tasks
+- **WHEN** the planner has proposed a plan that nobody has applied
+- **THEN** no task exists for it and the user can view or discard it
+
+#### Scenario: Invalid plan
+- **WHEN** the planner's answer has no plan, leaves a requirement uncovered, or has a dependency cycle
+- **THEN** no plan is kept and the user sees why it was rejected
+
+#### Scenario: Responsive dashboard while planning
+- **WHEN** the user starts planning from the TUI
+- **THEN** the planner runs in the background, the dashboard stays usable, and the plan appears when it is ready
