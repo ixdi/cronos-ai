@@ -1071,6 +1071,10 @@ fn run_program(
 ) -> Result<Output, IntegrationError> {
     let mut command = Command::new(executable);
     command.args(args);
+    // Cronos runs tools without a terminal: fail on missing credentials instead of prompting.
+    command
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GH_PROMPT_DISABLED", "1");
     if let Some(dir) = dir {
         command.current_dir(dir);
     }

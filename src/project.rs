@@ -8,12 +8,12 @@ use std::{
 use thiserror::Error;
 
 use crate::{
-    integrations::{GitAdapter, GitError},
+    integrations::{GitAdapter, GitError, PullRequest},
     model::{
         AgentActivity, AgentStatus, ApprovalDecision, ApprovalGate, ApprovalRecord,
         MAX_AGENT_EVENTS, MAX_APPROVAL_RECORDS, MAX_RECOVERY_RECORDS, ModelError, Priority,
-        Project, ProjectId, ProjectStatus, RecoveryAction, RecoveryRecord, Task, TaskId,
-        TaskStatus, WorkflowStep,
+        Project, ProjectId, ProjectStatus, PublishMode, RecoveryAction, RecoveryRecord, Task,
+        TaskId, TaskStatus, WorkflowStep,
     },
     storage::{ProjectStore, StoreError},
 };
@@ -273,6 +273,23 @@ impl ProjectManager {
         let _write = self.store.lock_writes()?;
         let mut project = self.store.load_project(project_id)?;
         project.check_timeout_minutes = minutes;
+        project.updated_at_unix_secs = now_unix_secs()?;
+        project.validate()?;
+        self.store.save_project(&project)?;
+        Ok(project)
+    }
+
+    /// Sets how completed tasks are published and which remote is used; `None` means `origin`.
+    pub fn set_project_publish(
+        &self,
+        project_id: ProjectId,
+        publish: PublishMode,
+        remote: Option<String>,
+    ) -> Result<Project, ProjectError> {
+        let _write = self.store.lock_writes()?;
+        let mut project = self.store.load_project(project_id)?;
+        project.publish = publish;
+        project.remote = remote;
         project.updated_at_unix_secs = now_unix_secs()?;
         project.validate()?;
         self.store.save_project(&project)?;
@@ -665,6 +682,9 @@ impl ProjectManager {
         }
     }
 
+    /// Finishes the local-merge step the way the project publishes: merge locally, merge and push
+    /// the base branch, or push the task branch and open a pull request. Every stage is idempotent,
+    /// so after a failed publish a step retry picks up where it stopped.
     pub fn merge_and_complete_task(
         &self,
         project_id: ProjectId,
@@ -682,57 +702,136 @@ impl ProjectManager {
         let project = self.store.load_project(project_id)?;
         let repository = self.repository_path(&project, git)?;
         let worktree = self.validated_task_worktree_path(project_id, task_id)?;
-        match git.merge_worktree(
-            &repository,
-            &worktree,
-            &GitAdapter::worktree_branch(task.id, task.attempt),
-        ) {
-            Ok(()) => Ok(MergeOutcome::Completed(self.complete_workflow_step(
-                project_id,
-                task_id,
-                WorkflowStep::LocalMerge,
-            )?)),
-            Err(GitError::DirtyBase(path)) => Ok(MergeOutcome::BaseDirty(path)),
-            Err(GitError::MergeConflict(detail)) => {
-                let branch = git.current_branch(&repository)?;
-                self.record_agent_activity(
-                    project_id,
-                    task_id,
-                    "cronos".to_owned(),
-                    WorkflowStep::LocalMerge.as_str().to_owned(),
-                    AgentStatus::ChangesRequested,
-                    Some(
-                        format!(
-                            "Local merge into {branch} conflicted and was aborted. Merge {branch} into the task branch, resolve the conflicts, and commit. {detail}"
-                        )
-                        .chars()
-                        .take(2_000)
-                        .collect(),
-                    ),
-                )?;
-                Ok(MergeOutcome::Conflict(
-                    self.request_automatic_revision(project_id, task_id)?,
-                ))
+        let branch = GitAdapter::worktree_branch(task.id, task.attempt);
+        let remote = project.remote_name();
+        let published = match project.publish {
+            PublishMode::PullRequest => {
+                let base = git.current_branch(&repository)?;
+                let request = PullRequest {
+                    remote,
+                    base: &base,
+                    head: &branch,
+                    title: &task.title,
+                    body: &pull_request_body(&task),
+                };
+                match git.open_pull_request(&repository, &worktree, &request) {
+                    Ok(url) => Some(url),
+                    Err(error) => return Err(self.publishing_failed(project_id, task_id, error)?),
+                }
             }
-            Err(GitError::MergeFailed(detail)) => {
-                self.record_agent_activity(
-                    project_id,
-                    task_id,
-                    "cronos".to_owned(),
-                    WorkflowStep::LocalMerge.as_str().to_owned(),
-                    AgentStatus::Failed,
-                    Some(
-                        format!("Local merge failed and needs a human: {detail}")
-                            .chars()
-                            .take(2_000)
-                            .collect(),
-                    ),
-                )?;
-                self.set_task_status(project_id, task_id, TaskStatus::Error)?;
-                Err(GitError::MergeFailed(detail).into())
+            PublishMode::Local | PublishMode::Push => {
+                if !git.is_merged(&repository, &branch)? {
+                    match git.merge_worktree(&repository, &worktree, &branch) {
+                        Ok(()) => {}
+                        Err(GitError::DirtyBase(path)) => return Ok(MergeOutcome::BaseDirty(path)),
+                        Err(GitError::MergeConflict(detail)) => {
+                            return self.merge_conflicted(
+                                project_id,
+                                task_id,
+                                git,
+                                &repository,
+                                detail,
+                            );
+                        }
+                        Err(GitError::MergeFailed(detail)) => {
+                            self.record_agent_activity(
+                                project_id,
+                                task_id,
+                                "cronos".to_owned(),
+                                WorkflowStep::LocalMerge.as_str().to_owned(),
+                                AgentStatus::Failed,
+                                Some(
+                                    format!("Local merge failed and needs a human: {detail}")
+                                        .chars()
+                                        .take(2_000)
+                                        .collect(),
+                                ),
+                            )?;
+                            self.set_task_status(project_id, task_id, TaskStatus::Error)?;
+                            return Err(GitError::MergeFailed(detail).into());
+                        }
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+                if project.publish == PublishMode::Push {
+                    let base = git.current_branch(&repository)?;
+                    match git.push(&repository, remote, &base) {
+                        Ok(()) => Some(format!("pushed {base} to {remote}")),
+                        Err(error) => {
+                            return Err(self.publishing_failed(project_id, task_id, error)?);
+                        }
+                    }
+                } else {
+                    None
+                }
             }
-            Err(error) => Err(error.into()),
+        };
+        if let Some(published) = published {
+            let mut task = self.store.load_task(project_id, task_id)?;
+            task.published = Some(published);
+            task.updated_at_unix_secs = now_unix_secs()?;
+            task.validate()?;
+            self.store.save_task(&task)?;
         }
+        Ok(MergeOutcome::Completed(self.complete_workflow_step(
+            project_id,
+            task_id,
+            WorkflowStep::LocalMerge,
+        )?))
+    }
+
+    fn merge_conflicted(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        git: &GitAdapter,
+        repository: &Path,
+        detail: String,
+    ) -> Result<MergeOutcome, ProjectError> {
+        let branch = git.current_branch(repository)?;
+        self.record_agent_activity(
+            project_id,
+            task_id,
+            "cronos".to_owned(),
+            WorkflowStep::LocalMerge.as_str().to_owned(),
+            AgentStatus::ChangesRequested,
+            Some(
+                format!(
+                    "Local merge into {branch} conflicted and was aborted. Merge {branch} into the task branch, resolve the conflicts, and commit. {detail}"
+                )
+                .chars()
+                .take(2_000)
+                .collect(),
+            ),
+        )?;
+        Ok(MergeOutcome::Conflict(
+            self.request_automatic_revision(project_id, task_id)?,
+        ))
+    }
+
+    /// Records a failed push or pull request and stops the task with Error; a step retry resumes
+    /// publishing without merging again.
+    fn publishing_failed(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        error: GitError,
+    ) -> Result<ProjectError, ProjectError> {
+        self.record_agent_activity(
+            project_id,
+            task_id,
+            "cronos".to_owned(),
+            WorkflowStep::LocalMerge.as_str().to_owned(),
+            AgentStatus::Failed,
+            Some(
+                format!("Publishing failed; fix the cause, then retry the step: {error}")
+                    .chars()
+                    .take(2_000)
+                    .collect(),
+            ),
+        )?;
+        self.set_task_status(project_id, task_id, TaskStatus::Error)?;
+        Ok(error.into())
     }
 
     /// Returns an in-progress task to code generation after review, verification, or merge findings.
@@ -1037,6 +1136,20 @@ impl ProjectManager {
     }
 }
 
+fn pull_request_body(task: &Task) -> String {
+    let description = task
+        .description
+        .as_deref()
+        .map(|description| format!("{description}\n\n"))
+        .unwrap_or_default();
+    format!(
+        "{description}Implements OpenSpec change `{}`.\n\nOpened by Cronos-AI for task {} (attempt {}) after final-code approval.",
+        task.openspec_change(),
+        task.id.0,
+        task.attempt
+    )
+}
+
 fn valid_status_transition(from: &TaskStatus, to: &TaskStatus) -> bool {
     matches!(
         (from, to),
@@ -1071,10 +1184,10 @@ fn now_unix_secs() -> Result<u64, ProjectError> {
 #[cfg(test)]
 mod tests {
     use super::{MergeOutcome, ProjectError, ProjectManager};
-    use crate::integrations::GitAdapter;
+    use crate::integrations::{GitAdapter, GitError};
     use crate::model::{
         AgentStatus, ApprovalDecision, ApprovalGate, MAX_AGENT_EVENTS, ModelError, Priority,
-        ProjectId, ProjectStatus, RecoveryAction, TaskStatus, WorkflowStep,
+        ProjectId, ProjectStatus, PublishMode, RecoveryAction, TaskId, TaskStatus, WorkflowStep,
     };
     use std::{fs, path::Path, process::Command};
 
@@ -1384,6 +1497,213 @@ mod tests {
             fs::read_to_string(repository.join("generated.txt")).unwrap(),
             "merged output\n"
         );
+    }
+
+    struct LocalMergeFixture {
+        manager: ProjectManager,
+        project_id: ProjectId,
+        task_id: TaskId,
+        repository: std::path::PathBuf,
+        remote: std::path::PathBuf,
+    }
+
+    /// A task with one committed change waiting at local merge, in a repository whose `origin`
+    /// is a bare repository, with the project publishing as `publish`.
+    fn task_at_local_merge(root: &Path, publish: PublishMode) -> LocalMergeFixture {
+        let repository = root.join("repo");
+        let remote = root.join("remote.git");
+        init_git_fixture(&repository);
+        git_fixture(root, &["init", "--bare", remote.to_str().unwrap()]);
+        git_fixture(
+            &repository,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        let manager = ProjectManager::new(root.join("data")).unwrap();
+        let git = GitAdapter::default();
+        let project = manager
+            .create_project_with_repository(
+                "Factory".to_owned(),
+                None,
+                Some(&repository),
+                Some(vec!["true".to_owned()]),
+                None,
+                &git,
+            )
+            .unwrap();
+        manager
+            .set_project_publish(project.id, publish, None)
+            .unwrap();
+        let task = manager
+            .create_task(
+                project.id,
+                "Build".to_owned(),
+                None,
+                Priority::High,
+                Vec::new(),
+            )
+            .unwrap();
+        manager.start_next_task(project.id).unwrap().unwrap();
+        let worktree = manager
+            .prepare_task_worktree(project.id, task.id, &git)
+            .unwrap();
+        fs::write(worktree.join("generated.txt"), "published output\n").unwrap();
+        git_fixture(&worktree, &["add", "generated.txt"]);
+        git_fixture(&worktree, &["commit", "-m", "task output"]);
+        complete_to_local_merge(&manager, project.id, task.id);
+        LocalMergeFixture {
+            manager,
+            project_id: project.id,
+            task_id: task.id,
+            repository,
+            remote,
+        }
+    }
+
+    fn git_output(root: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    #[test]
+    fn local_publishing_never_pushes() {
+        let temp = tempfile::tempdir().unwrap();
+        let fixture = task_at_local_merge(temp.path(), PublishMode::Local);
+
+        let Ok(MergeOutcome::Completed(task)) = fixture.manager.merge_and_complete_task(
+            fixture.project_id,
+            fixture.task_id,
+            &GitAdapter::default(),
+        ) else {
+            panic!("expected a completed merge");
+        };
+
+        assert_eq!(task.published, None);
+        assert_eq!(git_output(&fixture.remote, &["branch", "--list"]), "");
+    }
+
+    #[test]
+    fn push_publishing_merges_then_pushes_and_a_failed_push_can_be_retried() {
+        let temp = tempfile::tempdir().unwrap();
+        let fixture = task_at_local_merge(temp.path(), PublishMode::Push);
+        let git = GitAdapter::default();
+        let base = git.current_branch(&fixture.repository).unwrap();
+        // Break the remote so the first push fails after the local merge succeeded.
+        git_fixture(
+            &fixture.repository,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "/definitely/missing/remote.git",
+            ],
+        );
+
+        let error = fixture
+            .manager
+            .merge_and_complete_task(fixture.project_id, fixture.task_id, &git)
+            .unwrap_err();
+        assert!(
+            matches!(error, ProjectError::Git(GitError::PushFailed(_))),
+            "{error}"
+        );
+        let failed = fixture
+            .manager
+            .get_task(fixture.project_id, fixture.task_id)
+            .unwrap();
+        assert_eq!(failed.status, TaskStatus::Error);
+        assert_eq!(failed.current_step.as_deref(), Some("local-merge"));
+        assert!(
+            failed
+                .agent_activity
+                .last()
+                .unwrap()
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("Publishing failed")
+        );
+
+        git_fixture(
+            &fixture.repository,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                fixture.remote.to_str().unwrap(),
+            ],
+        );
+        fixture
+            .manager
+            .retry_step(fixture.project_id, fixture.task_id)
+            .unwrap();
+        let Ok(MergeOutcome::Completed(task)) =
+            fixture
+                .manager
+                .merge_and_complete_task(fixture.project_id, fixture.task_id, &git)
+        else {
+            panic!("expected the retried publish to complete");
+        };
+
+        assert_eq!(task.status, TaskStatus::Completed);
+        assert_eq!(
+            task.published.as_deref(),
+            Some(format!("pushed {base} to origin").as_str())
+        );
+        assert_eq!(
+            git_output(&fixture.remote, &["rev-parse", &base]),
+            git_output(&fixture.repository, &["rev-parse", "HEAD"])
+        );
+        // The retry pushed the existing merge instead of merging a second time.
+        assert_eq!(
+            git_output(
+                &fixture.repository,
+                &["rev-list", "--merges", "--count", "HEAD"]
+            ),
+            "1"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pull_request_publishing_opens_a_request_instead_of_merging_locally() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let fixture = task_at_local_merge(temp.path(), PublishMode::PullRequest);
+        let gh = temp.path().join("gh");
+        fs::write(
+            &gh,
+            "#!/bin/sh\n[ \"$1 $2\" = \"pr create\" ] && printf 'https://example.invalid/pull/3\\n' || exit 1\n",
+        )
+        .unwrap();
+        fs::set_permissions(&gh, fs::Permissions::from_mode(0o700)).unwrap();
+        let git = GitAdapter::with_tools(crate::integrations::ToolCommands::default().with_gh(gh));
+        let head_before = git_output(&fixture.repository, &["rev-parse", "HEAD"]);
+
+        let Ok(MergeOutcome::Completed(task)) =
+            fixture
+                .manager
+                .merge_and_complete_task(fixture.project_id, fixture.task_id, &git)
+        else {
+            panic!("expected the pull request to complete the task");
+        };
+
+        assert_eq!(task.status, TaskStatus::Completed);
+        assert_eq!(
+            task.published.as_deref(),
+            Some("https://example.invalid/pull/3")
+        );
+        assert_eq!(
+            git_output(&fixture.repository, &["rev-parse", "HEAD"]),
+            head_before
+        );
+        assert!(!git_output(&fixture.remote, &["branch", "--list"]).is_empty());
     }
 
     #[test]
