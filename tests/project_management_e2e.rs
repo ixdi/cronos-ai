@@ -270,3 +270,49 @@ fn releases_are_switched_on_and_off_from_the_cli() {
     assert_eq!(off["releases"], false);
     assert!(cronos(&data, &["project", "set-releases", &project_id, "maybe"]).is_err());
 }
+
+#[test]
+fn requirements_are_added_listed_and_removed_from_the_cli() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("data");
+    let project_id = id(&cronos(&data, &["project", "create", "Planned"]).unwrap());
+
+    let export = cronos(
+        &data,
+        &[
+            "requirement",
+            "add",
+            &project_id,
+            "  Users can  export CSV ",
+        ],
+    )
+    .unwrap();
+    assert_eq!(export["text"], "Users can export CSV");
+    assert_eq!(export["kind"], "functional");
+    let speed = cronos(
+        &data,
+        &[
+            "requirement",
+            "add",
+            &project_id,
+            "--kind",
+            "non-functional",
+            "Exports finish within 2 seconds",
+        ],
+    )
+    .unwrap();
+    assert_eq!(speed["kind"], "non_functional");
+    let duplicate = cronos(
+        &data,
+        &["requirement", "add", &project_id, "users can export csv"],
+    )
+    .unwrap_err();
+    assert!(duplicate.contains("already listed"), "{duplicate}");
+
+    let listed = cronos(&data, &["requirement", "list", &project_id]).unwrap();
+    assert_eq!(listed.as_array().unwrap().len(), 2);
+    cronos(&data, &["requirement", "remove", &project_id, &id(&export)]).unwrap();
+    let listed = cronos(&data, &["requirement", "list", &project_id]).unwrap();
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+    assert_eq!(listed[0]["text"], "Exports finish within 2 seconds");
+}

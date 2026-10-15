@@ -6,7 +6,9 @@ use uuid::Uuid;
 use crate::{
     agent_profiles::AgentProfileCatalog,
     integrations::{GitAdapter, ToolCommands, herdr_session_available, require_tools},
-    model::{Priority, ProjectId, PublishMode, TaskId, WorkflowStep},
+    model::{
+        Priority, ProjectId, PublishMode, RequirementId, RequirementKind, TaskId, WorkflowStep,
+    },
     project::ProjectManager,
     workflow::{AgentPlan, HerdrAgentAdapter, WorkflowEngine},
 };
@@ -35,6 +37,45 @@ enum Command {
         #[command(subcommand)]
         action: TaskAction,
     },
+    /// Manage the product requirements tasks are planned from.
+    Requirement {
+        #[command(subcommand)]
+        action: RequirementAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum RequirementAction {
+    /// Add a requirement; its text is normalized and duplicates are rejected.
+    Add {
+        project_id: String,
+        text: String,
+        #[arg(long, value_enum, default_value_t = RequirementKindArg::Functional)]
+        kind: RequirementKindArg,
+    },
+    List {
+        project_id: String,
+    },
+    Remove {
+        project_id: String,
+        requirement_id: String,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+enum RequirementKindArg {
+    #[default]
+    Functional,
+    NonFunctional,
+}
+
+impl From<RequirementKindArg> for RequirementKind {
+    fn from(value: RequirementKindArg) -> Self {
+        match value {
+            RequirementKindArg::Functional => Self::Functional,
+            RequirementKindArg::NonFunctional => Self::NonFunctional,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -326,6 +367,35 @@ pub fn run() -> Result<Option<PathBuf>, Box<dyn Error>> {
             }
             TaskAction::Ready { project_id } => {
                 print_json(&manager.ready_tasks(parse_project_id(&project_id)?)?)?;
+            }
+        },
+        Command::Requirement { action } => match action {
+            RequirementAction::Add {
+                project_id,
+                text,
+                kind,
+            } => {
+                print_json(&manager.add_requirement(
+                    parse_project_id(&project_id)?,
+                    kind.into(),
+                    text,
+                )?)?;
+            }
+            RequirementAction::List { project_id } => {
+                print_json(
+                    &manager
+                        .get_project(parse_project_id(&project_id)?)?
+                        .requirements,
+                )?;
+            }
+            RequirementAction::Remove {
+                project_id,
+                requirement_id,
+            } => {
+                print_json(&manager.remove_requirement(
+                    parse_project_id(&project_id)?,
+                    RequirementId(Uuid::parse_str(&requirement_id)?),
+                )?)?;
             }
         },
     }
