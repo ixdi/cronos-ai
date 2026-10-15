@@ -11,6 +11,8 @@ use std::{
 
 use thiserror::Error;
 
+use crate::release::{Commit, Version};
+
 use crate::model::{ProjectId, TaskId};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -99,6 +101,8 @@ pub enum GitError {
     PushFailed(String),
     #[error("could not open a pull request: {0}")]
     PullRequestFailed(String),
+    #[error("could not create the release: {0}")]
+    ReleaseFailed(String),
 }
 
 /// A pull request from a pushed task branch into the base branch.
@@ -463,6 +467,101 @@ impl GitAdapter {
                 &diff
             },
         ))
+    }
+
+    /// The highest `vX.Y.Z` tag reachable from the repository's HEAD.
+    pub fn latest_release(&self, repository: &Path) -> Result<Option<Version>, GitError> {
+        let tags = self.git_text(repository, &["tag", "--merged", "HEAD", "--list", "v*"])?;
+        Ok(tags.lines().filter_map(Version::parse).max())
+    }
+
+    /// The release tagged on HEAD, if any; lets an interrupted release be adopted, not repeated.
+    pub fn release_at_head(&self, repository: &Path) -> Result<Option<Version>, GitError> {
+        let tags = self.git_text(repository, &["tag", "--points-at", "HEAD", "--list", "v*"])?;
+        Ok(tags.lines().filter_map(Version::parse).max())
+    }
+
+    /// Non-merge commits in `range` (for example `v1.2.0..HEAD`), newest first.
+    pub fn commits(&self, repository: &Path, range: &str) -> Result<Vec<Commit>, GitError> {
+        if range.starts_with('-') {
+            return Err(GitError::InvalidBranch);
+        }
+        let log = self.git_text(
+            repository,
+            &[
+                "log",
+                "--no-merges",
+                "--format=%H%x1f%s%x1f%b%x1e",
+                range,
+                "--",
+            ],
+        )?;
+        Ok(log
+            .split('\u{1e}')
+            .filter_map(|record| {
+                let mut fields = record.trim_start_matches('\n').splitn(3, '\u{1f}');
+                Some(Commit {
+                    hash: fields.next().filter(|hash| !hash.is_empty())?.to_owned(),
+                    subject: fields.next()?.to_owned(),
+                    body: fields.next().unwrap_or_default().trim().to_owned(),
+                })
+            })
+            .collect())
+    }
+
+    /// Writes the changelog, commits it as `chore(release): <version>`, and tags that commit.
+    pub fn commit_release(
+        &self,
+        repository: &Path,
+        changelog: &str,
+        content: &str,
+        version: &Version,
+        message: &str,
+    ) -> Result<(), GitError> {
+        let relative = Path::new(changelog);
+        if relative.is_absolute()
+            || relative
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            return Err(GitError::ReleaseFailed(format!(
+                "changelog path must stay inside the repository: {changelog}"
+            )));
+        }
+        let path = repository.join(relative);
+        if std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_symlink())
+        {
+            return Err(GitError::ReleaseFailed(format!(
+                "{changelog} must not be a symlink"
+            )));
+        }
+        std::fs::write(&path, content)
+            .map_err(|error| GitError::ReleaseFailed(format!("{changelog}: {error}")))?;
+        let tag = version.to_string();
+        let subject = format!("chore(release): {tag}");
+        self.git_text(repository, &["add", "--", changelog])?;
+        self.git_text(repository, &["commit", "-m", &subject, "--", changelog])?;
+        self.git_text(repository, &["tag", "-a", &tag, "-m", message])?;
+        Ok(())
+    }
+
+    /// Pushes one tag to `remote`.
+    pub fn push_tag(&self, path: &Path, remote: &str, tag: &str) -> Result<(), GitError> {
+        if Version::parse(tag).is_none() {
+            return Err(GitError::InvalidBranch);
+        }
+        let refspec = format!("refs/tags/{tag}:refs/tags/{tag}");
+        self.tools
+            .run_git(&[
+                OsStr::new("-C"),
+                path.as_os_str(),
+                OsStr::new("push"),
+                OsStr::new("--"),
+                OsStr::new(remote),
+                OsStr::new(&refspec),
+            ])
+            .map(|_| ())
+            .map_err(|error| GitError::PushFailed(format!("{remote}: {error}")))
     }
 
     /// The task branch's full diff against the base, without color, cut after `max_lines` with a
@@ -1655,6 +1754,51 @@ mod tests {
                 .last()
                 .unwrap()
                 .contains("more diff lines not shown")
+        );
+    }
+
+    #[test]
+    fn releases_are_found_listed_committed_tagged_and_pushed() {
+        let temp = tempfile::tempdir().unwrap();
+        let (repository, remote, worktree, branch) = repository_with_task_commit(temp.path());
+        let git = GitAdapter::default();
+        assert_eq!(git.latest_release(&repository).unwrap(), None);
+        fixture_git(&repository, &["tag", "v0.1.0"]);
+        fixture_git(&repository, &["tag", "v0.0.9"]);
+        fixture_git(&repository, &["tag", "nightly"]);
+        assert_eq!(
+            git.latest_release(&repository).unwrap(),
+            Some(crate::release::Version::new(0, 1, 0))
+        );
+
+        git.merge_worktree(&repository, &worktree, branch).unwrap();
+        let commits = git.commits(&repository, "v0.1.0..HEAD").unwrap();
+        assert_eq!(commits.len(), 1, "merge commits are left out");
+        assert_eq!(commits[0].subject, "task output");
+        assert_eq!(git.release_at_head(&repository).unwrap(), None);
+
+        git.commit_release(
+            &repository,
+            "CHANGELOG.md",
+            "# Changelog\n",
+            &crate::release::Version::new(0, 1, 1),
+            "Release v0.1.1",
+        )
+        .unwrap();
+        assert_eq!(
+            git.release_at_head(&repository).unwrap(),
+            Some(crate::release::Version::new(0, 1, 1))
+        );
+        assert_eq!(
+            fixture_git(&repository, &["log", "-1", "--format=%s"]).trim(),
+            "chore(release): v0.1.1"
+        );
+        assert!(git.is_clean(&repository).unwrap());
+
+        git.push_tag(&repository, "origin", "v0.1.1").unwrap();
+        assert_eq!(
+            fixture_git(&remote, &["rev-parse", "v0.1.1^{commit}"]),
+            fixture_git(&repository, &["rev-parse", "HEAD"])
         );
     }
 
