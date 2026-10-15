@@ -239,6 +239,10 @@ struct Dashboard {
     workflow_status: Option<String>,
     review_text: Vec<String>,
     review_scroll: u16,
+    /// First line of the diff section of `review_text`; lines from here on are styled as a diff.
+    review_diff_start: usize,
+    /// Lines of `review_text` where each changed file's diff begins.
+    review_files: Vec<usize>,
     profile_list: ProfileList,
     profile_editor: Option<ProfileEditor>,
     task_view: TaskView,
@@ -262,6 +266,8 @@ impl Dashboard {
             workflow_status: None,
             review_text: Vec::new(),
             review_scroll: 0,
+            review_diff_start: usize::MAX,
+            review_files: Vec::new(),
             profile_list: ProfileList::default(),
             profile_editor: None,
             task_view: TaskView::default(),
@@ -385,6 +391,20 @@ impl Dashboard {
                 KeyCode::Down => {
                     let max = u16::try_from(self.review_text.len()).unwrap_or(u16::MAX);
                     self.review_scroll = self.review_scroll.saturating_add(1).min(max);
+                }
+                KeyCode::Char(']') => {
+                    let scroll = usize::from(self.review_scroll);
+                    if let Some(next) = self.review_files.iter().find(|line| **line > scroll) {
+                        self.review_scroll = u16::try_from(*next).unwrap_or(u16::MAX);
+                    }
+                }
+                KeyCode::Char('[') => {
+                    let scroll = usize::from(self.review_scroll);
+                    if let Some(previous) =
+                        self.review_files.iter().rev().find(|line| **line < scroll)
+                    {
+                        self.review_scroll = u16::try_from(*previous).unwrap_or(u16::MAX);
+                    }
                 }
                 KeyCode::PageUp => self.review_scroll = self.review_scroll.saturating_sub(10),
                 KeyCode::PageDown => {
@@ -742,13 +762,27 @@ impl Dashboard {
                 lines[lines.len().saturating_sub(40)..].join("\n")
             })
             .unwrap_or_else(|_| "The check command has not run for this worktree yet.".to_owned());
+        let diff = git_adapter
+            .review_diff(Path::new(&repository), &worktree, MAX_REVIEW_DIFF_LINES)
+            .unwrap_or_else(|error| format!("Could not read the task branch diff: {error}"));
         self.review_text = format!(
-            "Worktree: {}\nOpenSpec change: {change}\n\n== Specification ==\n{spec}\n\n== Task branch ==\n{git}\n\n== Latest check output ==\n{check}",
+            "Worktree: {}\nOpenSpec change: {change}\n\n== Specification ==\n{spec}\n\n== Task branch ==\n{git}\n\n== Latest check output ==\n{check}\n\n== Changes ==",
             worktree.display()
         )
         .lines()
         .map(terminal_safe)
         .collect();
+        // The diff is the last section, so every line from here on is diff text.
+        self.review_diff_start = self.review_text.len();
+        self.review_text.extend(diff.lines().map(terminal_safe));
+        self.review_files = self
+            .review_text
+            .iter()
+            .enumerate()
+            .skip(self.review_diff_start)
+            .filter(|(_, line)| line.starts_with("diff --git "))
+            .map(|(index, _)| index)
+            .collect();
         self.review_scroll = 0;
         self.error = None;
         self.screen = Screen::Review;
@@ -1655,7 +1689,9 @@ fn footer_help(app: &Dashboard) -> &'static str {
         Screen::TaskDetail => {
             "v review  a abandon  ↑/↓ activity  Backspace tasks  r refresh  q quit"
         }
-        Screen::Review => "↑/↓ scroll  PgUp/PgDn page  Backspace details  q quit",
+        Screen::Review => {
+            "↑/↓ scroll  PgUp/PgDn page  ] next file  [ previous file  Backspace details  q quit"
+        }
     }
 }
 
@@ -2368,21 +2404,37 @@ fn draw_review(frame: &mut Frame, app: &Dashboard, area: Rect) {
         format!("Review · {}", terminal_safe(&task.title))
     });
     let total = app.review_text.len();
-    let position = format!(
-        " line {}/{} ",
-        (usize::from(app.review_scroll) + 1).min(total),
-        total
-    );
+    let scroll = usize::from(app.review_scroll);
+    let mut position = format!(" line {}/{} ", (scroll + 1).min(total), total);
+    let current_file = app
+        .review_files
+        .iter()
+        .filter(|line| **line <= scroll)
+        .count();
+    if current_file > 0 {
+        position = format!(
+            " file {current_file}/{} ·{position}",
+            app.review_files.len()
+        );
+    }
     frame.render_widget(
         Paragraph::new(
             app.review_text
                 .iter()
-                .map(|line| review_line(line))
+                .enumerate()
+                .map(|(index, line)| {
+                    if index >= app.review_diff_start {
+                        diff_line(line)
+                    } else {
+                        review_line(line)
+                    }
+                })
                 .collect::<Vec<_>>(),
         )
         .scroll((app.review_scroll, 0))
         .block(
             panel(title)
+                .padding(Padding::horizontal(1))
                 .title_top(Line::styled(position, Style::default().fg(MUTED)).right_aligned()),
         ),
         area,
@@ -2390,6 +2442,28 @@ fn draw_review(frame: &mut Frame, app: &Dashboard, area: Rect) {
 }
 
 /// Colors review sections, warnings, and `git diff --stat` lines.
+/// Diff lines shown in the review view before the rest is summarized.
+const MAX_REVIEW_DIFF_LINES: usize = 5_000;
+
+fn diff_line(line: &str) -> Line<'static> {
+    let style = if line.starts_with("diff --git ") {
+        Style::default().fg(PRIMARY).add_modifier(Modifier::BOLD)
+    } else if line.starts_with("+++ ") || line.starts_with("--- ") || line.starts_with("index ") {
+        Style::default().fg(MUTED)
+    } else if line.starts_with("@@") {
+        Style::default().fg(SHORTCUT)
+    } else if line.starts_with('+') {
+        Style::default().fg(SUCCESS)
+    } else if line.starts_with('-') {
+        Style::default().fg(ERROR)
+    } else if line.starts_with('…') {
+        Style::default().fg(WARNING)
+    } else {
+        Style::default()
+    };
+    Line::styled(line.to_owned(), style)
+}
+
 fn review_line(line: &str) -> Line<'static> {
     if let Some(section) = line
         .strip_prefix("== ")
@@ -3609,6 +3683,7 @@ mod tests {
             )
             .unwrap();
         std::fs::write(worktree.join("feature.txt"), "new\n").unwrap();
+        std::fs::write(worktree.join("other.txt"), "second file\n").unwrap();
         git(&worktree, &["add", "-A"]);
         git(&worktree, &["commit", "-m", "feat: add the feature"]);
 
@@ -3622,10 +3697,38 @@ mod tests {
         assert!(text.contains("feat: add the feature"));
         assert!(text.contains("feature.txt"));
         assert!(text.contains("check command has not run"));
+        assert!(text.contains("== Changes =="));
+        assert!(text.contains("+second file"));
         let backend = render(&app);
         rendered_text_position(&backend, "Review · Build");
+        rendered_text_position(&backend, "] next file");
+        assert_eq!(
+            rendered_text_position(&backend, "Worktree: ").0,
+            2,
+            "review text keeps a gap from the border"
+        );
         app.handle_key(KeyCode::Down);
         assert_eq!(app.review_scroll, 1);
+
+        // ] and [ jump between the changed files.
+        app.handle_key(KeyCode::Char(']'));
+        let first = usize::from(app.review_scroll);
+        assert!(app.review_text[first].starts_with("diff --git a/feature.txt"));
+        app.handle_key(KeyCode::Char(']'));
+        let second = usize::from(app.review_scroll);
+        assert!(app.review_text[second].starts_with("diff --git a/other.txt"));
+        app.handle_key(KeyCode::Char(']'));
+        assert_eq!(
+            usize::from(app.review_scroll),
+            second,
+            "no file after the last"
+        );
+        let backend = render(&app);
+        rendered_text_position(&backend, "file 2/2");
+        assert_rendered_color(&backend, "+second file", SUCCESS);
+        app.handle_key(KeyCode::Char('['));
+        assert_eq!(usize::from(app.review_scroll), first);
+
         app.handle_key(KeyCode::Backspace);
         assert_eq!(app.screen, Screen::TaskDetail);
     }

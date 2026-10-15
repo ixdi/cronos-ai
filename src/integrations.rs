@@ -464,6 +464,36 @@ impl GitAdapter {
             },
         ))
     }
+
+    /// The task branch's full diff against the base, without color, cut after `max_lines` with a
+    /// note saying how much was left out.
+    pub fn review_diff(
+        &self,
+        repository: &Path,
+        worktree: &Path,
+        max_lines: usize,
+    ) -> Result<String, GitError> {
+        let base = self.head(repository)?;
+        let diff = self.git_text(
+            worktree,
+            &[
+                "diff",
+                "--no-color",
+                "--no-ext-diff",
+                &format!("{base}...HEAD"),
+            ],
+        )?;
+        let total = diff.lines().count();
+        if total <= max_lines {
+            return Ok(diff);
+        }
+        let mut shown = diff.lines().take(max_lines).collect::<Vec<_>>().join("\n");
+        shown.push_str(&format!(
+            "\n… {} more diff lines not shown; inspect the worktree for the rest.",
+            total - max_lines
+        ));
+        Ok(shown)
+    }
 }
 
 pub struct CheckOutcome {
@@ -1600,6 +1630,31 @@ mod tests {
         assert_eq!(
             fixture_git(&remote, &["rev-parse", &base]),
             fixture_git(&repository, &["rev-parse", "HEAD"])
+        );
+    }
+
+    #[test]
+    fn review_diff_shows_task_changes_and_caps_its_length() {
+        let temp = tempfile::tempdir().unwrap();
+        let (repository, _, worktree, _) = repository_with_task_commit(temp.path());
+        let git = GitAdapter::default();
+
+        let diff = git.review_diff(&repository, &worktree, 1_000).unwrap();
+        assert!(
+            diff.starts_with("diff --git a/generated.txt b/generated.txt"),
+            "{diff}"
+        );
+        assert!(diff.lines().any(|line| line == "+task output"));
+        assert!(!diff.contains('\u{1b}'), "no color codes");
+
+        let capped = git.review_diff(&repository, &worktree, 2).unwrap();
+        assert_eq!(capped.lines().count(), 3);
+        assert!(
+            capped
+                .lines()
+                .last()
+                .unwrap()
+                .contains("more diff lines not shown")
         );
     }
 
