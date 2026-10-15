@@ -296,6 +296,7 @@ mod tests {
             automatic_revisions: 0,
             published: None,
             release: None,
+            requirement_ids: Vec::new(),
             created_at_unix_secs: 0,
             updated_at_unix_secs: updated,
         }

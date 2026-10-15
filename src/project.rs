@@ -12,8 +12,9 @@ use crate::{
     model::{
         AgentActivity, AgentStatus, ApprovalDecision, ApprovalGate, ApprovalRecord,
         MAX_AGENT_EVENTS, MAX_APPROVAL_RECORDS, MAX_RECOVERY_RECORDS, ModelError, Priority,
-        Project, ProjectId, ProjectStatus, PublishMode, RecoveryAction, RecoveryRecord, Task,
-        TaskId, TaskStatus, WorkflowStep,
+        Project, ProjectId, ProjectStatus, PublishMode, RecoveryAction, RecoveryRecord,
+        Requirement, RequirementId, RequirementKind, Task, TaskId, TaskStatus, WorkflowStep,
+        normalize_text,
     },
     release::{Version, changelog_section, insert_section, next_version, utc_date},
     storage::{ProjectStore, StoreError},
@@ -104,6 +105,10 @@ pub enum ProjectError {
         "a workflow step is still running for this task in another process; wait for it to finish"
     )]
     TaskBusy,
+    #[error("an open task already has this title: {0}")]
+    DuplicateTask(String),
+    #[error("the project has no requirement {0:?}")]
+    UnknownRequirement(RequirementId),
 }
 
 /// Exclusive per-task lock held while a workflow step runs. The operating system releases it when
@@ -198,6 +203,7 @@ impl ProjectManager {
             publish: Default::default(),
             remote: None,
             releases: false,
+            requirements: Vec::new(),
             created_at_unix_secs: now,
             updated_at_unix_secs: now,
         };
@@ -365,6 +371,50 @@ impl ProjectManager {
         Ok(project)
     }
 
+    /// Adds a requirement with normalized text; the same requirement typed twice is rejected.
+    pub fn add_requirement(
+        &self,
+        project_id: ProjectId,
+        kind: RequirementKind,
+        text: String,
+    ) -> Result<Requirement, ProjectError> {
+        let _write = self.store.lock_writes()?;
+        let mut project = self.store.load_project(project_id)?;
+        let now = now_unix_secs()?;
+        let requirement = Requirement {
+            id: RequirementId::new(),
+            kind,
+            text: normalize_text(&text),
+            created_at_unix_secs: now,
+        };
+        project.requirements.push(requirement.clone());
+        project.updated_at_unix_secs = now;
+        project.validate()?;
+        self.store.save_project(&project)?;
+        Ok(requirement)
+    }
+
+    /// Removes a requirement. Tasks planned from it keep the link as history.
+    pub fn remove_requirement(
+        &self,
+        project_id: ProjectId,
+        requirement_id: RequirementId,
+    ) -> Result<Project, ProjectError> {
+        let _write = self.store.lock_writes()?;
+        let mut project = self.store.load_project(project_id)?;
+        let before = project.requirements.len();
+        project
+            .requirements
+            .retain(|requirement| requirement.id != requirement_id);
+        if project.requirements.len() == before {
+            return Err(ProjectError::UnknownRequirement(requirement_id));
+        }
+        project.updated_at_unix_secs = now_unix_secs()?;
+        project.validate()?;
+        self.store.save_project(&project)?;
+        Ok(project)
+    }
+
     pub fn create_task(
         &self,
         project_id: ProjectId,
@@ -373,8 +423,45 @@ impl ProjectManager {
         priority: Priority,
         dependencies: Vec<TaskId>,
     ) -> Result<Task, ProjectError> {
+        self.create_task_for_requirements(
+            project_id,
+            title,
+            description,
+            priority,
+            dependencies,
+            Vec::new(),
+        )
+    }
+
+    /// Creates a task with a normalized title, rejecting one that duplicates an open task (any
+    /// task that is not Completed or Rejected), and links it to the requirements it fulfils.
+    pub fn create_task_for_requirements(
+        &self,
+        project_id: ProjectId,
+        title: String,
+        description: Option<String>,
+        priority: Priority,
+        dependencies: Vec<TaskId>,
+        requirement_ids: Vec<RequirementId>,
+    ) -> Result<Task, ProjectError> {
         let _write = self.store.lock_writes()?;
         let mut project = self.store.load_project(project_id)?;
+        let title = normalize_text(&title);
+        let key = title.to_lowercase();
+        if self.store.list_tasks(project_id)?.iter().any(|task| {
+            !matches!(task.status, TaskStatus::Completed | TaskStatus::Rejected)
+                && task.title.to_lowercase() == key
+        }) {
+            return Err(ProjectError::DuplicateTask(title));
+        }
+        if let Some(unknown) = requirement_ids.iter().find(|id| {
+            !project
+                .requirements
+                .iter()
+                .any(|requirement| requirement.id == **id)
+        }) {
+            return Err(ProjectError::UnknownRequirement(*unknown));
+        }
         if project.status == ProjectStatus::Archived {
             return Err(ProjectError::ArchivedProject);
         }
@@ -407,6 +494,7 @@ impl ProjectManager {
             automatic_revisions: 0,
             published: None,
             release: None,
+            requirement_ids,
             created_at_unix_secs: now,
             updated_at_unix_secs: now,
         };
@@ -1258,7 +1346,8 @@ mod tests {
     use crate::integrations::{GitAdapter, GitError};
     use crate::model::{
         AgentStatus, ApprovalDecision, ApprovalGate, MAX_AGENT_EVENTS, ModelError, Priority,
-        ProjectId, ProjectStatus, PublishMode, RecoveryAction, TaskId, TaskStatus, WorkflowStep,
+        ProjectId, ProjectStatus, PublishMode, RecoveryAction, RequirementKind, TaskId, TaskStatus,
+        WorkflowStep,
     };
     use std::{fs, path::Path, process::Command};
 
@@ -1375,6 +1464,92 @@ mod tests {
             .unwrap();
         manager
             .complete_workflow_step(project_id, task_id, WorkflowStep::LocalMerge)
+            .unwrap();
+    }
+
+    #[test]
+    fn requirements_are_normalized_deduplicated_and_removed() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(temp.path()).unwrap();
+        let project = manager.create_project("Planned".to_owned(), None).unwrap();
+
+        let export = manager
+            .add_requirement(
+                project.id,
+                RequirementKind::Functional,
+                "  Users can   export CSV ".to_owned(),
+            )
+            .unwrap();
+        assert_eq!(export.text, "Users can export CSV");
+        assert!(matches!(
+            manager.add_requirement(
+                project.id,
+                RequirementKind::NonFunctional,
+                "users can export csv".to_owned()
+            ),
+            Err(ProjectError::Model(ModelError::DuplicateRequirement))
+        ));
+        manager
+            .add_requirement(
+                project.id,
+                RequirementKind::NonFunctional,
+                "Exports finish within 2 seconds".to_owned(),
+            )
+            .unwrap();
+        assert_eq!(
+            manager.get_project(project.id).unwrap().requirements.len(),
+            2
+        );
+
+        manager.remove_requirement(project.id, export.id).unwrap();
+        let remaining = manager.get_project(project.id).unwrap().requirements;
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].kind, RequirementKind::NonFunctional);
+        assert!(matches!(
+            manager.remove_requirement(project.id, export.id),
+            Err(ProjectError::UnknownRequirement(_))
+        ));
+    }
+
+    #[test]
+    fn task_titles_are_normalized_and_open_duplicates_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(temp.path()).unwrap();
+        let project = manager.create_project("Demo".to_owned(), None).unwrap();
+
+        let task = manager
+            .create_task(
+                project.id,
+                "  Add   export ".to_owned(),
+                None,
+                Priority::High,
+                Vec::new(),
+            )
+            .unwrap();
+        assert_eq!(task.title, "Add export");
+        assert!(matches!(
+            manager.create_task(
+                project.id,
+                "add EXPORT".to_owned(),
+                None,
+                Priority::Low,
+                Vec::new()
+            ),
+            Err(ProjectError::DuplicateTask(_))
+        ));
+
+        // Abandoned work does not block doing the same thing again.
+        manager
+            .abandon_task(project.id, task.id, "Rethinking it".to_owned())
+            .unwrap();
+        manager
+            .create_task(
+                project.id,
+                "Add export".to_owned(),
+                None,
+                Priority::High,
+                Vec::new(),
+            )
             .unwrap();
     }
 

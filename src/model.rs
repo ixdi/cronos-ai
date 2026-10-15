@@ -23,6 +23,8 @@ pub const MAX_CHECK_TIMEOUT_MINUTES: u32 = 480;
 const DEFAULT_REMOTE: &str = "origin";
 const MAX_REMOTE_CHARS: usize = 100;
 const MAX_PUBLICATION_CHARS: usize = 2_000;
+pub const MAX_REQUIREMENTS: usize = 200;
+const MAX_REQUIREMENT_CHARS: usize = 2_000;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(transparent)]
@@ -90,6 +92,42 @@ pub enum TaskStatus {
     Error,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct RequirementId(pub Uuid);
+
+// Keep ID creation explicit; a random `Default` would hide identity creation.
+#[allow(clippy::new_without_default)]
+impl RequirementId {
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequirementKind {
+    /// What the product does.
+    Functional,
+    /// How well it does it: performance, security, accessibility, and similar qualities.
+    NonFunctional,
+}
+
+/// A product requirement the project's tasks are generated from.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Requirement {
+    pub id: RequirementId,
+    pub kind: RequirementKind,
+    pub text: String,
+    pub created_at_unix_secs: u64,
+}
+
+/// Collected text with surrounding whitespace removed and inner runs of whitespace collapsed,
+/// so the same requirement or task typed twice compares equal.
+pub fn normalize_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Priority {
@@ -121,6 +159,8 @@ pub struct Project {
     /// Whether each locally merged task gets a release tag and a changelog entry.
     #[serde(default)]
     pub releases: bool,
+    #[serde(default)]
+    pub requirements: Vec<Requirement>,
     pub created_at_unix_secs: u64,
     pub updated_at_unix_secs: u64,
 }
@@ -138,6 +178,19 @@ impl Project {
     }
 
     pub fn validate(&self) -> Result<(), ModelError> {
+        if self.requirements.len() > MAX_REQUIREMENTS {
+            return Err(ModelError::TooManyRequirements);
+        }
+        let mut requirement_ids = HashSet::new();
+        let mut requirement_texts = HashSet::new();
+        for requirement in &self.requirements {
+            validate_required_text("requirement", &requirement.text, MAX_REQUIREMENT_CHARS)?;
+            if !requirement_ids.insert(requirement.id)
+                || !requirement_texts.insert(normalize_text(&requirement.text).to_lowercase())
+            {
+                return Err(ModelError::DuplicateRequirement);
+            }
+        }
         if self
             .remote
             .as_deref()
@@ -376,6 +429,9 @@ pub struct Task {
     /// The release this task's merge was tagged as, such as `v1.4.0`.
     #[serde(default)]
     pub release: Option<String>,
+    /// Requirements this task was planned to fulfil.
+    #[serde(default)]
+    pub requirement_ids: Vec<RequirementId>,
 }
 
 impl Task {
@@ -415,6 +471,14 @@ impl Task {
             .is_some_and(|release| crate::release::Version::parse(release).is_none())
         {
             return Err(ModelError::InvalidRelease);
+        }
+        let mut requirement_ids = HashSet::with_capacity(self.requirement_ids.len());
+        if self
+            .requirement_ids
+            .iter()
+            .any(|id| !requirement_ids.insert(id))
+        {
+            return Err(ModelError::DuplicateRequirement);
         }
 
         let mut dependencies = HashSet::with_capacity(self.dependencies.len());
@@ -526,6 +590,10 @@ pub enum ModelError {
     InvalidRemote,
     #[error("a task release must be a version tag such as v1.2.3")]
     InvalidRelease,
+    #[error("the requirement is already listed")]
+    DuplicateRequirement,
+    #[error("a project can hold at most {MAX_REQUIREMENTS} requirements")]
+    TooManyRequirements,
 }
 
 fn default_attempt() -> u32 {
@@ -577,7 +645,8 @@ fn validate_optional_text(
 mod tests {
     use super::{
         DEFAULT_CHECK_TIMEOUT_MINUTES, MAX_CHECK_TIMEOUT_MINUTES, ModelError, Priority, Project,
-        ProjectId, ProjectStatus, PublishMode, Task, TaskId, TaskStatus,
+        ProjectId, ProjectStatus, PublishMode, Requirement, RequirementId, RequirementKind, Task,
+        TaskId, TaskStatus, normalize_text,
     };
     use std::collections::BTreeMap;
 
@@ -601,6 +670,7 @@ mod tests {
             automatic_revisions: 0,
             published: None,
             release: None,
+            requirement_ids: Vec::new(),
             created_at_unix_secs: 0,
             updated_at_unix_secs: 0,
         }
@@ -621,6 +691,7 @@ mod tests {
             publish: Default::default(),
             remote: None,
             releases: false,
+            requirements: Vec::new(),
             created_at_unix_secs: 0,
             updated_at_unix_secs: 0,
         };
@@ -657,6 +728,7 @@ mod tests {
             publish: Default::default(),
             remote: None,
             releases: false,
+            requirements: Vec::new(),
             created_at_unix_secs: 0,
             updated_at_unix_secs: 0,
         };
@@ -735,6 +807,81 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    fn requirement(text: &str) -> Requirement {
+        Requirement {
+            id: RequirementId::new(),
+            kind: RequirementKind::Functional,
+            text: text.to_owned(),
+            created_at_unix_secs: 1,
+        }
+    }
+
+    #[test]
+    fn collected_text_is_trimmed_and_whitespace_collapsed() {
+        assert_eq!(
+            normalize_text("  Users  can\n\texport   CSV "),
+            "Users can export CSV"
+        );
+        assert_eq!(normalize_text(" \n "), "");
+    }
+
+    #[test]
+    fn requirements_are_validated_and_deduplicated() {
+        let mut project: Project = serde_json::from_value(serde_json::json!({
+            "id": ProjectId::new(),
+            "name": "Planned",
+            "description": null,
+            "status": "active",
+            "task_ids": [],
+            "created_at_unix_secs": 1,
+            "updated_at_unix_secs": 1
+        }))
+        .unwrap();
+        assert!(project.requirements.is_empty());
+
+        project.requirements = vec![
+            requirement("Users can export CSV"),
+            Requirement {
+                kind: RequirementKind::NonFunctional,
+                ..requirement("Exports finish within 2 seconds")
+            },
+        ];
+        assert_eq!(project.validate(), Ok(()));
+        assert_eq!(
+            serde_json::to_value(RequirementKind::NonFunctional).unwrap(),
+            "non_functional"
+        );
+
+        project
+            .requirements
+            .push(requirement("users can EXPORT csv"));
+        assert_eq!(project.validate(), Err(ModelError::DuplicateRequirement));
+        project.requirements.pop();
+        project.requirements.push(requirement(" "));
+        assert_eq!(
+            project.validate(),
+            Err(ModelError::BlankText("requirement"))
+        );
+        project.requirements.pop();
+        let duplicate_id = project.requirements[0].clone();
+        project.requirements.push(Requirement {
+            text: "Different text".to_owned(),
+            ..duplicate_id
+        });
+        assert_eq!(project.validate(), Err(ModelError::DuplicateRequirement));
+    }
+
+    #[test]
+    fn tasks_link_to_requirements_without_duplicates() {
+        let mut task = task(TaskId::new(), Vec::new());
+        assert!(task.requirement_ids.is_empty());
+        let id = RequirementId::new();
+        task.requirement_ids = vec![id];
+        assert_eq!(task.validate(), Ok(()));
+        task.requirement_ids.push(id);
+        assert_eq!(task.validate(), Err(ModelError::DuplicateRequirement));
     }
 
     #[test]

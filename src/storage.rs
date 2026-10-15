@@ -357,6 +357,7 @@ mod tests {
             publish: Default::default(),
             remote: None,
             releases: false,
+            requirements: Vec::new(),
             created_at_unix_secs: 1,
             updated_at_unix_secs: 1,
         }
@@ -382,6 +383,7 @@ mod tests {
             automatic_revisions: 0,
             published: None,
             release: None,
+            requirement_ids: Vec::new(),
             created_at_unix_secs: 2,
             updated_at_unix_secs: 2,
         }
