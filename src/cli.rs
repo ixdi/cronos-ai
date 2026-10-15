@@ -7,7 +7,8 @@ use crate::{
     agent_profiles::AgentProfileCatalog,
     integrations::{GitAdapter, ToolCommands, herdr_session_available, require_tools},
     model::{
-        Priority, ProjectId, PublishMode, RequirementId, RequirementKind, TaskId, WorkflowStep,
+        Prioritizer, Priority, ProjectId, PublishMode, RequirementId, RequirementKind, TaskId,
+        WorkflowStep,
     },
     project::ProjectManager,
     workflow::{AgentPlan, HerdrAgentAdapter, WorkflowEngine},
@@ -103,6 +104,15 @@ enum ProjectAction {
     SetCheckTimeout {
         id: String,
         minutes: Option<u32>,
+    },
+    /// Choose how the next task is picked: built-in priority order, or an agent prioritizer.
+    SetPrioritizer {
+        id: String,
+        #[arg(value_enum)]
+        prioritizer: PrioritizerArg,
+        /// Model for the agent prioritizer (default: Pi's default model).
+        #[arg(long)]
+        model: Option<String>,
     },
     /// Run workers in a write sandbox that protects Cronos data, the base checkout, and Git hooks (on), or not (off).
     SetSandbox {
@@ -213,6 +223,20 @@ enum TaskAction {
     Ready {
         project_id: String,
     },
+    /// Show the order in which startable tasks would start, asking the agent prioritizer when the
+    /// project uses it. Starts nothing.
+    Rank {
+        project_id: String,
+        /// Seconds the agent prioritizer may take.
+        #[arg(long, default_value_t = 120, value_parser = clap::value_parser!(u64).range(1..=1800))]
+        timeout_seconds: u64,
+    },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum PrioritizerArg {
+    BuiltIn,
+    Agent,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -353,6 +377,21 @@ pub fn run() -> Result<Option<PathBuf>, Box<dyn Error>> {
             ProjectAction::SetCheckCommand { id, command } => {
                 print_json(&manager.set_project_check_command(parse_project_id(&id)?, command)?)?;
             }
+            ProjectAction::SetPrioritizer {
+                id,
+                prioritizer,
+                model,
+            } => {
+                let prioritizer = match prioritizer {
+                    PrioritizerArg::BuiltIn => Prioritizer::BuiltIn,
+                    PrioritizerArg::Agent => Prioritizer::Agent,
+                };
+                print_json(&manager.set_project_prioritizer(
+                    parse_project_id(&id)?,
+                    prioritizer,
+                    model,
+                )?)?;
+            }
             ProjectAction::SetSandbox { id, state } => {
                 print_json(&manager.set_project_sandbox(
                     parse_project_id(&id)?,
@@ -445,6 +484,33 @@ pub fn run() -> Result<Option<PathBuf>, Box<dyn Error>> {
             }
             TaskAction::Ready { project_id } => {
                 print_json(&manager.ready_tasks(parse_project_id(&project_id)?)?)?;
+            }
+            TaskAction::Rank {
+                project_id,
+                timeout_seconds,
+            } => {
+                let project_id = parse_project_id(&project_id)?;
+                let project = manager.get_project(project_id)?;
+                let (startable, _) = manager.startable_tasks(project_id)?;
+                let ranking = manager.rank_startable_tasks(
+                    project_id,
+                    &ToolCommands::default(),
+                    std::time::Duration::from_secs(timeout_seconds),
+                )?;
+                let (order, reason) = match ranking {
+                    Some(ranking) => (ranking.order, Some(ranking.reason)),
+                    None => (startable.iter().map(|task| task.id).collect(), None),
+                };
+                let order = order
+                    .iter()
+                    .filter_map(|id| startable.iter().find(|task| task.id == *id))
+                    .map(|task| serde_json::json!({"id": task.id, "title": task.title}))
+                    .collect::<Vec<_>>();
+                print_json(&serde_json::json!({
+                    "prioritizer": project.prioritizer,
+                    "order": order,
+                    "reason": reason,
+                }))?;
             }
         },
         Command::Requirement { action } => match action {

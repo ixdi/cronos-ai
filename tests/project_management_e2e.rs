@@ -428,3 +428,71 @@ fn the_worker_sandbox_is_switched_on_and_off_from_the_cli() {
     let off = cronos(&data, &["project", "set-sandbox", &project_id, "off"]).unwrap();
     assert_eq!(off["sandbox"], false);
 }
+
+#[test]
+fn the_agent_prioritizer_is_configured_and_consulted_from_the_cli() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("data");
+    let bin = temp.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(
+        bin.join("pi"),
+        "#!/bin/sh\nprintf '{\"order\": [\"T2\"], \"reason\": \"Docs unblock the launch\"}'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(bin.join("pi"), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let run = |args: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_cronos-ai"))
+            .arg("--data-dir")
+            .arg(&data)
+            .args(args)
+            .env("PATH", &path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let project_id = id(&run(&["project", "create", "Ranked"]));
+    let feature = id(&run(&[
+        "task",
+        "create",
+        &project_id,
+        "Feature",
+        "--priority",
+        "high",
+    ]));
+    let docs = id(&run(&[
+        "task",
+        "create",
+        &project_id,
+        "Docs",
+        "--priority",
+        "low",
+    ]));
+
+    let built_in = run(&["task", "rank", &project_id]);
+    assert_eq!(built_in["prioritizer"], "built_in");
+    assert_eq!(built_in["order"][0]["id"], feature.as_str());
+
+    let configured = run(&[
+        "project",
+        "set-prioritizer",
+        &project_id,
+        "agent",
+        "--model",
+        "provider/jev",
+    ]);
+    assert_eq!(configured["prioritizer"], "agent");
+    assert_eq!(configured["prioritizer_model"], "provider/jev");
+    let ranked = run(&["task", "rank", &project_id]);
+    assert_eq!(ranked["prioritizer"], "agent");
+    assert_eq!(ranked["order"][0]["id"], docs.as_str());
+    assert_eq!(ranked["reason"], "Docs unblock the launch");
+}
