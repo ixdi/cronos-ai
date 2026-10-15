@@ -453,6 +453,15 @@ impl GitAdapter {
             .ok_or_else(|| GitError::PullRequestFailed("gh printed no pull request URL".to_owned()))
     }
 
+    /// The absolute Git directory shared by the repository and all its worktrees.
+    pub fn common_dir(&self, path: &Path) -> Result<PathBuf, GitError> {
+        self.git_text(
+            path,
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        )
+        .map(PathBuf::from)
+    }
+
     pub fn current_branch(&self, path: &Path) -> Result<String, GitError> {
         self.git_text(path, &["rev-parse", "--abbrev-ref", "HEAD"])
     }
@@ -1497,7 +1506,7 @@ fn valid_agent_name(name: &str) -> bool {
         && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '_' | '-'))
 }
 
-fn quote_shell_word(value: &str) -> String {
+pub(crate) fn quote_shell_word(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 

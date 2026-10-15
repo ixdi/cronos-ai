@@ -5,6 +5,7 @@ pub mod model;
 pub mod planning;
 pub mod project;
 pub mod release;
+pub mod sandbox;
 pub mod step_skills;
 pub mod storage;
 pub mod tui;
