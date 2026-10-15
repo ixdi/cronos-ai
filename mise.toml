@@ -1,2 +1,11 @@
 [tools]
 python = "3.14"
+"cargo:cargo-audit" = "0.22.2"
+
+[tasks.install-hooks]
+description = "Run scripts/check.sh before every git push"
+run = "git config core.hooksPath .githooks"
+
+[tasks.check]
+description = "Run formatting, Clippy, tests, and cargo audit"
+run = "./scripts/check.sh"

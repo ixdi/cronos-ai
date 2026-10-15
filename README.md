@@ -110,7 +110,15 @@ cargo test
 ./scripts/check.sh
 ```
 
-The check script runs formatting, Clippy, all targets' tests, and `cargo audit`. End-to-end tests use temporary Git repositories with fake agents and a fake `herdr`:
+The check script runs formatting, Clippy, all targets' tests, and `cargo audit`.
+Run it automatically before every `git push` by installing the tracked hook once per clone:
+
+```sh
+mise install            # installs the pinned cargo-audit
+mise run install-hooks  # points git at .githooks/
+```
+
+A failing check aborts the push; `git push --no-verify` skips it for a single push. End-to-end tests use temporary Git repositories with fake agents and a fake `herdr`:
 
 ```sh
 cargo test --test workflow_e2e           # the full per-task workflow
