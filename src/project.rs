@@ -169,6 +169,7 @@ impl ProjectManager {
         check_command: Option<Vec<String>>,
         git: &GitAdapter,
     ) -> Result<Project, ProjectError> {
+        let _write = self.store.lock_writes()?;
         let repository = repository
             .map(|path| {
                 git.repository_root(path)
@@ -198,6 +199,7 @@ impl ProjectManager {
         repository: &Path,
         git: &GitAdapter,
     ) -> Result<Project, ProjectError> {
+        let _write = self.store.lock_writes()?;
         let mut project = self.store.load_project(project_id)?;
         if self
             .store
@@ -239,6 +241,7 @@ impl ProjectManager {
         project_id: ProjectId,
         command: Vec<String>,
     ) -> Result<Project, ProjectError> {
+        let _write = self.store.lock_writes()?;
         if command.is_empty() {
             return Err(ProjectError::CheckCommandRequired);
         }
@@ -279,6 +282,7 @@ impl ProjectManager {
         name: Option<String>,
         description: Option<String>,
     ) -> Result<Project, ProjectError> {
+        let _write = self.store.lock_writes()?;
         let mut project = self.store.load_project(id)?;
         if let Some(name) = name {
             project.name = name;
@@ -293,6 +297,7 @@ impl ProjectManager {
     }
 
     pub fn archive_project(&self, id: ProjectId) -> Result<Project, ProjectError> {
+        let _write = self.store.lock_writes()?;
         let mut project = self.store.load_project(id)?;
         project.status = ProjectStatus::Archived;
         project.updated_at_unix_secs = now_unix_secs()?;
@@ -308,6 +313,7 @@ impl ProjectManager {
         priority: Priority,
         dependencies: Vec<TaskId>,
     ) -> Result<Task, ProjectError> {
+        let _write = self.store.lock_writes()?;
         let mut project = self.store.load_project(project_id)?;
         if project.status == ProjectStatus::Archived {
             return Err(ProjectError::ArchivedProject);
@@ -365,6 +371,7 @@ impl ProjectManager {
         task_id: TaskId,
         git: &GitAdapter,
     ) -> Result<std::path::PathBuf, ProjectError> {
+        let _write = self.store.lock_writes()?;
         let mut task = self.store.load_task(project_id, task_id)?;
         if task.status == TaskStatus::Completed || task.status == TaskStatus::Rejected {
             return Err(ProjectError::TaskNotInProgress(task.status));
@@ -437,6 +444,7 @@ impl ProjectManager {
         task_id: TaskId,
         status: TaskStatus,
     ) -> Result<Task, ProjectError> {
+        let _write = self.store.lock_writes()?;
         let mut task = self.store.load_task(project_id, task_id)?;
         if task.status == status {
             return Ok(task);
@@ -468,6 +476,7 @@ impl ProjectManager {
         task_id: TaskId,
         step: String,
     ) -> Result<Task, ProjectError> {
+        let _write = self.store.lock_writes()?;
         let mut task = self.store.load_task(project_id, task_id)?;
         if task.status != TaskStatus::InProgress {
             return Err(ProjectError::TaskNotInProgress(task.status));
@@ -501,6 +510,7 @@ impl ProjectManager {
         decision: ApprovalDecision,
         note: Option<String>,
     ) -> Result<Task, ProjectError> {
+        let _write = self.store.lock_writes()?;
         let mut task = self.store.load_task(project_id, task_id)?;
         if task.status != TaskStatus::InProgress {
             return Err(ProjectError::TaskNotInProgress(task.status));
@@ -555,6 +565,7 @@ impl ProjectManager {
         task_id: TaskId,
         reason: String,
     ) -> Result<Task, ProjectError> {
+        let _write = self.store.lock_writes()?;
         let reason = reason.trim().to_owned();
         if reason.is_empty() {
             return Err(ProjectError::AbandonmentNoteRequired);
@@ -575,6 +586,7 @@ impl ProjectManager {
     }
 
     pub fn start_next_task(&self, project_id: ProjectId) -> Result<Option<Task>, ProjectError> {
+        let _write = self.store.lock_writes()?;
         if self
             .list_tasks(project_id)?
             .iter()
@@ -600,6 +612,7 @@ impl ProjectManager {
         task_id: TaskId,
         step: WorkflowStep,
     ) -> Result<Task, ProjectError> {
+        let _write = self.store.lock_writes()?;
         let task = self.store.load_task(project_id, task_id)?;
         if task.status != TaskStatus::InProgress {
             return Err(ProjectError::TaskNotInProgress(task.status));
@@ -631,6 +644,7 @@ impl ProjectManager {
         task_id: TaskId,
         git: &GitAdapter,
     ) -> Result<MergeOutcome, ProjectError> {
+        let _write = self.store.lock_writes()?;
         let task = self.store.load_task(project_id, task_id)?;
         if task.status != TaskStatus::InProgress
             || task.current_step.as_deref() != Some(WorkflowStep::LocalMerge.as_str())
@@ -701,6 +715,7 @@ impl ProjectManager {
         project_id: ProjectId,
         task_id: TaskId,
     ) -> Result<Task, ProjectError> {
+        let _write = self.store.lock_writes()?;
         let mut task = self.store.load_task(project_id, task_id)?;
         if task.status != TaskStatus::InProgress {
             return Err(ProjectError::TaskNotInProgress(task.status));
@@ -743,6 +758,7 @@ impl ProjectManager {
     /// Resumes an Error task at its failed step, keeping the attempt, worktree, and approvals.
     pub fn retry_step(&self, project_id: ProjectId, task_id: TaskId) -> Result<Task, ProjectError> {
         let _lock = self.lock_task(task_id)?;
+        let _write = self.store.lock_writes()?;
         let mut task = self.store.load_task(project_id, task_id)?;
         if task.status != TaskStatus::Error {
             return Err(ProjectError::TaskNotInError(task.status));
@@ -866,6 +882,7 @@ impl ProjectManager {
     ) -> Result<Task, ProjectError> {
         // Never discard a worktree while a step process may still be working in it.
         let _lock = self.lock_task(task_id)?;
+        let _write = self.store.lock_writes()?;
         let mut task = self.store.load_task(project_id, task_id)?;
         if task.status != TaskStatus::Error {
             return Err(ProjectError::TaskNotInError(task.status));
@@ -920,6 +937,7 @@ impl ProjectManager {
         project_id: ProjectId,
         task_id: TaskId,
     ) -> Result<Task, ProjectError> {
+        let _write = self.store.lock_writes()?;
         let mut task = self.store.load_task(project_id, task_id)?;
         if task.status != TaskStatus::InProgress {
             return Err(ProjectError::TaskNotInProgress(task.status));
@@ -945,6 +963,7 @@ impl ProjectManager {
         status: AgentStatus,
         detail: Option<String>,
     ) -> Result<Task, ProjectError> {
+        let _write = self.store.lock_writes()?;
         let mut task = self.store.load_task(project_id, task_id)?;
         if task.status != TaskStatus::InProgress {
             return Err(ProjectError::TaskNotInProgress(task.status));

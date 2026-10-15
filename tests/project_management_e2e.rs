@@ -165,3 +165,42 @@ fn projects_and_tasks_are_created_ordered_and_archived_from_the_cli() {
 fn uuid_like() -> String {
     "00000000-0000-4000-8000-000000000000".to_owned()
 }
+
+#[test]
+fn tasks_created_by_concurrent_processes_are_all_kept() {
+    const PROCESSES: usize = 16;
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("data");
+    let project_id = id(&cronos(&data, &["project", "create", "Busy"]).unwrap());
+
+    // Start every process before waiting for any, so their read-modify-save cycles overlap.
+    let children = (0..PROCESSES)
+        .map(|index| {
+            Command::new(env!("CARGO_BIN_EXE_cronos-ai"))
+                .arg("--data-dir")
+                .arg(&data)
+                .args(["task", "create", &project_id, &format!("Task {index}")])
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    for mut child in children {
+        assert!(child.wait().unwrap().success());
+    }
+
+    let listed = cronos(&data, &["task", "list", &project_id]).unwrap();
+    assert_eq!(listed.as_array().unwrap().len(), PROCESSES);
+    let stored = std::fs::read_dir(data.join("projects").join(&project_id).join("tasks"))
+        .unwrap()
+        .filter(|entry| {
+            entry
+                .as_ref()
+                .unwrap()
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .count();
+    assert_eq!(stored, PROCESSES, "every saved task file is listed");
+}
