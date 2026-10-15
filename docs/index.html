@@ -116,10 +116,10 @@
 			<article class="card"><h3>1. Specifications</h3><p>One agent writes and commits the task's OpenSpec change; Rust requires <code>openspec validate --strict</code>
 				to pass. The task waits at a human approval gate before code generation.</p></article>
 			<article class="card"><h3>2. Build and verify</h3><p>One agent implements and commits; 1-4 read-only reviewers and verifiers run in parallel, then Rust runs the check command. Findings or a failing check send the code back automatically, up to 3 times per attempt.</p></article>
-			<article class="card"><h3>3. Approve and complete</h3><p>Final-code approval unlocks documentation. Rust archives the OpenSpec change, makes one documentation commit, and merges locally. A merge conflict returns the task to code generation.</p></article>
+			<article class="card"><h3>3. Approve and complete</h3><p>Final-code approval unlocks documentation. Rust archives the OpenSpec change, makes one documentation commit, and merges locally, or pushes the merge or opens a pull request when the project publishes that way. A merge conflict returns the task to code generation.</p></article>
 		</div>
-		<div class="notice" role="note"><strong>Local only:</strong>
-		Cronos-AI does not push to a remote. A successful local merge marks the task Completed; publishing remains your Git operation.</div>
+		<div class="notice" role="note"><strong>Local by default:</strong>
+		Cronos-AI pushes nothing unless the project's publish mode is <code>push</code> or <code>pull-request</code> (<code>cronos-ai project set-publish</code>). A failed push or pull request stops the task with Error; retry the step once the cause is fixed.</div>
 		<div class="feature-actions">
 			<a class="button secondary" href="../design/workflow.drawio" download>Download editable draw.io source</a>
 			<a class="button secondary" href="../design/workflow.png">Open full-size preview</a>
@@ -285,7 +285,7 @@
 			<article class="card teal">
 				<h3>Git safety</h3>
 				<p>Each task attempt gets its own worktree under the Cronos data directory and a local attempt branch. Retrying a step keeps it; retrying or clarifying the task discards it and assigns a fresh one.</p>
-				<p class="small">Before merging, the base repository and worktree must be clean; a dirty base makes the task wait. A conflict is aborted and sent back to code generation; any other merge failure is aborted and stops the task with Error. Remote publishing is manual.</p>
+				<p class="small">Before merging, the base repository and worktree must be clean; a dirty base makes the task wait. A conflict is aborted and sent back to code generation; any other merge failure is aborted and stops the task with Error. Pushing or opening a pull request happens only when the project asks for it.</p>
 			</article>
 			<article class="card blue">
 				<h3>Agent resource profiles</h3>

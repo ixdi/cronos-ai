@@ -153,3 +153,14 @@ The system SHALL apply every change to stored projects and tasks as one exclusiv
 #### Scenario: Holder crashes
 - **WHEN** a process exits while changing the store
 - **THEN** the next change made by another process proceeds without manual cleanup
+
+### Requirement: Project publish settings
+A project SHALL store a publish mode of `local`, `push`, or `pull-request`, defaulting to `local`, and an optional Git remote name that defaults to `origin`. Users SHALL set them from the CLI, and the publish mode from the TUI project form. The system SHALL reject a remote name that is empty, longer than 100 characters, starts with `-` or `.`, or contains characters other than letters, digits, `.`, `_`, and `-`.
+
+#### Scenario: Choose a publish mode
+- **WHEN** a user sets a project's publish mode and remote
+- **THEN** they are saved and the task overview shows where approved work will be published
+
+#### Scenario: Reject an unsafe remote name
+- **WHEN** a user sets a remote name such as `-c` or `my remote`
+- **THEN** the project is unchanged and the user sees why the name was rejected

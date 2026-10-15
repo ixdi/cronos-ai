@@ -116,25 +116,6 @@ The workflow SHALL run the project's configured check command in the task worktr
 - **WHEN** the check command exceeds its limit
 - **THEN** it and every process it started are stopped and the check counts as failed
 
-### Requirement: Complete locally without automatic push
-After final approval and documentation, the system SHALL merge the task worktree locally and mark the task Completed. The first release SHALL NOT automatically push changes to a remote repository. A dirty base repository SHALL leave the task waiting at local merge; a merge conflict SHALL be aborted and return the task to code generation.
-
-#### Scenario: Complete an approved task
-- **WHEN** final approval, documentation, and local merge succeed
-- **THEN** the task is marked Completed and no automatic remote push is performed
-
-#### Scenario: Base repository is dirty
-- **WHEN** the base repository has uncommitted changes at local merge
-- **THEN** the task stays In Progress at local merge and the user can retry after cleaning the base
-
-#### Scenario: Merge conflicts
-- **WHEN** the local merge conflicts
-- **THEN** the merge is aborted, the base is unchanged, and the task returns to code generation to reconcile with the base branch
-
-#### Scenario: Merge fails without a conflict
-- **WHEN** the local merge fails and leaves no unmerged paths
-- **THEN** the merge is aborted, the base is unchanged, the failure is recorded, and the task is marked Error
-
 ### Requirement: Structured agent results
 Each workflow agent SHALL write a JSON result in the task worktree with a status of `success`, `changes_requested`, or `failed`, a nonblank summary, and optional findings. The system SHALL decide step outcomes from these results, not from terminal output, and SHALL keep result files out of Git.
 
@@ -228,3 +209,45 @@ The system SHALL let only one process run a workflow step for a task at a time, 
 #### Scenario: New attempt
 - **WHEN** a task starts a new attempt
 - **THEN** its agents use Herdr names different from every earlier attempt's agents
+
+### Requirement: Complete and publish
+After final approval and documentation, the system SHALL finish the task by the project's publish mode and mark it Completed: `local` merges locally, `push` merges locally and pushes the base branch to the remote, and `pull-request` pushes the task branch and opens a pull request instead of merging. A dirty base SHALL leave the task waiting at local merge; a merge conflict SHALL be aborted and return the task to code generation.
+
+#### Scenario: Complete an approved task locally
+- **WHEN** the project publishes locally and final approval, documentation, and local merge succeed
+- **THEN** the task is marked Completed and nothing is pushed
+
+#### Scenario: Merge and push
+- **WHEN** the project publishes by push and the local merge succeeds
+- **THEN** the base branch is pushed to the project's remote and the task is marked Completed with the push recorded
+
+#### Scenario: Open a pull request
+- **WHEN** the project publishes by pull request
+- **THEN** the task branch is pushed, a pull request into the base branch is opened, the base branch is unchanged locally, and the task is marked Completed with the pull request URL
+
+#### Scenario: Base repository is dirty
+- **WHEN** the base repository has uncommitted changes at local merge
+- **THEN** the task stays In Progress at local merge and the user can retry after cleaning the base
+
+#### Scenario: Merge conflicts
+- **WHEN** the local merge conflicts
+- **THEN** the merge is aborted, the base is unchanged, and the task returns to code generation to reconcile with the base branch
+
+#### Scenario: Merge fails without a conflict
+- **WHEN** the local merge fails and leaves no unmerged paths
+- **THEN** the merge is aborted, the base is unchanged, the failure is recorded, and the task is marked Error
+
+### Requirement: Recover from publishing failures
+A failed push or pull request SHALL be recorded in agent activity and mark the task Error at local merge. Retrying the step SHALL NOT merge again or open a second pull request. Git and the GitHub CLI SHALL run without interactive credential prompts.
+
+#### Scenario: Publishing fails
+- **WHEN** the push or pull request fails
+- **THEN** the failure is recorded in agent activity and the task is marked Error at local merge
+
+#### Scenario: Retry publishing
+- **WHEN** a user retries the step after a failed publish
+- **THEN** a merge that already happened is not repeated, an open pull request is reused, and publishing completes
+
+#### Scenario: Missing credentials
+- **WHEN** pushing needs credentials that are not configured
+- **THEN** the push fails without prompting and the task is marked Error

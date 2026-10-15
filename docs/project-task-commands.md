@@ -7,6 +7,7 @@ cronos-ai [--data-dir DIR] project create <name> [--description <text>] [--repos
 cronos-ai [--data-dir DIR] project set-repository <project-id> --repository <PATH>
 cronos-ai [--data-dir DIR] project set-check-command <project-id> -- <program> [args...]
 cronos-ai [--data-dir DIR] project set-check-timeout <project-id> [minutes]
+cronos-ai [--data-dir DIR] project set-publish <project-id> <local|push|pull-request> [--remote <name>]
 cronos-ai [--data-dir DIR] project list
 cronos-ai [--data-dir DIR] project select <project-id>
 cronos-ai [--data-dir DIR] project update <project-id> [--name <name>] [--description <text>]
@@ -16,7 +17,7 @@ cronos-ai [--data-dir DIR] task list <project-id>
 cronos-ai [--data-dir DIR] task ready <project-id>
 ```
 
-Commands print the affected record or result as JSON. `project set-check-command` stores the program and its arguments separately; the check runs without a shell in the task worktree after the verification agents, and a relative program such as `./scripts/check.sh` resolves inside the worktree. `project set-check-timeout` sets how many minutes (1 to 480) the check may run before it is stopped; omit the minutes to restore the 60-minute default. `project select` prints an active project for the current command; it does not persist a global selection. Archived projects remain visible in `project list` but cannot be selected for active work or receive new tasks. A task dependency must refer to another task in the same project. `task ready` returns pending tasks whose dependencies are all completed, ordered by priority (high first) and then creation time.
+Commands print the affected record or result as JSON. `project set-check-command` stores the program and its arguments separately; the check runs without a shell in the task worktree after the verification agents, and a relative program such as `./scripts/check.sh` resolves inside the worktree. `project set-check-timeout` sets how many minutes (1 to 480) the check may run before it is stopped; omit the minutes to restore the 60-minute default. `project set-publish` chooses how completed tasks are published: `local` (default) merges only on this machine, `push` merges and then pushes the base branch, and `pull-request` pushes the task branch and opens a pull request with the GitHub CLI (`gh`, authenticated with `gh auth login`) instead of merging. `--remote` names the Git remote (default `origin`). `project select` prints an active project for the current command; it does not persist a global selection. Archived projects remain visible in `project list` but cannot be selected for active work or receive new tasks. A task dependency must refer to another task in the same project. `task ready` returns pending tasks whose dependencies are all completed, ordered by priority (high first) and then creation time.
 
 ## Create a project from the TUI
 
@@ -36,6 +37,6 @@ Starting a task creates a Git worktree at `worktrees/<project-id>/<task-id>/atte
 2. Run `cronos-ai project create demo --repository /path/to/repo`, then `cronos-ai project set-check-command <project-id> -- ./scripts/check.sh`, then create a task with `cronos-ai task create <project-id> "Build the feature"`. The JSON results contain the IDs.
 3. Start `cronos-ai` inside a Herdr-managed pane. Select the project with **Enter**; press **n** on its task list to create a task, or **s** to start the highest-priority ready task. Open a task with **Enter** to follow its activity.
 4. At specification and final-code approval gates, press **v** to review the work, then **y** to approve or **n** to request a revision with a nonblank note. If an attempt fails, **t** retries the failed step, **r** discards and retries from specifications, and **c** supplies clarification and regenerates them.
-5. After final-code approval, agents write documentation and Cronos makes the documentation commit. Cronos-AI verifies that the base repository and task worktree are clean, merges the task branch locally, and marks the task Completed. It does not push; publish manually if desired.
+5. After final-code approval, agents write documentation and Cronos makes the documentation commit. Cronos-AI verifies that the base repository and task worktree are clean, merges the task branch locally, and marks the task Completed. With `project set-publish`, it can instead push the merge or open a pull request.
 
 The full temporary-repository path (including a failed parallel-agent attempt, step retry, automatic revisions, approvals, the documentation commit, and local merge) is exercised by `cargo test --test workflow_e2e`; `cargo test --test project_management_e2e` drives these CLI commands through the binary. If `--data-dir` is omitted, Cronos-AI uses `CRONOS_AI_DATA_DIR`, then the platform's user data directory (`XDG_DATA_HOME` or `~/.local/share` on Unix-like systems, `APPDATA` on Windows), under `cronos-ai`.

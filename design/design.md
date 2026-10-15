@@ -42,7 +42,7 @@ The OpenSpec specs in `openspec/specs/` are the source of truth for behavior. Th
 | Agent profiles | Per-step Pi skills, extensions, MCP config, model, and time limit; managed in the TUI (`p`) or by editing `agent-profiles.json` | Implemented |
 | Built-in step skills | One Pi skill per agent step (`skills/`), embedded in the binary and loaded by every worker before profile skills | Implemented |
 | Jev | Prioritization and dependency model | Future (built-in priority/dependency ordering is used) |
-| Remote push / GitHub | Publishing after merge | Future (users push manually) |
+| Remote push / GitHub | Publishing after merge: local only, merge and push, or pull request through `gh` | Implemented |
 | Release numbers, changelog per release | Versioning of merged work | Future |
 
 ## Projects
@@ -77,7 +77,7 @@ Each step lists its agents and the rules Rust enforces.
 | 5 | `verification` | 1-4 in parallel | Read-only. Afterwards, Rust runs the project check command in the worktree (the project's check time limit, 60 minutes by default and 1 to 480 when set; the whole process group is stopped on timeout). The check must not leave new files in the worktree. |
 | 6 | `final-approval` | human | Approve to continue to step 7, or request a revision with a note to return to step 3. |
 | 7 | `documentation` | 1-4 in parallel | Agents write documentation files without committing. Rust archives the OpenSpec change (syncing its specs) and makes one `docs: document <title>` commit. |
-| 8 | `local-merge` | Rust | Requires a clean base and worktree, then runs `git merge --no-ff`. Nothing is pushed. |
+| 8 | `local-merge` | Rust | By the project's publish mode: `local` requires a clean base and worktree and runs `git merge --no-ff`; `push` then pushes the base branch; `pull-request` pushes the task branch and opens a pull request with `gh` instead of merging. Every stage is idempotent, so a failed publish is retried with a step retry. |
 
 **Prompts.** Pi writes each agent's task-specific prompt. It can read the worktree to do this, but cannot change it. Rust appends a fixed **contract** to every prompt, which states:
 - the result file;
@@ -177,7 +177,7 @@ Pi keeps running agent steps until the task reaches an approval gate, local merg
 - Parallel tasks on feature tracks, with conflict-aware scheduling.
 - Requirement-driven project definition and task generation.
 - Jev-based prioritization.
-- Optional remote push or PR creation after merge; release numbering; changelog per release.
+- Release numbering and a changelog per release.
 - Kanban, analytics, and inline diff views in the TUI.
 - Parallel code-generation agents in separate sub-worktrees with a deterministic merge.
 - Sandboxed workers.

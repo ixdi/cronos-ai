@@ -19,7 +19,7 @@ It is an opinionated stack with a Rust TUI. Rust owns persisted task state and h
 - Run one task at a time through specification, implementation, review, verification, approval, documentation, and local merge steps. Agents report structured results; Rust decides each step from them and runs the project's check command before final approval.
 - Send code back for automatic revision (up to 3 per attempt) when reviewers, verifiers, or the check command find problems.
 - Require human approval of specifications and final code, with a review view of the spec, commits, diff, and check output; request revisions, retry a failed step, or recover failed attempts with additional context.
-- Give each attempt an isolated local Git worktree. After final approval, changes are merged locally; Cronos-AI never pushes to a remote.
+- Give each attempt an isolated local Git worktree. After final approval, changes are merged locally by default, or, per project, merged and pushed or opened as a pull request with the GitHub CLI.
 
 ![Workflow diagram](design/workflow.svg)
 
