@@ -74,6 +74,7 @@ enum ProjectField {
     CheckCommand,
     CheckTimeout,
     Publish,
+    Releases,
 }
 
 impl ProjectField {
@@ -84,18 +85,20 @@ impl ProjectField {
             Self::Repository => Self::CheckCommand,
             Self::CheckCommand => Self::CheckTimeout,
             Self::CheckTimeout => Self::Publish,
-            Self::Publish => Self::Name,
+            Self::Publish => Self::Releases,
+            Self::Releases => Self::Name,
         }
     }
 
     fn previous(self) -> Self {
         match self {
-            Self::Name => Self::Publish,
+            Self::Name => Self::Releases,
             Self::Description => Self::Name,
             Self::Repository => Self::Description,
             Self::CheckCommand => Self::Repository,
             Self::CheckTimeout => Self::CheckCommand,
             Self::Publish => Self::CheckTimeout,
+            Self::Releases => Self::Publish,
         }
     }
 }
@@ -107,6 +110,7 @@ struct ProjectForm {
     check_command: String,
     check_timeout: String,
     publish: PublishMode,
+    releases: bool,
     focus: ProjectField,
 }
 
@@ -119,13 +123,14 @@ impl Default for ProjectForm {
             check_command: String::new(),
             check_timeout: String::new(),
             publish: PublishMode::Local,
+            releases: false,
             focus: ProjectField::Name,
         }
     }
 }
 
 impl ProjectForm {
-    /// The focused text field; `None` for the publish selector, which ignores typing.
+    /// The focused text field; `None` for the selectors, which ignore typing.
     fn focused_value_mut(&mut self) -> Option<&mut String> {
         match self.focus {
             ProjectField::Name => Some(&mut self.name),
@@ -133,7 +138,7 @@ impl ProjectForm {
             ProjectField::Repository => Some(&mut self.repository),
             ProjectField::CheckCommand => Some(&mut self.check_command),
             ProjectField::CheckTimeout => Some(&mut self.check_timeout),
-            ProjectField::Publish => None,
+            ProjectField::Publish | ProjectField::Releases => None,
         }
     }
 
@@ -948,10 +953,12 @@ impl Dashboard {
                 self.error = None;
             }
             KeyCode::Left | KeyCode::Right => {
-                if let Dialog::CreateProject(form) = &mut self.dialog
-                    && form.focus == ProjectField::Publish
-                {
-                    form.cycle_publish(key == KeyCode::Right);
+                if let Dialog::CreateProject(form) = &mut self.dialog {
+                    match form.focus {
+                        ProjectField::Publish => form.cycle_publish(key == KeyCode::Right),
+                        ProjectField::Releases => form.releases = key == KeyCode::Right,
+                        _ => {}
+                    }
                 }
             }
             KeyCode::Enter => self.submit_project_creation(),
@@ -1002,6 +1009,13 @@ impl Dashboard {
             {
                 self.error = Some(format!(
                     "Project created, but its publish mode could not be saved: {error}"
+                ));
+            }
+            if form.releases
+                && let Err(error) = self.manager.set_project_releases(project.id, true)
+            {
+                self.error = Some(format!(
+                    "Project created, but releases could not be turned on: {error}"
                 ));
             }
         });
@@ -2120,14 +2134,20 @@ fn publish_label(mode: PublishMode) -> &'static str {
 
 /// Where a task's approved work goes, or where it went once published.
 fn publish_target(project: &Project, task: &Task) -> String {
-    if let Some(published) = &task.published {
-        return terminal_safe(published);
-    }
-    let remote = terminal_safe(project.remote_name());
-    match project.publish {
-        PublishMode::Local => "local merge only".to_owned(),
-        PublishMode::Push => format!("push to {remote}"),
-        PublishMode::PullRequest => format!("pull request on {remote}"),
+    let target = match &task.published {
+        Some(published) => terminal_safe(published),
+        None => {
+            let remote = terminal_safe(project.remote_name());
+            match project.publish {
+                PublishMode::Local => "local merge only".to_owned(),
+                PublishMode::Push => format!("push to {remote}"),
+                PublishMode::PullRequest => format!("pull request on {remote}"),
+            }
+        }
+    };
+    match &task.release {
+        Some(release) => format!("{} · {target}", terminal_safe(release)),
+        None => target,
     }
 }
 
@@ -2665,6 +2685,15 @@ fn draw_dialog(frame: &mut Frame, app: &Dashboard) {
                     form.focus == ProjectField::Publish,
                     "Publish",
                     publish_label(form.publish),
+                ),
+                selector_field(
+                    form.focus == ProjectField::Releases,
+                    "Releases",
+                    if form.releases {
+                        "on: tag + CHANGELOG.md"
+                    } else {
+                        "off"
+                    },
                 ),
             ],
             "Tab/Shift+Tab fields  Enter create  Esc cancel",
@@ -3401,6 +3430,56 @@ mod tests {
         assert_eq!(second_row, first_row + 1);
         assert_eq!(x, 2, "the wrapped row starts at a stage, not a connector");
         rendered_text_position(&backend, "Step: specification-generation");
+    }
+
+    #[test]
+    fn project_form_turns_releases_on() {
+        let root = tempfile::tempdir().unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+        app.handle_key(KeyCode::Char('n'));
+        for character in "Factory".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        for _ in 0..6 {
+            app.handle_key(KeyCode::Tab);
+        }
+        let backend = render(&app);
+        rendered_text_position(&backend, "› Releases");
+        rendered_text_position(&backend, "◀ off ▶");
+        app.handle_key(KeyCode::Right);
+        let backend = render(&app);
+        rendered_text_position(&backend, "◀ on: tag + CHANGELOG.md ▶");
+        app.handle_key(KeyCode::Enter);
+
+        assert!(matches!(app.dialog, Dialog::None), "{:?}", app.error);
+        assert!(app.manager.list_projects().unwrap()[0].releases);
+    }
+
+    #[test]
+    fn publish_target_names_the_release() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(root.path()).unwrap();
+        let project = manager.create_project("Demo".to_owned(), None).unwrap();
+        let mut task = manager
+            .create_task(
+                project.id,
+                "Build".to_owned(),
+                None,
+                Priority::Medium,
+                Vec::new(),
+            )
+            .unwrap();
+        task.release = Some("v0.3.0".to_owned());
+
+        assert_eq!(
+            super::publish_target(&project, &task),
+            "v0.3.0 · local merge only"
+        );
+        task.published = Some("pushed main to origin".to_owned());
+        assert_eq!(
+            super::publish_target(&project, &task),
+            "v0.3.0 · pushed main to origin"
+        );
     }
 
     #[test]

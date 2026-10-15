@@ -15,6 +15,7 @@ use crate::{
         Project, ProjectId, ProjectStatus, PublishMode, RecoveryAction, RecoveryRecord, Task,
         TaskId, TaskStatus, WorkflowStep,
     },
+    release::{Version, changelog_section, insert_section, next_version, utc_date},
     storage::{ProjectStore, StoreError},
 };
 
@@ -196,6 +197,7 @@ impl ProjectManager {
             check_timeout_minutes,
             publish: Default::default(),
             remote: None,
+            releases: false,
             created_at_unix_secs: now,
             updated_at_unix_secs: now,
         };
@@ -273,6 +275,21 @@ impl ProjectManager {
         let _write = self.store.lock_writes()?;
         let mut project = self.store.load_project(project_id)?;
         project.check_timeout_minutes = minutes;
+        project.updated_at_unix_secs = now_unix_secs()?;
+        project.validate()?;
+        self.store.save_project(&project)?;
+        Ok(project)
+    }
+
+    /// Turns release tags and changelog entries for locally merged tasks on or off.
+    pub fn set_project_releases(
+        &self,
+        project_id: ProjectId,
+        releases: bool,
+    ) -> Result<Project, ProjectError> {
+        let _write = self.store.lock_writes()?;
+        let mut project = self.store.load_project(project_id)?;
+        project.releases = releases;
         project.updated_at_unix_secs = now_unix_secs()?;
         project.validate()?;
         self.store.save_project(&project)?;
@@ -389,6 +406,7 @@ impl ProjectManager {
             recovery_history: Vec::new(),
             automatic_revisions: 0,
             published: None,
+            release: None,
             created_at_unix_secs: now,
             updated_at_unix_secs: now,
         };
@@ -704,6 +722,8 @@ impl ProjectManager {
         let worktree = self.validated_task_worktree_path(project_id, task_id)?;
         let branch = GitAdapter::worktree_branch(task.id, task.attempt);
         let remote = project.remote_name();
+        // Pull requests are merged elsewhere, so only local merges are released here.
+        let mut release = None;
         let published = match project.publish {
             PublishMode::PullRequest => {
                 let base = git.current_branch(&repository)?;
@@ -753,9 +773,22 @@ impl ProjectManager {
                         Err(error) => return Err(error.into()),
                     }
                 }
+                if project.releases {
+                    match release_merged_task(git, &repository, &task) {
+                        Ok(version) => release = Some(version),
+                        Err(error) => {
+                            return Err(self.publishing_failed(project_id, task_id, error)?);
+                        }
+                    }
+                }
                 if project.publish == PublishMode::Push {
                     let base = git.current_branch(&repository)?;
-                    match git.push(&repository, remote, &base) {
+                    let pushed = git.push(&repository, remote, &base).and_then(|()| {
+                        release.map_or(Ok(()), |version| {
+                            git.push_tag(&repository, remote, &version.to_string())
+                        })
+                    });
+                    match pushed {
                         Ok(()) => Some(format!("pushed {base} to {remote}")),
                         Err(error) => {
                             return Err(self.publishing_failed(project_id, task_id, error)?);
@@ -766,9 +799,10 @@ impl ProjectManager {
                 }
             }
         };
-        if let Some(published) = published {
+        if published.is_some() || release.is_some() {
             let mut task = self.store.load_task(project_id, task_id)?;
-            task.published = Some(published);
+            task.published = published;
+            task.release = release.map(|version| version.to_string());
             task.updated_at_unix_secs = now_unix_secs()?;
             task.validate()?;
             self.store.save_task(&task)?;
@@ -1135,6 +1169,43 @@ impl ProjectManager {
         Ok(ready)
     }
 }
+
+/// Tags the merge just made as the next release and records it in `CHANGELOG.md`. A release
+/// already tagged on HEAD is adopted, so retrying after a failed push never makes a second one.
+fn release_merged_task(
+    git: &GitAdapter,
+    repository: &Path,
+    task: &Task,
+) -> Result<Version, GitError> {
+    if let Some(version) = git.release_at_head(repository)? {
+        return Ok(version);
+    }
+    let latest = git.latest_release(repository)?;
+    // The first release covers only this task's merge rather than the whole history.
+    let range = latest.map_or_else(
+        || "HEAD^1..HEAD".to_owned(),
+        |version| format!("{version}..HEAD"),
+    );
+    let commits = git.commits(repository, &range)?;
+    let version = next_version(latest, &commits);
+    let date =
+        utc_date(now_unix_secs().map_err(|error| GitError::ReleaseFailed(error.to_string()))?);
+    let existing = fs::read_to_string(repository.join(CHANGELOG)).ok();
+    let content = insert_section(
+        existing.as_deref(),
+        &changelog_section(version, &date, &commits),
+    );
+    git.commit_release(
+        repository,
+        CHANGELOG,
+        &content,
+        &version,
+        &format!("Release {version}: {}", task.title),
+    )?;
+    Ok(version)
+}
+
+const CHANGELOG: &str = "CHANGELOG.md";
 
 fn pull_request_body(task: &Task) -> String {
     let description = task
@@ -1667,6 +1738,133 @@ mod tests {
             ),
             "1"
         );
+    }
+
+    fn commit_in(worktree: &Path, file: &str, message: &str) {
+        fs::write(worktree.join(file), format!("{message}\n")).unwrap();
+        git_fixture(worktree, &["add", file]);
+        git_fixture(worktree, &["commit", "-m", message]);
+    }
+
+    #[test]
+    fn releases_tag_the_merge_and_write_the_changelog() {
+        let temp = tempfile::tempdir().unwrap();
+        let fixture = task_at_local_merge(temp.path(), PublishMode::Local);
+        fixture
+            .manager
+            .set_project_releases(fixture.project_id, true)
+            .unwrap();
+        let worktree = fixture
+            .manager
+            .validated_task_worktree_path(fixture.project_id, fixture.task_id)
+            .unwrap();
+        commit_in(&worktree, "parser.txt", "feat(parser): add output");
+
+        let Ok(MergeOutcome::Completed(task)) = fixture.manager.merge_and_complete_task(
+            fixture.project_id,
+            fixture.task_id,
+            &GitAdapter::default(),
+        ) else {
+            panic!("expected a completed merge");
+        };
+
+        assert_eq!(task.release.as_deref(), Some("v0.1.0"));
+        let changelog = fs::read_to_string(fixture.repository.join("CHANGELOG.md")).unwrap();
+        assert!(
+            changelog.starts_with("# Changelog\n\n## v0.1.0 - "),
+            "{changelog}"
+        );
+        assert!(changelog.contains("### Features\n\n- **parser:** add output"));
+        assert!(changelog.contains("- task output"));
+        assert_eq!(
+            git_output(&fixture.repository, &["log", "-1", "--format=%s"]),
+            "chore(release): v0.1.0"
+        );
+        assert_eq!(
+            git_output(&fixture.repository, &["tag", "--points-at", "HEAD"]),
+            "v0.1.0"
+        );
+        assert_eq!(
+            git_output(&fixture.repository, &["status", "--porcelain"]),
+            ""
+        );
+    }
+
+    #[test]
+    fn a_retried_push_reuses_the_release_and_pushes_its_tag() {
+        let temp = tempfile::tempdir().unwrap();
+        let fixture = task_at_local_merge(temp.path(), PublishMode::Push);
+        fixture
+            .manager
+            .set_project_releases(fixture.project_id, true)
+            .unwrap();
+        git_fixture(&fixture.repository, &["tag", "v1.2.3", "HEAD"]);
+        git_fixture(
+            &fixture.repository,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "/definitely/missing/remote.git",
+            ],
+        );
+        let git = GitAdapter::default();
+        assert!(
+            fixture
+                .manager
+                .merge_and_complete_task(fixture.project_id, fixture.task_id, &git)
+                .is_err()
+        );
+
+        git_fixture(
+            &fixture.repository,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                fixture.remote.to_str().unwrap(),
+            ],
+        );
+        fixture
+            .manager
+            .retry_step(fixture.project_id, fixture.task_id)
+            .unwrap();
+        let Ok(MergeOutcome::Completed(task)) =
+            fixture
+                .manager
+                .merge_and_complete_task(fixture.project_id, fixture.task_id, &git)
+        else {
+            panic!("expected the retry to complete");
+        };
+
+        assert_eq!(task.release.as_deref(), Some("v1.2.4"));
+        assert_eq!(
+            git_output(&fixture.repository, &["tag", "--list", "v*"]),
+            "v1.2.3\nv1.2.4",
+            "the retry adopted the release instead of making another"
+        );
+        assert_eq!(
+            git_output(&fixture.remote, &["rev-parse", "v1.2.4^{commit}"]),
+            git_output(&fixture.repository, &["rev-parse", "HEAD"])
+        );
+    }
+
+    #[test]
+    fn projects_without_releases_write_no_changelog() {
+        let temp = tempfile::tempdir().unwrap();
+        let fixture = task_at_local_merge(temp.path(), PublishMode::Local);
+
+        let Ok(MergeOutcome::Completed(task)) = fixture.manager.merge_and_complete_task(
+            fixture.project_id,
+            fixture.task_id,
+            &GitAdapter::default(),
+        ) else {
+            panic!("expected a completed merge");
+        };
+
+        assert_eq!(task.release, None);
+        assert!(!fixture.repository.join("CHANGELOG.md").exists());
+        assert_eq!(git_output(&fixture.repository, &["tag"]), "");
     }
 
     #[cfg(unix)]

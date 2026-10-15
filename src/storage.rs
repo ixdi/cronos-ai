@@ -356,6 +356,7 @@ mod tests {
             check_timeout_minutes: None,
             publish: Default::default(),
             remote: None,
+            releases: false,
             created_at_unix_secs: 1,
             updated_at_unix_secs: 1,
         }
@@ -380,6 +381,7 @@ mod tests {
             recovery_history: Vec::new(),
             automatic_revisions: 0,
             published: None,
+            release: None,
             created_at_unix_secs: 2,
             updated_at_unix_secs: 2,
         }

@@ -255,3 +255,18 @@ fn publish_mode_and_remote_are_set_and_validated_from_the_cli() {
     assert_eq!(reset["publish"], "push");
     assert!(reset["remote"].is_null());
 }
+
+#[test]
+fn releases_are_switched_on_and_off_from_the_cli() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("data");
+    let project = cronos(&data, &["project", "create", "Released"]).unwrap();
+    let project_id = id(&project);
+    assert_eq!(project["releases"], false);
+
+    let on = cronos(&data, &["project", "set-releases", &project_id, "on"]).unwrap();
+    assert_eq!(on["releases"], true);
+    let off = cronos(&data, &["project", "set-releases", &project_id, "off"]).unwrap();
+    assert_eq!(off["releases"], false);
+    assert!(cronos(&data, &["project", "set-releases", &project_id, "maybe"]).is_err());
+}

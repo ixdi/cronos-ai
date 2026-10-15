@@ -118,6 +118,9 @@ pub struct Project {
     /// Git remote used for publishing; `None` means `origin`.
     #[serde(default)]
     pub remote: Option<String>,
+    /// Whether each locally merged task gets a release tag and a changelog entry.
+    #[serde(default)]
+    pub releases: bool,
     pub created_at_unix_secs: u64,
     pub updated_at_unix_secs: u64,
 }
@@ -370,6 +373,9 @@ pub struct Task {
     /// Where the completed work was published, such as a pull request URL.
     #[serde(default)]
     pub published: Option<String>,
+    /// The release this task's merge was tagged as, such as `v1.4.0`.
+    #[serde(default)]
+    pub release: Option<String>,
 }
 
 impl Task {
@@ -403,6 +409,13 @@ impl Task {
             self.published.as_deref(),
             MAX_PUBLICATION_CHARS,
         )?;
+        if self
+            .release
+            .as_deref()
+            .is_some_and(|release| crate::release::Version::parse(release).is_none())
+        {
+            return Err(ModelError::InvalidRelease);
+        }
 
         let mut dependencies = HashSet::with_capacity(self.dependencies.len());
         for dependency in &self.dependencies {
@@ -511,6 +524,8 @@ pub enum ModelError {
         "remote name must be 1-{MAX_REMOTE_CHARS} letters, digits, '.', '_', or '-', and must not start with '-' or '.'"
     )]
     InvalidRemote,
+    #[error("a task release must be a version tag such as v1.2.3")]
+    InvalidRelease,
 }
 
 fn default_attempt() -> u32 {
@@ -585,6 +600,7 @@ mod tests {
             recovery_history: Vec::new(),
             automatic_revisions: 0,
             published: None,
+            release: None,
             created_at_unix_secs: 0,
             updated_at_unix_secs: 0,
         }
@@ -604,6 +620,7 @@ mod tests {
             check_timeout_minutes: None,
             publish: Default::default(),
             remote: None,
+            releases: false,
             created_at_unix_secs: 0,
             updated_at_unix_secs: 0,
         };
@@ -639,6 +656,7 @@ mod tests {
             check_timeout_minutes: None,
             publish: Default::default(),
             remote: None,
+            releases: false,
             created_at_unix_secs: 0,
             updated_at_unix_secs: 0,
         };
@@ -676,6 +694,7 @@ mod tests {
         .unwrap();
         assert_eq!(project.publish, PublishMode::Local);
         assert_eq!(project.remote_name(), "origin");
+        assert!(!project.releases, "releases are opt-in");
 
         project.publish = PublishMode::PullRequest;
         project.remote = Some("upstream".to_owned());
@@ -700,6 +719,12 @@ mod tests {
     fn task_publication_is_bounded() {
         let mut task = task(TaskId::new(), Vec::new());
         assert_eq!(task.published, None);
+        assert_eq!(task.release, None);
+        task.release = Some("v0.1.0".to_owned());
+        assert_eq!(task.validate(), Ok(()));
+        task.release = Some("latest".to_owned());
+        assert_eq!(task.validate(), Err(ModelError::InvalidRelease));
+        task.release = None;
         task.published = Some("https://example.invalid/pr/1".to_owned());
         assert_eq!(task.validate(), Ok(()));
         task.published = Some("x".repeat(2_001));

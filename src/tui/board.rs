@@ -241,10 +241,16 @@ pub(super) fn draw_board(
 /// Second card line: the current step and its running time, or what finished the task.
 fn card_detail(task: &Task) -> String {
     match task.status {
-        TaskStatus::Completed => task
-            .published
-            .as_deref()
-            .map_or_else(|| "merged".to_owned(), terminal_safe),
+        TaskStatus::Completed => {
+            let outcome = task
+                .published
+                .as_deref()
+                .map_or_else(|| "merged".to_owned(), terminal_safe);
+            match &task.release {
+                Some(release) => format!("{} · {outcome}", terminal_safe(release)),
+                None => outcome,
+            }
+        }
         TaskStatus::Rejected => "abandoned".to_owned(),
         _ => {
             let step = terminal_safe(task.current_step.as_deref().unwrap_or("not started"));
@@ -289,6 +295,7 @@ mod tests {
             recovery_history: Vec::new(),
             automatic_revisions: 0,
             published: None,
+            release: None,
             created_at_unix_secs: 0,
             updated_at_unix_secs: updated,
         }

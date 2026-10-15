@@ -63,6 +63,12 @@ enum ProjectAction {
         id: String,
         minutes: Option<u32>,
     },
+    /// Tag each locally merged task as the next release and add it to CHANGELOG.md (on), or not (off).
+    SetReleases {
+        id: String,
+        #[arg(value_enum)]
+        state: SwitchArg,
+    },
     /// Set how completed tasks are published: merged locally, merged and pushed, or opened as a pull request.
     SetPublish {
         id: String,
@@ -136,6 +142,12 @@ enum TaskAction {
     Ready {
         project_id: String,
     },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum SwitchArg {
+    On,
+    Off,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -255,6 +267,12 @@ pub fn run() -> Result<Option<PathBuf>, Box<dyn Error>> {
             }
             ProjectAction::SetCheckCommand { id, command } => {
                 print_json(&manager.set_project_check_command(parse_project_id(&id)?, command)?)?;
+            }
+            ProjectAction::SetReleases { id, state } => {
+                print_json(&manager.set_project_releases(
+                    parse_project_id(&id)?,
+                    matches!(state, SwitchArg::On),
+                )?)?;
             }
             ProjectAction::SetPublish { id, mode, remote } => {
                 print_json(&manager.set_project_publish(
