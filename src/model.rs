@@ -77,6 +77,17 @@ impl PublishMode {
     }
 }
 
+/// How the next task to start is chosen among those the scheduling rules allow.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Prioritizer {
+    /// Priority first, then creation time.
+    #[default]
+    BuiltIn,
+    /// A fast agent ranks the startable tasks; the built-in order is the fallback.
+    Agent,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProjectStatus {
@@ -169,6 +180,11 @@ pub struct Project {
     /// Whether workers run inside the write sandbox.
     #[serde(default)]
     pub sandbox: bool,
+    #[serde(default)]
+    pub prioritizer: Prioritizer,
+    /// Model for the agent prioritizer, such as a fast selection model; `None` uses Pi's default.
+    #[serde(default)]
+    pub prioritizer_model: Option<String>,
     pub created_at_unix_secs: u64,
     pub updated_at_unix_secs: u64,
 }
@@ -186,6 +202,13 @@ impl Project {
     }
 
     pub fn validate(&self) -> Result<(), ModelError> {
+        if self
+            .prioritizer_model
+            .as_deref()
+            .is_some_and(|model| !crate::agent_profiles::valid_model(model))
+        {
+            return Err(ModelError::InvalidModel);
+        }
         if !(1..=MAX_PARALLEL_TASKS).contains(&self.max_parallel_tasks) {
             return Err(ModelError::InvalidParallelism);
         }
@@ -607,6 +630,10 @@ pub enum ModelError {
     TooManyRequirements,
     #[error("a project runs between 1 and {MAX_PARALLEL_TASKS} tasks at a time")]
     InvalidParallelism,
+    #[error(
+        "a model name starts with a letter or digit and contains only letters, digits, and . _ : / -"
+    )]
+    InvalidModel,
 }
 
 fn default_parallelism() -> u32 {
@@ -711,6 +738,8 @@ mod tests {
             requirements: Vec::new(),
             max_parallel_tasks: 1,
             sandbox: false,
+            prioritizer: Default::default(),
+            prioritizer_model: None,
             created_at_unix_secs: 0,
             updated_at_unix_secs: 0,
         };
@@ -750,6 +779,8 @@ mod tests {
             requirements: Vec::new(),
             max_parallel_tasks: 1,
             sandbox: false,
+            prioritizer: Default::default(),
+            prioritizer_model: None,
             created_at_unix_secs: 0,
             updated_at_unix_secs: 0,
         };

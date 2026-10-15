@@ -374,7 +374,7 @@ fn validate_mcp_config(profile: &str, path: &Path) -> Result<(), AgentProfileErr
     Ok(())
 }
 
-fn valid_model(model: &str) -> bool {
+pub(crate) fn valid_model(model: &str) -> bool {
     // A leading '-' would be read by Pi as an option rather than the model value.
     model
         .chars()

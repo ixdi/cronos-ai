@@ -11,12 +11,13 @@ use crate::{
     integrations::{GitAdapter, GitError, IntegrationError, PullRequest, ToolCommands},
     model::{
         AgentActivity, AgentStatus, ApprovalDecision, ApprovalGate, ApprovalRecord,
-        MAX_AGENT_EVENTS, MAX_APPROVAL_RECORDS, MAX_RECOVERY_RECORDS, ModelError, Priority,
-        Project, ProjectId, ProjectStatus, PublishMode, RecoveryAction, RecoveryRecord,
+        MAX_AGENT_EVENTS, MAX_APPROVAL_RECORDS, MAX_RECOVERY_RECORDS, ModelError, Prioritizer,
+        Priority, Project, ProjectId, ProjectStatus, PublishMode, RecoveryAction, RecoveryRecord,
         Requirement, RequirementId, RequirementKind, Task, TaskId, TaskStatus, WorkflowStep,
         normalize_text,
     },
     planning::{Plan, PlanError, parse_plan, planning_prompt},
+    prioritization::{Ranking, RankingError, parse_ranking, ranking_prompt},
     release::{Version, changelog_section, insert_section, next_version, utc_date},
     step_skills::install_planning_skill,
     storage::{ProjectStore, StoreError},
@@ -119,6 +120,10 @@ pub enum ProjectError {
     NoRequirements,
     #[error("the planner failed: {0}")]
     Planner(IntegrationError),
+    #[error("the prioritizer failed: {0}")]
+    Prioritizer(IntegrationError),
+    #[error(transparent)]
+    Ranking(#[from] RankingError),
 }
 
 /// Exclusive per-task lock held while a workflow step runs. The operating system releases it when
@@ -216,6 +221,8 @@ impl ProjectManager {
             requirements: Vec::new(),
             max_parallel_tasks: 1,
             sandbox: false,
+            prioritizer: Default::default(),
+            prioritizer_model: None,
             created_at_unix_secs: now,
             updated_at_unix_secs: now,
         };
@@ -879,11 +886,13 @@ impl ProjectManager {
         Ok(task)
     }
 
-    /// Starts the highest-priority ready task when the project has a free track. Active tasks
-    /// (In Progress or Error) fill the project's tracks, and a ready task that shares a
-    /// requirement with an active task waits, since both would change the same area.
-    pub fn start_next_task(&self, project_id: ProjectId) -> Result<Option<Task>, ProjectError> {
-        let _write = self.store.lock_writes()?;
+    /// The tasks that may start now, in built-in order, and the active tasks. Nothing may start
+    /// when the project's tracks are full; a ready task that shares a requirement with an active
+    /// task waits, since both would change the same area.
+    pub fn startable_tasks(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<(Vec<Task>, Vec<Task>), ProjectError> {
         let project = self.store.load_project(project_id)?;
         let active = self
             .list_tasks(project_id)?
@@ -891,16 +900,39 @@ impl ProjectManager {
             .filter(|task| matches!(task.status, TaskStatus::InProgress | TaskStatus::Error))
             .collect::<Vec<_>>();
         if active.len() >= project.max_parallel_tasks as usize {
-            return Ok(None);
+            return Ok((Vec::new(), active));
         }
         let busy = active
             .iter()
             .flat_map(|task| task.requirement_ids.iter().copied())
             .collect::<HashSet<_>>();
-        let Some(task) = self
+        let startable = self
             .ready_tasks(project_id)?
             .into_iter()
-            .find(|task| task.requirement_ids.iter().all(|id| !busy.contains(id)))
+            .filter(|task| task.requirement_ids.iter().all(|id| !busy.contains(id)))
+            .collect();
+        Ok((startable, active))
+    }
+
+    /// Starts the highest-priority startable task when the project has a free track.
+    pub fn start_next_task(&self, project_id: ProjectId) -> Result<Option<Task>, ProjectError> {
+        self.start_next_task_in_order(project_id, &[])
+    }
+
+    /// Starts the first startable task in `preferred` order, or, when none of them can start,
+    /// the first in built-in order. Tasks the rules do not allow are never started.
+    pub fn start_next_task_in_order(
+        &self,
+        project_id: ProjectId,
+        preferred: &[TaskId],
+    ) -> Result<Option<Task>, ProjectError> {
+        let _write = self.store.lock_writes()?;
+        let (startable, _) = self.startable_tasks(project_id)?;
+        let Some(task) = preferred
+            .iter()
+            .find_map(|id| startable.iter().find(|task| task.id == *id))
+            .or_else(|| startable.first())
+            .cloned()
         else {
             return Ok(None);
         };
@@ -911,6 +943,51 @@ impl ProjectManager {
             WorkflowStep::SpecificationGeneration.as_str().to_owned(),
         )
         .map(Some)
+    }
+
+    /// Asks the agent prioritizer to rank the startable tasks. Returns `None` when the project
+    /// uses the built-in order or there is nothing to choose between. The store is not locked
+    /// while the agent runs.
+    pub fn rank_startable_tasks(
+        &self,
+        project_id: ProjectId,
+        tools: &ToolCommands,
+        timeout: std::time::Duration,
+    ) -> Result<Option<Ranking>, ProjectError> {
+        let project = self.store.load_project(project_id)?;
+        if project.prioritizer != Prioritizer::Agent {
+            return Ok(None);
+        }
+        let (startable, active) = self.startable_tasks(project_id)?;
+        if startable.len() < 2 {
+            return Ok(None);
+        }
+        let answer = tools
+            .run_prioritizer(
+                self.data_dir(),
+                project.prioritizer_model.as_deref(),
+                &ranking_prompt(&project.name, &startable, &active),
+                timeout,
+            )
+            .map_err(ProjectError::Prioritizer)?;
+        Ok(Some(parse_ranking(&answer, &startable)?))
+    }
+
+    /// Chooses how the next task is picked; `model` names the agent prioritizer's model.
+    pub fn set_project_prioritizer(
+        &self,
+        project_id: ProjectId,
+        prioritizer: Prioritizer,
+        model: Option<String>,
+    ) -> Result<Project, ProjectError> {
+        let _write = self.store.lock_writes()?;
+        let mut project = self.store.load_project(project_id)?;
+        project.prioritizer = prioritizer;
+        project.prioritizer_model = model;
+        project.updated_at_unix_secs = now_unix_secs()?;
+        project.validate()?;
+        self.store.save_project(&project)?;
+        Ok(project)
     }
 
     pub fn complete_workflow_step(
@@ -1502,9 +1579,9 @@ mod tests {
     use super::{MergeOutcome, ProjectError, ProjectManager};
     use crate::integrations::{GitAdapter, GitError};
     use crate::model::{
-        AgentStatus, ApprovalDecision, ApprovalGate, MAX_AGENT_EVENTS, ModelError, Priority,
-        ProjectId, ProjectStatus, PublishMode, RecoveryAction, RequirementKind, TaskId, TaskStatus,
-        WorkflowStep,
+        AgentStatus, ApprovalDecision, ApprovalGate, MAX_AGENT_EVENTS, ModelError, Prioritizer,
+        Priority, ProjectId, ProjectStatus, PublishMode, RecoveryAction, RequirementKind, TaskId,
+        TaskStatus, WorkflowStep,
     };
     use std::{fs, path::Path, process::Command};
 
@@ -1806,6 +1883,118 @@ mod tests {
         manager.propose_plan(project_id, PLAN_ANSWER).unwrap();
         manager.discard_plan(project_id).unwrap();
         assert_eq!(manager.pending_plan(project_id).unwrap(), None);
+    }
+
+    #[test]
+    fn a_preferred_order_chooses_among_startable_tasks_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(temp.path()).unwrap();
+        let project = manager.create_project("Ranked".to_owned(), None).unwrap();
+        let base = manager
+            .create_task(
+                project.id,
+                "Base".to_owned(),
+                None,
+                Priority::High,
+                Vec::new(),
+            )
+            .unwrap();
+        let blocked = manager
+            .create_task(
+                project.id,
+                "Blocked".to_owned(),
+                None,
+                Priority::High,
+                vec![base.id],
+            )
+            .unwrap();
+        let low = manager
+            .create_task(
+                project.id,
+                "Low".to_owned(),
+                None,
+                Priority::Low,
+                Vec::new(),
+            )
+            .unwrap();
+
+        // The blocked task is not startable, so the order falls through to the next one.
+        let started = manager
+            .start_next_task_in_order(project.id, &[blocked.id, low.id])
+            .unwrap()
+            .unwrap();
+        assert_eq!(started.id, low.id);
+        assert_eq!(
+            manager.start_next_task(project.id).unwrap(),
+            None,
+            "capacity is one"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_agent_prioritizer_ranks_startable_tasks_when_enabled() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(temp.path().join("data")).unwrap();
+        let project = manager.create_project("Ranked".to_owned(), None).unwrap();
+        let first = manager
+            .create_task(
+                project.id,
+                "First".to_owned(),
+                None,
+                Priority::High,
+                Vec::new(),
+            )
+            .unwrap();
+        let second = manager
+            .create_task(
+                project.id,
+                "Second".to_owned(),
+                None,
+                Priority::Low,
+                Vec::new(),
+            )
+            .unwrap();
+        let pi = temp.path().join("pi");
+        fs::write(
+            &pi,
+            "#!/bin/sh\nprintf '{\"order\": [\"T2\"], \"reason\": \"Second unblocks the demo\"}'\n",
+        )
+        .unwrap();
+        fs::set_permissions(&pi, fs::Permissions::from_mode(0o700)).unwrap();
+        let tools =
+            crate::integrations::ToolCommands::with_paths(pi.clone(), pi.clone(), pi, "git".into());
+        let limit = std::time::Duration::from_secs(10);
+
+        assert_eq!(
+            manager
+                .rank_startable_tasks(project.id, &tools, limit)
+                .unwrap(),
+            None
+        );
+        manager
+            .set_project_prioritizer(
+                project.id,
+                Prioritizer::Agent,
+                Some("provider/jev".to_owned()),
+            )
+            .unwrap();
+        let ranking = manager
+            .rank_startable_tasks(project.id, &tools, limit)
+            .unwrap()
+            .unwrap();
+        assert_eq!(ranking.order, vec![second.id, first.id]);
+        assert_eq!(ranking.reason, "Second unblocks the demo");
+        assert!(matches!(
+            manager.set_project_prioritizer(
+                project.id,
+                Prioritizer::Agent,
+                Some("bad model;".to_owned())
+            ),
+            Err(ProjectError::Model(ModelError::InvalidModel))
+        ));
     }
 
     #[test]

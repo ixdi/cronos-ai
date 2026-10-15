@@ -929,6 +929,39 @@ impl ToolCommands {
         prompt: &str,
         timeout: Duration,
     ) -> Result<String, IntegrationError> {
+        let args = [
+            OsString::from("--tools"),
+            "read,grep,find,ls".into(),
+            "--skill".into(),
+            skill.into(),
+        ];
+        self.run_one_shot_pi(repository, &args, prompt, timeout, "planner")
+    }
+
+    /// Runs Pi once with no tools at all, on `model` when given, for a quick decision such as
+    /// which task to start next.
+    pub fn run_prioritizer(
+        &self,
+        directory: &Path,
+        model: Option<&str>,
+        prompt: &str,
+        timeout: Duration,
+    ) -> Result<String, IntegrationError> {
+        let mut args = vec![OsString::from("--no-tools")];
+        if let Some(model) = model {
+            args.extend(["--model".into(), model.into()]);
+        }
+        self.run_one_shot_pi(directory, &args, prompt, timeout, "prioritizer")
+    }
+
+    fn run_one_shot_pi(
+        &self,
+        directory: &Path,
+        args: &[OsString],
+        prompt: &str,
+        timeout: Duration,
+        role: &str,
+    ) -> Result<String, IntegrationError> {
         let io_error = |source| IntegrationError::Io { tool: "pi", source };
         let mut stdout = tempfile::tempfile().map_err(io_error)?;
         let mut stderr = tempfile::tempfile().map_err(io_error)?;
@@ -945,14 +978,11 @@ impl ToolCommands {
                 "--no-mcp",
                 "--no-prompt-templates",
                 "--no-approve",
-                "--tools",
-                "read,grep,find,ls",
-                "--skill",
             ])
-            .arg(skill)
+            .args(args)
             .arg("--")
             .arg(prompt)
-            .current_dir(repository)
+            .current_dir(directory)
             .stdin(Stdio::null())
             .stdout(stdout.try_clone().map_err(io_error)?)
             .stderr(stderr.try_clone().map_err(io_error)?);
@@ -977,7 +1007,7 @@ impl ToolCommands {
                     tool: "pi",
                     status: "timeout".to_owned(),
                     stderr: format!(
-                        "the planner exceeded its {}-minute time limit",
+                        "the {role} exceeded its {}-minute time limit",
                         timeout.as_secs().div_ceil(60)
                     ),
                 });
@@ -2022,6 +2052,34 @@ mod tests {
             .unwrap(),
             fs::canonicalize(&repository).unwrap()
         );
+    }
+
+    #[test]
+    fn the_prioritizer_runs_without_tools_on_the_chosen_model() {
+        let temp = tempfile::tempdir().unwrap();
+        let pi = fake_pi(
+            temp.path(),
+            r#"printf '%s\n' "$@" > "$(dirname "$0")/pi-args"; printf '{"order": ["T1"]}\n'"#,
+        );
+        let tools = ToolCommands::with_paths(pi.clone(), pi.clone(), pi, "git".into());
+
+        let answer = tools
+            .run_prioritizer(
+                temp.path(),
+                Some("provider/jev"),
+                "Rank",
+                Duration::from_secs(10),
+            )
+            .unwrap();
+
+        assert_eq!(answer.trim(), "{\"order\": [\"T1\"]}");
+        let args = fs::read_to_string(temp.path().join("pi-args")).unwrap();
+        let args = args.lines().collect::<Vec<_>>();
+        assert!(args.contains(&"--no-tools"), "{args:?}");
+        assert!(!args.contains(&"--skill"));
+        let model = args.iter().position(|arg| *arg == "--model").unwrap();
+        assert_eq!(args[model + 1], "provider/jev");
+        assert_eq!(&args[args.len() - 2..], ["--", "Rank"]);
     }
 
     #[test]
