@@ -139,18 +139,16 @@ Pi keeps running agent steps until the task reaches an approval gate, local merg
 ## Dashboard (TUI)
 
 - **Implemented:**
-  - Project list and creation form (name, description, repository, check command).
+  - Project list and creation form (name, description, repository, check command, check time limit, publish mode).
   - Task list and creation form (title, description, priority, dependencies).
   - Task details: status, step, elapsed time, attempt and automatic-revision count, worktree, branch, OpenSpec change, approvals, recoveries, and agent activity.
-  - Review view (`v`): the OpenSpec change, task-branch commits, diff summary against the base, and the latest check output.
+  - Task list as a table or a kanban board by status (`b`), with a progress summary: done out of not abandoned, average completion time, and errors.
+  - Review view (`v`): the OpenSpec change, task-branch commits, diff summary against the base, the latest check output, and the per-file diff with file jumps (`]`/`[`).
   - Approvals and revision notes, recovery actions, and abandonment.
   - Agent profiles screen (`p`): list, create, edit, and delete profiles; each resource path is checked, and a broken catalog can be opened and fixed.
   - A semantic color palette that keeps text labels.
   - A one-second refresh.
 - **Future:**
-  - A kanban view of task statuses.
-  - Analytics such as counts per status, average completion time, and overall progress.
-  - Inline diffs per file.
   - A web dashboard.
 
 ## Storage
@@ -178,6 +176,5 @@ Pi keeps running agent steps until the task reaches an approval gate, local merg
 - Requirement-driven project definition and task generation.
 - Jev-based prioritization.
 - Release numbering and a changelog per release.
-- Kanban, analytics, and inline diff views in the TUI.
 - Parallel code-generation agents in separate sub-worktrees with a deterministic merge.
 - Sandboxed workers.

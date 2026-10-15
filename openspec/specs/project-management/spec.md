@@ -29,11 +29,19 @@ The system SHALL let a user add tasks to a project and view their priority, depe
 - **THEN** the dependent task is not selected for execution
 
 ### Requirement: Workflow monitoring
-The system SHALL show the selected project's tasks, statuses, and current workflow activity, and SHALL refresh that information as the workflow changes.
+The system SHALL show the selected project's tasks, statuses, and current workflow activity, and SHALL refresh that information as the workflow changes. The task list SHALL offer a table and a kanban board grouped by status, and SHALL summarize the project's progress: completed tasks out of those not abandoned, the average time to complete a task, and the number of tasks in Error.
 
 #### Scenario: View task progress
 - **WHEN** a user views a project while a task is running
 - **THEN** the task status and active workflow step are visible
+
+#### Scenario: Switch to the board
+- **WHEN** a user switches the task list to the board
+- **THEN** tasks appear in columns by status, the selection moves between cards and columns with the arrow keys, and opening a card shows that task's details
+
+#### Scenario: See project progress
+- **WHEN** a user views a project with completed, failed, and abandoned tasks
+- **THEN** the task list shows how many tasks are done out of those not abandoned, the average completion time, and the error count
 
 ### Requirement: Required-tool prompt
 At startup, the system SHALL detect missing required tools and prompt the user to install them before attempting to use the affected workflow.
@@ -129,11 +137,19 @@ A project SHALL store an optional check command as a program and arguments, run 
 - **THEN** verification stops the check command after 60 minutes
 
 ### Requirement: Approval review view
-Task details SHALL show the worktree path, branch, OpenSpec change, and the current step's elapsed time. A review view SHALL show the task's OpenSpec change, its commits and diff summary against the base, and the latest check-command output.
+Task details SHALL show the worktree path, branch, OpenSpec change, and the current step's elapsed time. A review view SHALL show the task's OpenSpec change, its commits and diff summary against the base, the latest check-command output, and the full per-file diff against the base, with a way to move between changed files.
 
 #### Scenario: Review before approving
 - **WHEN** a task waits at an approval gate and the user opens the review view
-- **THEN** the specification, commits, diff summary, and latest check output are visible without leaving the TUI
+- **THEN** the specification, commits, diff summary, latest check output, and each changed file's diff are visible without leaving the TUI
+
+#### Scenario: Move between changed files
+- **WHEN** the user jumps to the next or previous file in the review view
+- **THEN** the view scrolls to that file's diff and shows which file of how many is on screen
+
+#### Scenario: Very large diff
+- **WHEN** the diff is longer than the review view's limit
+- **THEN** the view shows the first part and says how many lines were left out
 
 #### Scenario: See step progress
 - **WHEN** a user views a running task
