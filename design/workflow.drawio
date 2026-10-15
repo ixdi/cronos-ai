@@ -10,10 +10,10 @@
         <mxCell id="subtitle" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontColor=#52677F;fontSize=16;" value="Supervised Software Factory · TUI" vertex="1">
           <mxGeometry height="30" width="300" x="120" y="79" as="geometry" />
         </mxCell>
-        <mxCell id="target-note" parent="1" style="rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#FFF4E3;strokeColor=#C38A3E;fontColor=#4B371F;fontSize=13;align=left;spacingLeft=12;" value="&lt;b&gt;TARGET MODEL&lt;/b&gt; · parallel feature tracks and requirement-driven feature generation are future work.&lt;br&gt;MVP today: hand-written tasks, one track at a time, same step sequence." vertex="1">
+        <mxCell id="target-note" parent="1" style="rounded=1;arcSize=10;whiteSpace=wrap;html=1;fillColor=#FFF4E3;strokeColor=#C38A3E;fontColor=#4B371F;fontSize=13;align=left;spacingLeft=12;" value="&lt;b&gt;PARALLEL TRACKS&lt;/b&gt; · a project runs up to its parallel capacity (1-8) of features at once.&lt;br&gt;Tasks are written by hand or planned from requirements; every track follows the same steps." vertex="1">
           <mxGeometry height="60" width="980" x="640" y="30" as="geometry" />
         </mxCell>
-        <mxCell id="phase-parallel" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontColor=#546A83;fontSize=12;fontStyle=1;spacingLeft=2;" value="RUN IN PARALLEL (FUTURE)" vertex="1">
+        <mxCell id="phase-parallel" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontColor=#546A83;fontSize=12;fontStyle=1;spacingLeft=2;" value="RUN IN PARALLEL (UP TO THE PROJECT'S CAPACITY)" vertex="1">
           <mxGeometry height="28" width="260" x="670" y="104" as="geometry" />
         </mxCell>
         <mxCell id="lane-n" parent="1" style="rounded=1;arcSize=8;whiteSpace=wrap;html=1;fillColor=#FFF8F0;strokeColor=#F4E2CA;strokeWidth=1;dashed=1;" value="" vertex="1">
@@ -34,7 +34,7 @@
         <mxCell id="n-approve-specs" parent="1" style="rounded=1;arcSize=12;whiteSpace=wrap;html=1;fillColor=#F0EEFA;strokeColor=#7966B5;strokeWidth=2;fontColor=#302950;fontSize=15;fontStyle=1;align=center;verticalAlign=middle;spacing=8;shadow=1;" value="APPROVE&lt;br&gt;&lt;font style=&quot;font-size: 12px; font-weight: normal;&quot;&gt;Human gate · specs&lt;/font&gt;" vertex="1">
           <mxGeometry height="90" width="200" x="925" y="189" as="geometry" />
         </mxCell>
-        <mxCell id="n-build" parent="1" style="rounded=1;arcSize=12;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D59B53;strokeWidth=2;fontColor=#49351F;fontSize=15;fontStyle=1;align=center;verticalAlign=middle;spacing=8;shadow=1;dashed=1;" value="BUILD&lt;br&gt;&lt;font style=&quot;font-size: 12px; font-weight: normal;&quot;&gt;Code + tests · 1 writer&lt;/font&gt;" vertex="1">
+        <mxCell id="n-build" parent="1" style="rounded=1;arcSize=12;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D59B53;strokeWidth=2;fontColor=#49351F;fontSize=15;fontStyle=1;align=center;verticalAlign=middle;spacing=8;shadow=1;dashed=1;" value="BUILD&lt;br&gt;&lt;font style=&quot;font-size: 12px; font-weight: normal;&quot;&gt;Code + tests · 1-4 writers&lt;/font&gt;" vertex="1">
           <mxGeometry height="90" width="200" x="1180" y="189" as="geometry" />
         </mxCell>
         <mxCell id="n-review" parent="1" style="rounded=1;arcSize=12;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D59B53;strokeWidth=2;fontColor=#49351F;fontSize=15;fontStyle=1;align=center;verticalAlign=middle;spacing=8;shadow=1;dashed=1;" value="REVIEW&lt;br&gt;&lt;font style=&quot;font-size: 12px; font-weight: normal;&quot;&gt;1-4 agents · read-only&lt;/font&gt;" vertex="1">
