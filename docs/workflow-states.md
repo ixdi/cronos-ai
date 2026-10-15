@@ -17,11 +17,11 @@ A project needs a local Git repository with a committed `openspec/` directory (`
 | 5 | `verification` | 1-4 in parallel | Read-only. Then Rust runs the project check command in the worktree. |
 | 6 | `final-approval` | human | Approve to continue, or request a revision with a note to return to step 3. |
 | 7 | `documentation` | 1-4 in parallel | Agents edit documentation without committing. Rust archives the OpenSpec change and makes one `docs: document <title>` commit. |
-| 8 | `local-merge` | Rust | Publishes by the project's mode: `local` requires a clean base and worktree and runs `git merge --no-ff`; `push` also pushes the base branch to the remote; `pull-request` pushes the task branch and opens a pull request instead of merging. |
+| 8 | `local-merge` | Rust | Publishes by the project's mode: `local` requires a clean base and worktree and runs `git merge --no-ff`; `push` also pushes the base branch to the remote; `pull-request` pushes the task branch and opens a pull request instead of merging. With releases on, a local merge is tagged as the next version and added to `CHANGELOG.md`. |
 
 Steps run in order; agents within one step run in parallel and the step waits for all of them.
 
-A failed push or pull request is recorded in the task's activity and stops the task with **Error**. Fix the cause (for example the remote's credentials; Git and `gh` never prompt), then retry the step with **t**: a merge that already happened is not repeated and an open pull request is reused. Steps that need a human cannot be advanced by an agent tool.
+A failed push or pull request is recorded in the task's activity and stops the task with **Error**. Fix the cause (for example the remote's credentials; Git and `gh` never prompt), then retry the step with **t**: a merge that already happened is not repeated, a release already tagged on HEAD is reused, and an open pull request is reused. Steps that need a human cannot be advanced by an agent tool.
 
 ## Agent results and time limits
 

@@ -87,12 +87,12 @@
 <td>8</td>
 <td><code>local-merge</code></td>
 <td>Rust</td>
-<td>Publishes by the project's mode: <code>local</code> requires a clean base and worktree and runs <code>git merge --no-ff</code>; <code>push</code> also pushes the base branch to the remote; <code>pull-request</code> pushes the task branch and opens a pull request instead of merging.</td>
+<td>Publishes by the project's mode: <code>local</code> requires a clean base and worktree and runs <code>git merge --no-ff</code>; <code>push</code> also pushes the base branch to the remote; <code>pull-request</code> pushes the task branch and opens a pull request instead of merging. With releases on, a local merge is tagged as the next version and added to <code>CHANGELOG.md</code>.</td>
 </tr>
 </tbody>
 </table>
 <p>Steps run in order; agents within one step run in parallel and the step waits for all of them.</p>
-<p>A failed push or pull request is recorded in the task's activity and stops the task with <strong>Error</strong>. Fix the cause (for example the remote's credentials; Git and <code>gh</code> never prompt), then retry the step with <strong>t</strong>: a merge that already happened is not repeated and an open pull request is reused. Steps that need a human cannot be advanced by an agent tool.</p>
+<p>A failed push or pull request is recorded in the task's activity and stops the task with <strong>Error</strong>. Fix the cause (for example the remote's credentials; Git and <code>gh</code> never prompt), then retry the step with <strong>t</strong>: a merge that already happened is not repeated, a release already tagged on HEAD is reused, and an open pull request is reused. Steps that need a human cannot be advanced by an agent tool.</p>
 <h2 id="agent-results-and-time-limits">Agent results and time limits</h2>
 <p>Rust appends a fixed contract to every agent prompt: the result file, the OpenSpec change, the step's write rules, and that agents never push or edit Cronos state. Every agent ends by writing <code>.cronos/results/&lt;step&gt;/&lt;agent&gt;.json</code>:</p>
 <div class="sourceCode" id="cb1"><pre class="sourceCode json"><code class="sourceCode json"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span><span class="dt">&quot;status&quot;</span><span class="fu">:</span> <span class="st">&quot;success&quot;</span> <span class="er">|</span> <span class="st">&quot;changes_requested&quot;</span> <span class="er">|</span> <span class="st">&quot;failed&quot;</span><span class="fu">,</span> <span class="dt">&quot;summary&quot;</span><span class="fu">:</span> <span class="st">&quot;...&quot;</span><span class="fu">,</span> <span class="dt">&quot;findings&quot;</span><span class="fu">:</span> <span class="ot">[</span><span class="st">&quot;...&quot;</span><span class="ot">]</span><span class="fu">}</span></span></code></pre></div>

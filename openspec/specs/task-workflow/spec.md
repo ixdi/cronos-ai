@@ -251,3 +251,26 @@ A failed push or pull request SHALL be recorded in agent activity and mark the t
 #### Scenario: Missing credentials
 - **WHEN** pushing needs credentials that are not configured
 - **THEN** the push fails without prompting and the task is marked Error
+
+### Requirement: Release merged tasks
+When a project has releases on, after a task merges locally the system SHALL tag the result as the next semantic version computed from the Conventional Commits since the last `vX.Y.Z` tag, SHALL prepend that version's changes to `CHANGELOG.md` in a `chore(release)` commit, and SHALL record the version on the task. Push publishing SHALL also push the tag. Retrying the step SHALL reuse a release already tagged on HEAD.
+
+#### Scenario: Release a feature
+- **WHEN** a task whose commits include a `feat` commit merges in a project with releases on and latest release `v1.4.2`
+- **THEN** `CHANGELOG.md` gains a `v1.5.0` section listing the task's commits, the release commit is tagged `v1.5.0`, and the task records `v1.5.0`
+
+#### Scenario: Breaking change
+- **WHEN** a merged commit is marked breaking with `!` or a `BREAKING CHANGE:` footer
+- **THEN** the next release bumps the major version
+
+#### Scenario: First release
+- **WHEN** the repository has no release tags
+- **THEN** the release starts from 0.0.0 and lists only the task's merged commits
+
+#### Scenario: Retry after a failed push
+- **WHEN** pushing a released merge fails and the user retries the step
+- **THEN** the existing release is reused, no second release commit or tag is created, and the tag is pushed with the base branch
+
+#### Scenario: Releases off
+- **WHEN** a project has releases off
+- **THEN** merging creates no tag and does not touch `CHANGELOG.md`

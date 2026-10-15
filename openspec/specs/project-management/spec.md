@@ -171,11 +171,15 @@ The system SHALL apply every change to stored projects and tasks as one exclusiv
 - **THEN** the next change made by another process proceeds without manual cleanup
 
 ### Requirement: Project publish settings
-A project SHALL store a publish mode of `local`, `push`, or `pull-request`, defaulting to `local`, and an optional Git remote name that defaults to `origin`. Users SHALL set them from the CLI, and the publish mode from the TUI project form. The system SHALL reject a remote name that is empty, longer than 100 characters, starts with `-` or `.`, or contains characters other than letters, digits, `.`, `_`, and `-`.
+A project SHALL store a publish mode of `local`, `push`, or `pull-request`, defaulting to `local`, an optional Git remote name that defaults to `origin`, and whether releases are on, defaulting to off. Users SHALL set them from the CLI, and the publish mode and releases from the TUI project form. The system SHALL reject a remote name that is empty, longer than 100 characters, starts with `-` or `.`, or contains characters other than letters, digits, `.`, `_`, and `-`.
 
 #### Scenario: Choose a publish mode
 - **WHEN** a user sets a project's publish mode and remote
 - **THEN** they are saved and the task overview shows where approved work will be published
+
+#### Scenario: Turn releases on
+- **WHEN** a user turns releases on for a project
+- **THEN** the setting is saved and later merges are released
 
 #### Scenario: Reject an unsafe remote name
 - **WHEN** a user sets a remote name such as `-c` or `my remote`

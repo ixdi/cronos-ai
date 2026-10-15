@@ -43,7 +43,7 @@ The OpenSpec specs in `openspec/specs/` are the source of truth for behavior. Th
 | Built-in step skills | One Pi skill per agent step (`skills/`), embedded in the binary and loaded by every worker before profile skills | Implemented |
 | Jev | Prioritization and dependency model | Future (built-in priority/dependency ordering is used) |
 | Remote push / GitHub | Publishing after merge: local only, merge and push, or pull request through `gh` | Implemented |
-| Release numbers, changelog per release | Versioning of merged work | Future |
+| Release numbers, changelog per release | Opt-in per project: each local merge is tagged with the next semantic version from its Conventional Commits and prepended to `CHANGELOG.md`; computed on the base at merge time so parallel tasks never conflict | Implemented |
 
 ## Projects
 
@@ -139,7 +139,7 @@ Pi keeps running agent steps until the task reaches an approval gate, local merg
 ## Dashboard (TUI)
 
 - **Implemented:**
-  - Project list and creation form (name, description, repository, check command, check time limit, publish mode).
+  - Project list and creation form (name, description, repository, check command, check time limit, publish mode, releases).
   - Task list and creation form (title, description, priority, dependencies).
   - Task details: status, step, elapsed time, attempt and automatic-revision count, worktree, branch, OpenSpec change, approvals, recoveries, and agent activity.
   - Task list as a table or a kanban board by status (`b`), with a progress summary: done out of not abandoned, average completion time, and errors.
@@ -175,6 +175,5 @@ Pi keeps running agent steps until the task reaches an approval gate, local merg
 - Parallel tasks on feature tracks, with conflict-aware scheduling.
 - Requirement-driven project definition and task generation.
 - Jev-based prioritization.
-- Release numbering and a changelog per release.
 - Parallel code-generation agents in separate sub-worktrees with a deterministic merge.
 - Sandboxed workers.
