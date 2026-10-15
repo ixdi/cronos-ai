@@ -194,6 +194,8 @@ impl ProjectManager {
             repository,
             check_command,
             check_timeout_minutes,
+            publish: Default::default(),
+            remote: None,
             created_at_unix_secs: now,
             updated_at_unix_secs: now,
         };
@@ -369,6 +371,7 @@ impl ProjectManager {
             attempt: 1,
             recovery_history: Vec::new(),
             automatic_revisions: 0,
+            published: None,
             created_at_unix_secs: now,
             updated_at_unix_secs: now,
         };

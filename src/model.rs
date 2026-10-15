@@ -20,6 +20,9 @@ const MAX_CHECK_COMMAND_ARG_CHARS: usize = 4_096;
 pub const DEFAULT_CHECK_TIMEOUT_MINUTES: u32 = 60;
 /// Longest check-command time limit a project can set, matching the agent profile limit.
 pub const MAX_CHECK_TIMEOUT_MINUTES: u32 = 480;
+const DEFAULT_REMOTE: &str = "origin";
+const MAX_REMOTE_CHARS: usize = 100;
+const MAX_PUBLICATION_CHARS: usize = 2_000;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(transparent)]
@@ -42,6 +45,31 @@ pub struct TaskId(pub Uuid);
 impl TaskId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
+    }
+}
+
+/// What happens after a task's final code is approved and documented.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PublishMode {
+    /// Merge into the base branch locally; nothing leaves the machine.
+    #[default]
+    Local,
+    /// Merge locally, then push the base branch to the project's remote.
+    Push,
+    /// Push the task branch and open a pull request instead of merging locally.
+    PullRequest,
+}
+
+impl PublishMode {
+    pub const ALL: [Self; 3] = [Self::Local, Self::Push, Self::PullRequest];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Push => "push",
+            Self::PullRequest => "pull-request",
+        }
     }
 }
 
@@ -85,6 +113,11 @@ pub struct Project {
     /// Minutes the check command may run before it is stopped; `None` uses the default.
     #[serde(default)]
     pub check_timeout_minutes: Option<u32>,
+    #[serde(default)]
+    pub publish: PublishMode,
+    /// Git remote used for publishing; `None` means `origin`.
+    #[serde(default)]
+    pub remote: Option<String>,
     pub created_at_unix_secs: u64,
     pub updated_at_unix_secs: u64,
 }
@@ -97,7 +130,18 @@ impl Project {
         std::time::Duration::from_secs(u64::from(minutes) * 60)
     }
 
+    pub fn remote_name(&self) -> &str {
+        self.remote.as_deref().unwrap_or(DEFAULT_REMOTE)
+    }
+
     pub fn validate(&self) -> Result<(), ModelError> {
+        if self
+            .remote
+            .as_deref()
+            .is_some_and(|remote| !valid_remote_name(remote))
+        {
+            return Err(ModelError::InvalidRemote);
+        }
         if self
             .check_timeout_minutes
             .is_some_and(|minutes| minutes == 0 || minutes > MAX_CHECK_TIMEOUT_MINUTES)
@@ -323,6 +367,9 @@ pub struct Task {
     /// Automatic returns to code generation in the current attempt.
     #[serde(default)]
     pub automatic_revisions: u32,
+    /// Where the completed work was published, such as a pull request URL.
+    #[serde(default)]
+    pub published: Option<String>,
 }
 
 impl Task {
@@ -350,6 +397,11 @@ impl Task {
             "current workflow step",
             self.current_step.as_deref(),
             MAX_STEP_NAME_CHARS,
+        )?;
+        validate_optional_text(
+            "task publication",
+            self.published.as_deref(),
+            MAX_PUBLICATION_CHARS,
         )?;
 
         let mut dependencies = HashSet::with_capacity(self.dependencies.len());
@@ -455,6 +507,10 @@ pub enum ModelError {
     InvalidCheckCommand,
     #[error("check time limit must be between 1 and {MAX_CHECK_TIMEOUT_MINUTES} minutes")]
     InvalidCheckTimeout,
+    #[error(
+        "remote name must be 1-{MAX_REMOTE_CHARS} letters, digits, '.', '_', or '-', and must not start with '-' or '.'"
+    )]
+    InvalidRemote,
 }
 
 fn default_attempt() -> u32 {
@@ -478,6 +534,16 @@ fn validate_required_text(
     Ok(())
 }
 
+/// A Git remote name that can never be read as an option, path, or shell syntax.
+fn valid_remote_name(remote: &str) -> bool {
+    !remote.is_empty()
+        && remote.len() <= MAX_REMOTE_CHARS
+        && !remote.starts_with(['-', '.'])
+        && remote
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "._-".contains(character))
+}
+
 fn validate_optional_text(
     field: &'static str,
     value: Option<&str>,
@@ -496,7 +562,7 @@ fn validate_optional_text(
 mod tests {
     use super::{
         DEFAULT_CHECK_TIMEOUT_MINUTES, MAX_CHECK_TIMEOUT_MINUTES, ModelError, Priority, Project,
-        ProjectId, ProjectStatus, Task, TaskId, TaskStatus,
+        ProjectId, ProjectStatus, PublishMode, Task, TaskId, TaskStatus,
     };
     use std::collections::BTreeMap;
 
@@ -518,6 +584,7 @@ mod tests {
             attempt: 1,
             recovery_history: Vec::new(),
             automatic_revisions: 0,
+            published: None,
             created_at_unix_secs: 0,
             updated_at_unix_secs: 0,
         }
@@ -535,6 +602,8 @@ mod tests {
             repository: None,
             check_command: None,
             check_timeout_minutes: None,
+            publish: Default::default(),
+            remote: None,
             created_at_unix_secs: 0,
             updated_at_unix_secs: 0,
         };
@@ -568,6 +637,8 @@ mod tests {
             repository: None,
             check_command: None,
             check_timeout_minutes: None,
+            publish: Default::default(),
+            remote: None,
             created_at_unix_secs: 0,
             updated_at_unix_secs: 0,
         };
@@ -589,6 +660,56 @@ mod tests {
             project.check_timeout_minutes = Some(minutes);
             assert_eq!(project.validate(), Err(ModelError::InvalidCheckTimeout));
         }
+    }
+
+    #[test]
+    fn publishing_defaults_to_local_on_origin_and_rejects_unsafe_remote_names() {
+        let mut project: Project = serde_json::from_value(serde_json::json!({
+            "id": ProjectId::new(),
+            "name": "Published",
+            "description": null,
+            "status": "active",
+            "task_ids": [],
+            "created_at_unix_secs": 1,
+            "updated_at_unix_secs": 1
+        }))
+        .unwrap();
+        assert_eq!(project.publish, PublishMode::Local);
+        assert_eq!(project.remote_name(), "origin");
+
+        project.publish = PublishMode::PullRequest;
+        project.remote = Some("upstream".to_owned());
+        assert_eq!(project.validate(), Ok(()));
+        assert_eq!(project.remote_name(), "upstream");
+        assert_eq!(
+            serde_json::to_value(PublishMode::PullRequest).unwrap(),
+            "pull_request"
+        );
+
+        for remote in ["", " ", "-c", "my remote", "a;b", "../x"] {
+            project.remote = Some(remote.to_owned());
+            assert_eq!(
+                project.validate(),
+                Err(ModelError::InvalidRemote),
+                "{remote:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn task_publication_is_bounded() {
+        let mut task = task(TaskId::new(), Vec::new());
+        assert_eq!(task.published, None);
+        task.published = Some("https://example.invalid/pr/1".to_owned());
+        assert_eq!(task.validate(), Ok(()));
+        task.published = Some("x".repeat(2_001));
+        assert!(matches!(
+            task.validate(),
+            Err(ModelError::TextTooLong {
+                field: "task publication",
+                ..
+            })
+        ));
     }
 
     #[test]
