@@ -68,6 +68,18 @@ fi
     fs::set_permissions(path, permissions).unwrap();
 }
 
+/// A `pi` whose one-shot answer plans a single reviewer for every step.
+fn fake_step_planner(path: &Path) {
+    fs::write(
+        path,
+        "#!/bin/sh\nprintf '{\"agents\": [{\"name\": \"reviewer\", \"prompt\": \"Review the branch\"}]}'\n",
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(path).unwrap().permissions();
+    permissions.set_mode(0o700);
+    fs::set_permissions(path, permissions).unwrap();
+}
+
 fn commands(herdr: &Path) -> ToolCommands {
     ToolCommands::with_paths(
         herdr.to_path_buf(),
@@ -416,17 +428,16 @@ fn run_step_from_the_cli_gives_every_worker_the_built_in_skill_for_its_step() {
     fs::create_dir_all(&bin).unwrap();
     let log = temp.path().join("herdr-args.log");
     fake_herdr(&bin.join("herdr"), &log);
+    fake_step_planner(&bin.join("pi"));
     let output = Command::new(env!("CARGO_BIN_EXE_cronos-ai"))
         .arg("--data-dir")
         .arg(&data_dir)
         .args([
             "internal",
             "workflow",
-            "run-step",
+            "run-task",
             &project.id.0.to_string(),
             &task.id.0.to_string(),
-            "code-review",
-            r#"[{"name":"reviewer","prompt":"Review the branch"}]"#,
         ])
         .env(
             "PATH",
@@ -451,11 +462,19 @@ fn run_step_from_the_cli_gives_every_worker_the_built_in_skill_for_its_step() {
         .into_iter()
         .filter(|args| args.starts_with(&["agent".to_owned(), "start".to_owned()]))
         .collect::<Vec<_>>();
-    assert_eq!(starts.len(), 1);
+    // The loop runs code review, then verification, and stops at final approval.
+    assert_eq!(starts.len(), 2);
     assert!(contains_pair(
         &starts[0],
         "--skill",
         &skill.to_string_lossy()
+    ));
+    assert!(contains_pair(
+        &starts[1],
+        "--skill",
+        &data_dir
+            .join("skills/cronos-verification/SKILL.md")
+            .to_string_lossy()
     ));
 }
 
@@ -511,6 +530,7 @@ fn a_sandboxed_project_starts_each_worker_inside_the_sandbox() {
     fs::create_dir_all(&bin).unwrap();
     let log = temp.path().join("herdr-args.log");
     fake_herdr(&bin.join("herdr"), &log);
+    fake_step_planner(&bin.join("pi"));
 
     let output = Command::new(env!("CARGO_BIN_EXE_cronos-ai"))
         .arg("--data-dir")
@@ -518,11 +538,9 @@ fn a_sandboxed_project_starts_each_worker_inside_the_sandbox() {
         .args([
             "internal",
             "workflow",
-            "run-step",
+            "run-task",
             &project.id.0.to_string(),
             &task.id.0.to_string(),
-            "code-review",
-            r#"[{"name":"reviewer","prompt":"Review the branch"}]"#,
         ])
         .env(
             "PATH",

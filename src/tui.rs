@@ -31,7 +31,9 @@ use profiles::{EditorAction, ProfileEditor, ProfileList};
 
 use crate::{
     agent_profiles::{load_profiles_for_editing, save_edited_profiles},
-    integrations::{GitAdapter, PiRpcHandle, ToolCommands, herdr_session_available},
+    integrations::{
+        GitAdapter, TaskRunnerHandle, ToolCommands, herdr_session_available, spawn_task_runner,
+    },
     model::{
         AgentActivity, AgentStatus, ApprovalDecision, ApprovalGate, MAX_PARALLEL_TASKS,
         Prioritizer, Priority, Project, ProjectStatus, PublishMode, RequirementId, RequirementKind,
@@ -276,8 +278,8 @@ struct Dashboard {
     should_quit: bool,
     error: Option<String>,
     dialog: Dialog,
-    /// One Pi orchestrator per running task.
-    workflows: HashMap<TaskId, (crate::model::ProjectId, PiRpcHandle)>,
+    /// One task runner process per running task.
+    workflows: HashMap<TaskId, (crate::model::ProjectId, TaskRunnerHandle)>,
     workflow_status: Option<String>,
     review_text: Vec<String>,
     review_scroll: u16,
@@ -988,7 +990,7 @@ impl Dashboard {
             .manager
             .prepare_task_worktree(project_id, task_id, &GitAdapter::default())
             .map_err(|error| error.to_string())
-            .and_then(|_| self.launch_pi_for_task(project_id, task_id));
+            .and_then(|_| self.launch_task_runner(project_id, task_id));
         if let Err(error) = result {
             let _ = self
                 .manager
@@ -1615,7 +1617,7 @@ impl Dashboard {
                         .manager
                         .get_task(project_id, task_id)
                         .is_ok_and(|task| task.worktree.is_some())
-                    && let Err(error) = self.launch_pi_for_task(project_id, task_id)
+                    && let Err(error) = self.launch_task_runner(project_id, task_id)
                 {
                     let _ = self
                         .manager
@@ -1777,7 +1779,7 @@ impl Dashboard {
                         .manager
                         .prepare_task_worktree(project_id, task.id, &GitAdapter::default())
                         .map_err(|error| error.to_string())
-                        .and_then(|_| self.launch_pi_for_task(project_id, task.id));
+                        .and_then(|_| self.launch_task_runner(project_id, task.id));
                     if let Err(error) = result {
                         let _ =
                             self.manager
@@ -1848,7 +1850,8 @@ impl Dashboard {
         }
     }
 
-    fn launch_pi_for_task(
+    /// Starts the task's runner process, which runs its agent steps until a human or Rust step.
+    fn launch_task_runner(
         &mut self,
         project_id: crate::model::ProjectId,
         task_id: crate::model::TaskId,
@@ -1856,29 +1859,14 @@ impl Dashboard {
         if !herdr_session_available() {
             return Err("Start Cronos-AI inside a Herdr-managed pane to run tasks.".to_owned());
         }
-        let worktree = self
-            .manager
+        self.manager
             .validated_task_worktree_path(project_id, task_id)
             .map_err(|error| error.to_string())?;
-        let extension = crate::integrations::install_workflow_extension(self.manager.data_dir())
-            .map_err(|error| format!("could not install the workflow extension: {error}"))?;
         let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-        let commands = ToolCommands::default();
-        let command = commands
-            .pi_rpc_command(
-                &extension,
-                &worktree,
-                self.manager.data_dir(),
-                &executable,
-                project_id,
-                task_id,
-            )
-            .map_err(|error| error.to_string())?;
-        let handle = commands
-            .spawn_pi_rpc(command)
+        let handle = spawn_task_runner(&executable, self.manager.data_dir(), project_id, task_id)
             .map_err(|error| error.to_string())?;
         self.workflows.insert(task_id, (project_id, handle));
-        self.workflow_status = Some("Pi orchestrator started".to_owned());
+        self.workflow_status = Some("Task runner started".to_owned());
         self.error = None;
         Ok(())
     }
@@ -1925,7 +1913,7 @@ impl Dashboard {
                                 TaskStatus::Error,
                             );
                             self.error = Some(format!(
-                                "{}: Pi settled before completing the current workflow step.",
+                                "{}: the task runner stopped before completing the current workflow step.",
                                 terminal_safe(&task.title)
                             ));
                             self.refresh_for_ui();
@@ -4543,8 +4531,9 @@ mod tests {
         let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
         app.handle_key(KeyCode::Enter);
         let (alpha_handle, alpha_events, alpha_done) =
-            crate::integrations::PiRpcHandle::for_tests();
-        let (beta_handle, _beta_events, _beta_done) = crate::integrations::PiRpcHandle::for_tests();
+            crate::integrations::TaskRunnerHandle::for_tests();
+        let (beta_handle, _beta_events, _beta_done) =
+            crate::integrations::TaskRunnerHandle::for_tests();
         app.workflows.insert(alpha.id, (project.id, alpha_handle));
         app.workflows.insert(beta.id, (project.id, beta_handle));
 

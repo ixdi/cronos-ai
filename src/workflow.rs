@@ -244,7 +244,7 @@ pub fn default_timeout_minutes(step: WorkflowStep) -> u32 {
     }
 }
 
-/// System-defined rules appended to every agent prompt, independent of what the orchestrator wrote.
+/// System-defined rules appended to every agent prompt, independent of what the step planner wrote.
 pub fn agent_contract(
     task: &Task,
     step: WorkflowStep,

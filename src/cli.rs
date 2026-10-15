@@ -8,10 +8,9 @@ use crate::{
     integrations::{GitAdapter, ToolCommands, herdr_session_available, require_tools},
     model::{
         Prioritizer, Priority, ProjectId, PublishMode, RequirementId, RequirementKind, TaskId,
-        WorkflowStep,
     },
     project::ProjectManager,
-    workflow::{AgentPlan, HerdrAgentAdapter, WorkflowEngine},
+    workflow::{HerdrAgentAdapter, WorkflowEngine},
 };
 
 #[derive(Parser)]
@@ -105,6 +104,11 @@ enum ProjectAction {
         id: String,
         minutes: Option<u32>,
     },
+    /// Set the model the task planner and the step planner run on; omit MODEL for Pi's default.
+    SetPlannerModel {
+        id: String,
+        model: Option<String>,
+    },
     /// Choose how the next task is picked: built-in priority order, or an agent prioritizer.
     SetPrioritizer {
         id: String,
@@ -177,13 +181,6 @@ enum ProjectAction {
 #[derive(Subcommand)]
 enum InternalAction {
     Launch,
-    Task {
-        #[command(subcommand)]
-        action: InternalTaskAction,
-    },
-    AgentProfiles {
-        step: String,
-    },
     Workflow {
         #[command(subcommand)]
         action: InternalWorkflowAction,
@@ -191,18 +188,9 @@ enum InternalAction {
 }
 
 #[derive(Subcommand)]
-enum InternalTaskAction {
-    Get { project_id: String, task_id: String },
-}
-
-#[derive(Subcommand)]
 enum InternalWorkflowAction {
-    RunStep {
-        project_id: String,
-        task_id: String,
-        step: String,
-        agents_json: String,
-    },
+    /// Run the task's agent steps until a human approval, the local merge, Error, or Completed.
+    RunTask { project_id: String, task_id: String },
 }
 
 #[derive(Subcommand)]
@@ -299,35 +287,17 @@ pub fn run() -> Result<Option<PathBuf>, Box<dyn Error>> {
                     &ToolCommands::default(),
                 );
             }
-            InternalAction::Task { action } => match action {
-                InternalTaskAction::Get {
-                    project_id,
-                    task_id,
-                } => print_json(
-                    &manager.get_task(parse_project_id(&project_id)?, parse_task_id(&task_id)?)?,
-                )?,
-            },
-            InternalAction::AgentProfiles { step } => {
-                print_json(&list_agent_profiles(&root, &step)?)?;
-            }
             InternalAction::Workflow { action } => match action {
-                InternalWorkflowAction::RunStep {
+                InternalWorkflowAction::RunTask {
                     project_id,
                     task_id,
-                    step,
-                    agents_json,
                 } => {
-                    let step = WorkflowStep::parse(&step).ok_or_else(|| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            "unknown workflow step",
-                        )
-                    })?;
-                    let agents: Vec<AgentPlan> = serde_json::from_str(&agents_json)?;
+                    let project_id = parse_project_id(&project_id)?;
+                    let task_id = parse_task_id(&task_id)?;
                     let profiles = AgentProfileCatalog::load(&root)?;
                     let mut adapter = HerdrAgentAdapter::with_profiles(profiles.clone())
                         .with_step_skills(crate::step_skills::install_step_skills(&root)?);
-                    let project = manager.get_project(parse_project_id(&project_id)?)?;
+                    let project = manager.get_project(project_id)?;
                     if project.sandbox {
                         // A sandboxed project never runs its workers unprotected.
                         crate::sandbox::sandbox_available()?;
@@ -341,13 +311,29 @@ pub fn run() -> Result<Option<PathBuf>, Box<dyn Error>> {
                             &GitAdapter::default(),
                         )?);
                     }
-                    let task = WorkflowEngine::with_profiles(manager, adapter, profiles).run_step(
-                        parse_project_id(&project_id)?,
-                        parse_task_id(&task_id)?,
-                        step,
-                        agents,
+                    let planner = crate::orchestration::PiStepPlanner {
+                        tools: ToolCommands::default(),
+                        model: project.planner_model.clone(),
+                        timeout: STEP_PLANNER_TIMEOUT,
+                    };
+                    let engine = WorkflowEngine::with_profiles(manager, adapter, profiles.clone());
+                    // Progress goes to stdout line by line; the dashboard shows the latest line.
+                    let task = crate::orchestration::run_task(
+                        &engine,
+                        &planner,
+                        &profiles,
+                        project_id,
+                        task_id,
+                        &mut |line: &str| {
+                            println!("{line}");
+                            let _ = std::io::Write::flush(&mut std::io::stdout());
+                        },
                     )?;
-                    print_json(&task)?;
+                    println!(
+                        "stopped at {} ({:?})",
+                        task.current_step.as_deref().unwrap_or("no step"),
+                        task.status
+                    );
                 }
             },
         },
@@ -376,6 +362,9 @@ pub fn run() -> Result<Option<PathBuf>, Box<dyn Error>> {
             }
             ProjectAction::SetCheckCommand { id, command } => {
                 print_json(&manager.set_project_check_command(parse_project_id(&id)?, command)?)?;
+            }
+            ProjectAction::SetPlannerModel { id, model } => {
+                print_json(&manager.set_project_planner_model(parse_project_id(&id)?, model)?)?;
             }
             ProjectAction::SetPrioritizer {
                 id,
@@ -547,34 +536,6 @@ pub fn run() -> Result<Option<PathBuf>, Box<dyn Error>> {
     Ok(None)
 }
 
-#[derive(serde::Serialize)]
-struct AgentProfileSummary {
-    id: String,
-    description: String,
-}
-
-fn list_agent_profiles(
-    data_dir: &std::path::Path,
-    step: &str,
-) -> Result<Vec<AgentProfileSummary>, Box<dyn Error>> {
-    let step = WorkflowStep::parse(step)
-        .filter(|step| step.runs_agents())
-        .ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "unknown or non-agent workflow step",
-            )
-        })?;
-    let catalog = AgentProfileCatalog::load(data_dir)?;
-    Ok(catalog
-        .for_step(step)
-        .map(|profile| AgentProfileSummary {
-            id: profile.id.clone(),
-            description: profile.description.clone(),
-        })
-        .collect())
-}
-
 fn default_data_dir() -> Result<PathBuf, Box<dyn Error>> {
     if let Some(path) = env::var_os("CRONOS_AI_DATA_DIR") {
         return Ok(PathBuf::from(path));
@@ -593,6 +554,8 @@ fn default_data_dir() -> Result<PathBuf, Box<dyn Error>> {
 }
 
 const CRONOS_AI_HERDR_SESSION: &str = "cronos-ai";
+/// How long the step planner may take before the default plan runs.
+const STEP_PLANNER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
 fn require_available_tools(tools: &ToolCommands) -> Result<(), Box<dyn Error>> {
     let stdin = std::io::stdin();
@@ -636,7 +599,7 @@ fn print_json(value: &impl serde::Serialize) -> Result<(), serde_json::Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, launch_or_open_tui, list_agent_profiles};
+    use super::{Cli, launch_or_open_tui};
     use crate::integrations::ToolCommands;
     use clap::Parser;
     use std::fs;
@@ -787,41 +750,6 @@ mod tests {
     }
 
     #[test]
-    fn internal_agent_profiles_command_accepts_a_workflow_step() {
-        assert!(
-            Cli::try_parse_from(["cronos-ai", "internal", "agent-profiles", "code-review"]).is_ok()
-        );
-    }
-
-    #[test]
-    fn profile_listing_filters_by_agent_step_and_handles_empty_catalog() {
-        let root = tempfile::tempdir().unwrap();
-        fs::write(
-            root.path().join("agent-profiles.json"),
-            r#"{"version":1,"profiles":[{"id":"reviewer","description":"Reviews changes","steps":["code-review"]},{"id":"writer","description":"Writes docs","steps":["documentation"]}]}"#,
-        )
-        .unwrap();
-
-        let profiles = list_agent_profiles(root.path(), "code-review").unwrap();
-        assert_eq!(profiles.len(), 1);
-        assert_eq!(profiles[0].id, "reviewer");
-        assert_eq!(profiles[0].description, "Reviews changes");
-
-        assert!(
-            list_agent_profiles(root.path(), "verification")
-                .unwrap()
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn profile_listing_rejects_unknown_and_non_agent_steps() {
-        let root = tempfile::tempdir().unwrap();
-        assert!(list_agent_profiles(root.path(), "not-a-step").is_err());
-        assert!(list_agent_profiles(root.path(), "local-merge").is_err());
-    }
-
-    #[test]
     fn project_and_task_commands_accept_expected_arguments() {
         assert!(
             Cli::try_parse_from([
@@ -905,23 +833,10 @@ mod tests {
             Cli::try_parse_from([
                 "cronos-ai",
                 "internal",
-                "task",
-                "get",
-                "00000000-0000-0000-0000-000000000000",
-                "00000000-0000-0000-0000-000000000001",
-            ])
-            .is_ok()
-        );
-        assert!(
-            Cli::try_parse_from([
-                "cronos-ai",
-                "internal",
                 "workflow",
-                "run-step",
+                "run-task",
                 "00000000-0000-0000-0000-000000000000",
                 "00000000-0000-0000-0000-000000000001",
-                "specification-generation",
-                r#"[{"name":"spec-writer","prompt":"draft specs"}]"#,
             ])
             .is_ok()
         );

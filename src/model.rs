@@ -185,6 +185,9 @@ pub struct Project {
     /// Model for the agent prioritizer, such as a fast selection model; `None` uses Pi's default.
     #[serde(default)]
     pub prioritizer_model: Option<String>,
+    /// Model for the task planner and the step planner; `None` uses Pi's default.
+    #[serde(default)]
+    pub planner_model: Option<String>,
     pub created_at_unix_secs: u64,
     pub updated_at_unix_secs: u64,
 }
@@ -202,10 +205,10 @@ impl Project {
     }
 
     pub fn validate(&self) -> Result<(), ModelError> {
-        if self
-            .prioritizer_model
-            .as_deref()
-            .is_some_and(|model| !crate::agent_profiles::valid_model(model))
+        if [&self.prioritizer_model, &self.planner_model]
+            .into_iter()
+            .flatten()
+            .any(|model| !crate::agent_profiles::valid_model(model))
         {
             return Err(ModelError::InvalidModel);
         }
@@ -740,6 +743,7 @@ mod tests {
             sandbox: false,
             prioritizer: Default::default(),
             prioritizer_model: None,
+            planner_model: None,
             created_at_unix_secs: 0,
             updated_at_unix_secs: 0,
         };
@@ -781,6 +785,7 @@ mod tests {
             sandbox: false,
             prioritizer: Default::default(),
             prioritizer_model: None,
+            planner_model: None,
             created_at_unix_secs: 0,
             updated_at_unix_secs: 0,
         };

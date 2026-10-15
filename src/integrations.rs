@@ -1,7 +1,7 @@
 use std::{
     env,
     ffi::{OsStr, OsString},
-    io::{self, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
+    io::{self, BufRead, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
     sync::mpsc,
@@ -60,39 +60,118 @@ pub enum IntegrationError {
     InvalidHerdrResponse,
 }
 
-enum PiRpcInput {
-    Abort,
-    Shutdown,
-}
-
-pub struct PiRpcHandle {
+/// A running `cronos-ai internal workflow run-task` process. Each progress line it prints is an
+/// event; `finished` carries its outcome once it exits.
+pub struct TaskRunnerHandle {
     pub events: mpsc::Receiver<String>,
     pub finished: mpsc::Receiver<Result<(), String>>,
-    input: mpsc::Sender<PiRpcInput>,
+    process_group: Option<u32>,
 }
 
-impl PiRpcHandle {
+impl TaskRunnerHandle {
+    /// Stops the runner and everything it started.
     pub fn abort(&self) {
-        let _ = self.input.send(PiRpcInput::Abort);
+        #[cfg(unix)]
+        if let Some(group) = self.process_group {
+            let _ = Command::new("kill")
+                .args(["-TERM", &format!("-{group}")])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
     }
 
-    /// A handle driven by the test instead of a Pi process: send events and the final result
+    /// A handle driven by the test instead of a process: send events and the final result
     /// through the returned senders.
     #[cfg(test)]
     pub(crate) fn for_tests() -> (Self, mpsc::Sender<String>, mpsc::Sender<Result<(), String>>) {
         let (event_sender, events) = mpsc::channel();
         let (finished_sender, finished) = mpsc::channel();
-        let (input, _) = mpsc::channel();
         (
             Self {
                 events,
                 finished,
-                input,
+                process_group: None,
             },
             event_sender,
             finished_sender,
         )
     }
+}
+
+/// Starts `executable internal workflow run-task` for one task in its own process group and
+/// streams its progress lines. A non-zero exit becomes an error with the end of its stderr.
+pub fn spawn_task_runner(
+    executable: &Path,
+    data_dir: &Path,
+    project_id: ProjectId,
+    task_id: TaskId,
+) -> Result<TaskRunnerHandle, IntegrationError> {
+    let io_error = |source| IntegrationError::Io {
+        tool: "task runner",
+        source,
+    };
+    let mut command = Command::new(executable);
+    command
+        .arg("--data-dir")
+        .arg(data_dir)
+        .args(["internal", "workflow", "run-task"])
+        .arg(project_id.0.to_string())
+        .arg(task_id.0.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    let mut child = command.spawn().map_err(io_error)?;
+    let process_group = Some(child.id());
+    let stdout = child.stdout.take().ok_or_else(|| {
+        io_error(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "runner stdout was not piped",
+        ))
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        io_error(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "runner stderr was not piped",
+        ))
+    })?;
+    let (events_tx, events) = mpsc::channel();
+    let (finished_tx, finished) = mpsc::channel();
+    let errors = thread::spawn(move || {
+        let mut text = String::new();
+        let _ = io::Read::read_to_string(&mut io::BufReader::new(stderr), &mut text);
+        text
+    });
+    thread::spawn(move || {
+        for line in io::BufRead::lines(io::BufReader::new(stdout)).map_while(Result::ok) {
+            if !line.trim().is_empty() {
+                let _ = events_tx.send(line);
+            }
+        }
+        let status = child.wait();
+        let errors = errors.join().unwrap_or_default();
+        let outcome = match status {
+            Ok(status) if status.success() => Ok(()),
+            Ok(status) => {
+                let lines = errors.lines().collect::<Vec<_>>();
+                let tail = lines[lines.len().saturating_sub(5)..].join("\n");
+                Err(if tail.trim().is_empty() {
+                    format!("the task runner exited with {status}")
+                } else {
+                    tail
+                })
+            }
+            Err(error) => Err(format!("could not wait for the task runner: {error}")),
+        };
+        let _ = finished_tx.send(outcome);
+    });
+    Ok(TaskRunnerHandle {
+        events,
+        finished,
+        process_group,
+    })
 }
 
 #[derive(Debug, Error)]
@@ -801,109 +880,6 @@ impl Default for ToolCommands {
 }
 
 impl ToolCommands {
-    pub fn spawn_pi_rpc(&self, mut command: Command) -> Result<PiRpcHandle, IntegrationError> {
-        let mut child = command
-            .spawn()
-            .map_err(|source| IntegrationError::Io { tool: "pi", source })?;
-        let stdin = child.stdin.take().ok_or_else(|| IntegrationError::Io {
-            tool: "pi",
-            source: io::Error::new(io::ErrorKind::BrokenPipe, "Pi stdin was not piped"),
-        })?;
-        let stdout = child.stdout.take().ok_or_else(|| IntegrationError::Io {
-            tool: "pi",
-            source: io::Error::new(io::ErrorKind::BrokenPipe, "Pi stdout was not piped"),
-        })?;
-        let stderr = child.stderr.take().ok_or_else(|| IntegrationError::Io {
-            tool: "pi",
-            source: io::Error::new(io::ErrorKind::BrokenPipe, "Pi stderr was not piped"),
-        })?;
-        let (input, input_rx) = mpsc::channel();
-        let (events_tx, events) = mpsc::channel();
-        let (finished_tx, finished) = mpsc::channel();
-        let input_from_reader = input.clone();
-
-        thread::spawn(move || {
-            let writer = thread::spawn(move || {
-                let mut stdin = BufWriter::new(stdin);
-                while let Ok(message) = input_rx.recv() {
-                    let command = match message {
-                        PiRpcInput::Abort => r#"{"type":"abort"}"#,
-                        PiRpcInput::Shutdown => break,
-                    };
-                    if writeln!(stdin, "{command}")
-                        .and_then(|()| stdin.flush())
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-            });
-            let stderr_reader = thread::spawn(move || {
-                let mut contents = String::new();
-                let _ = BufReader::new(stderr).read_to_string(&mut contents);
-                contents
-            });
-
-            let mut settled = false;
-            for line in BufReader::new(stdout).lines() {
-                let line = match line {
-                    Ok(line) => line,
-                    Err(error) => {
-                        let _ = events_tx.send(format!("Pi RPC stdout error: {error}"));
-                        break;
-                    }
-                };
-                let Ok(record) = serde_json::from_str::<serde_json::Value>(&line) else {
-                    let _ = events_tx.send("Pi RPC emitted invalid JSON".to_owned());
-                    continue;
-                };
-                match record.get("type").and_then(serde_json::Value::as_str) {
-                    Some("agent_settled") => {
-                        settled = true;
-                        let _ = events_tx.send("Pi workflow settled".to_owned());
-                        let _ = input_from_reader.send(PiRpcInput::Shutdown);
-                        break;
-                    }
-                    Some("extension_error") => {
-                        let message = record
-                            .get("error")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or("Pi extension error");
-                        let _ = events_tx.send(message.to_owned());
-                    }
-                    Some("response")
-                        if record.get("success") == Some(&serde_json::Value::Bool(false)) =>
-                    {
-                        let message = record
-                            .get("error")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or("Pi RPC command failed");
-                        let _ = events_tx.send(message.to_owned());
-                    }
-                    _ => {}
-                }
-            }
-            let _ = input_from_reader.send(PiRpcInput::Shutdown);
-            let _ = writer.join();
-            let stderr = stderr_reader.join().unwrap_or_default();
-            let result = match child.wait() {
-                Ok(status) if status.success() => Ok(()),
-                Ok(status) => Err(format!("Pi exited with {status}: {}", stderr.trim())),
-                Err(error) => Err(format!("could not wait for Pi: {error}")),
-            };
-            if !settled && result.is_ok() {
-                let _ = events_tx.send("Pi exited before the workflow settled".to_owned());
-            }
-            let _ = finished_tx.send(result);
-        });
-
-        Ok(PiRpcHandle {
-            events,
-            finished,
-            input,
-        })
-    }
-
     pub fn with_paths(pi: PathBuf, herdr: PathBuf, openspec: PathBuf, git: PathBuf) -> Self {
         Self {
             pi,
@@ -926,15 +902,19 @@ impl ToolCommands {
         &self,
         repository: &Path,
         skill: &Path,
+        model: Option<&str>,
         prompt: &str,
         timeout: Duration,
     ) -> Result<String, IntegrationError> {
-        let args = [
+        let mut args = vec![
             OsString::from("--tools"),
             "read,grep,find,ls".into(),
             "--skill".into(),
             skill.into(),
         ];
+        if let Some(model) = model {
+            args.extend(["--model".into(), model.into()]);
+        }
         self.run_one_shot_pi(repository, &args, prompt, timeout, "planner")
     }
 
@@ -1058,52 +1038,6 @@ impl ToolCommands {
 
     pub fn missing_required_tools(&self) -> Vec<RequiredTool> {
         missing_required_tools_with(|tool| self.is_available(tool))
-    }
-
-    pub fn pi_rpc_command(
-        &self,
-        extension: &Path,
-        worktree: &Path,
-        data_dir: &Path,
-        executable_path: &Path,
-        project_id: ProjectId,
-        task_id: TaskId,
-    ) -> Result<Command, IntegrationError> {
-        for (name, path) in [
-            ("extension", extension),
-            ("worktree", worktree),
-            ("data directory", data_dir),
-            ("Cronos executable", executable_path),
-        ] {
-            if !path.is_absolute() {
-                return Err(IntegrationError::RelativePath(name));
-            }
-        }
-        let mut command = Command::new(&self.pi);
-        command
-            .args([
-                OsStr::new("--mode"),
-                OsStr::new("rpc"),
-                OsStr::new("--no-session"),
-                OsStr::new("--no-extensions"),
-                // Read-only file access plus the Cronos workflow tools; no shell, edit, or write.
-                OsStr::new("--tools"),
-                OsStr::new(ORCHESTRATOR_TOOLS),
-                OsStr::new("--no-mcp"),
-                OsStr::new("--no-skills"),
-                OsStr::new("--no-context-files"),
-            ])
-            .arg("--extension")
-            .arg(extension)
-            .current_dir(worktree)
-            .env("CRONOS_AI_BIN", executable_path)
-            .env("CRONOS_AI_DATA_DIR", data_dir)
-            .env("CRONOS_PROJECT_ID", project_id.0.to_string())
-            .env("CRONOS_TASK_ID", task_id.0.to_string())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        Ok(command)
     }
 
     pub fn herdr_split_pane(&self, worktree: &Path) -> Result<String, IntegrationError> {
@@ -1432,16 +1366,6 @@ fn last_line(output: &[u8]) -> Option<String> {
         .map(str::trim)
         .rfind(|line| !line.is_empty())
         .map(str::to_owned)
-}
-
-const ORCHESTRATOR_TOOLS: &str = "read,cronos_task_state,cronos_agent_profiles,cronos_run_step";
-const WORKFLOW_EXTENSION: &str = include_str!("../extensions/cronos-workflow.ts");
-
-/// Writes the embedded workflow extension to the data directory so the binary does not
-/// depend on its source checkout. Rewrites the file only when its content differs.
-pub fn install_workflow_extension(data_dir: &Path) -> io::Result<PathBuf> {
-    let directory = ensure_real_directory(&data_dir.join("extensions"))?;
-    install_embedded_file(&directory, "cronos-workflow.ts", WORKFLOW_EXTENSION)
 }
 
 /// Atomically writes `content` to `directory/file_name` unless the file already holds it. Refuses
@@ -2034,6 +1958,7 @@ mod tests {
             .run_planner(
                 &repository,
                 Path::new("/skills/planning/SKILL.md"),
+                Some("provider/planner"),
                 "Plan it",
                 Duration::from_secs(10),
             )
@@ -2055,6 +1980,8 @@ mod tests {
         }
         let tools_at = args.iter().position(|arg| *arg == "--tools").unwrap();
         assert_eq!(args[tools_at + 1], "read,grep,find,ls");
+        let model_at = args.iter().position(|arg| *arg == "--model").unwrap();
+        assert_eq!(args[model_at + 1], "provider/planner");
         let skill_at = args.iter().position(|arg| *arg == "--skill").unwrap();
         assert_eq!(args[skill_at + 1], "/skills/planning/SKILL.md");
         assert_eq!(&args[args.len() - 2..], ["--", "Plan it"]);
@@ -2067,6 +1994,53 @@ mod tests {
             .unwrap(),
             fs::canonicalize(&repository).unwrap()
         );
+    }
+
+    #[test]
+    fn a_task_runner_reports_progress_lines_and_its_outcome() {
+        let temp = tempfile::tempdir().unwrap();
+        let runner = temp.path().join("runner");
+        fs::write(
+            &runner,
+            "#!/bin/sh\necho \"$@\" > \"$(dirname \"$0\")/runner-args\"\necho 'code-review: planning the agents'\necho 'code-review: 2 agents running'\n[ -f \"$(dirname \"$0\")/fail\" ] && { echo 'task failed: reviewer crashed' >&2; exit 1; }\nexit 0\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&runner).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&runner, permissions).unwrap();
+        let project = crate::model::ProjectId::new();
+        let task = crate::model::TaskId::new();
+
+        let handle = super::spawn_task_runner(&runner, temp.path(), project, task).unwrap();
+        assert_eq!(
+            handle
+                .finished
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap(),
+            Ok(())
+        );
+        let events = handle.events.try_iter().collect::<Vec<_>>();
+        assert_eq!(
+            events,
+            [
+                "code-review: planning the agents",
+                "code-review: 2 agents running"
+            ]
+        );
+        let args = fs::read_to_string(temp.path().join("runner-args")).unwrap();
+        assert!(args.contains(&format!(
+            "internal workflow run-task {} {}",
+            project.0, task.0
+        )));
+        assert!(args.starts_with("--data-dir "));
+
+        fs::write(temp.path().join("fail"), "").unwrap();
+        let handle = super::spawn_task_runner(&runner, temp.path(), project, task).unwrap();
+        let outcome = handle
+            .finished
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        assert!(outcome.unwrap_err().contains("reviewer crashed"));
     }
 
     #[test]
@@ -2104,7 +2078,13 @@ mod tests {
         let tools =
             ToolCommands::with_paths(failing.clone(), failing.clone(), failing, "git".into());
         let error = tools
-            .run_planner(temp.path(), Path::new("/s"), "p", Duration::from_secs(10))
+            .run_planner(
+                temp.path(),
+                Path::new("/s"),
+                None,
+                "p",
+                Duration::from_secs(10),
+            )
             .unwrap_err();
         assert!(error.to_string().contains("no credentials"), "{error}");
 
@@ -2117,6 +2097,7 @@ mod tests {
             .run_planner(
                 temp.path(),
                 Path::new("/s"),
+                None,
                 "p",
                 Duration::from_millis(300),
             )
@@ -2245,104 +2226,6 @@ fi
             .run_git(&[OsStr::new("status"), OsStr::new("--short")])
             .unwrap();
         assert!(String::from_utf8(git.stdout).unwrap().contains("<--short>"));
-    }
-
-    #[test]
-    fn pi_rpc_host_drains_events_until_the_agent_settles() {
-        let temp = tempfile::tempdir().unwrap();
-        let fake = temp.path().join("fake-pi");
-        fs::write(
-            &fake,
-            "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"agent_settled\"}'\n",
-        )
-        .unwrap();
-        let mut permissions = fs::metadata(&fake).unwrap().permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(&fake, permissions).unwrap();
-        let tools = ToolCommands::with_paths(
-            fake,
-            PathBuf::from("herdr"),
-            PathBuf::from("openspec"),
-            PathBuf::from("git"),
-        );
-        let command = tools
-            .pi_rpc_command(
-                Path::new("/extension.ts"),
-                temp.path(),
-                temp.path(),
-                Path::new("/cronos-ai"),
-                crate::model::ProjectId::new(),
-                crate::model::TaskId::new(),
-            )
-            .unwrap();
-        let handle = tools.spawn_pi_rpc(command).unwrap();
-        assert_eq!(
-            handle
-                .events
-                .recv_timeout(std::time::Duration::from_secs(2))
-                .unwrap(),
-            "Pi workflow settled"
-        );
-        assert!(
-            handle
-                .finished
-                .recv_timeout(std::time::Duration::from_secs(2))
-                .unwrap()
-                .is_ok()
-        );
-    }
-
-    #[test]
-    fn pi_rpc_command_uses_project_extension_without_shell() {
-        let temp = tempfile::tempdir().unwrap();
-        let pi = PathBuf::from("pi");
-        let commands = ToolCommands::with_paths(
-            pi.clone(),
-            PathBuf::from("herdr"),
-            PathBuf::from("openspec"),
-            PathBuf::from("git"),
-        );
-        let command = commands
-            .pi_rpc_command(
-                PathBuf::from("/project/extensions/workflow.ts").as_path(),
-                temp.path(),
-                PathBuf::from("/tmp/cronos data").as_path(),
-                PathBuf::from("/usr/bin/cronos-ai").as_path(),
-                crate::model::ProjectId::new(),
-                crate::model::TaskId::new(),
-            )
-            .unwrap();
-        assert_eq!(command.get_program(), OsStr::new("pi"));
-        assert_eq!(
-            command.get_args().collect::<Vec<_>>(),
-            [
-                OsStr::new("--mode"),
-                OsStr::new("rpc"),
-                OsStr::new("--no-session"),
-                OsStr::new("--no-extensions"),
-                OsStr::new("--tools"),
-                OsStr::new("read,cronos_task_state,cronos_agent_profiles,cronos_run_step"),
-                OsStr::new("--no-mcp"),
-                OsStr::new("--no-skills"),
-                OsStr::new("--no-context-files"),
-                OsStr::new("--extension"),
-                OsStr::new("/project/extensions/workflow.ts"),
-            ]
-        );
-        assert_eq!(command.get_current_dir(), Some(temp.path()));
-        assert_eq!(command.get_envs().count(), 4);
-    }
-
-    #[test]
-    fn embedded_workflow_extension_is_installed_into_the_data_directory() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = super::install_workflow_extension(temp.path()).unwrap();
-        assert_eq!(path, temp.path().join("extensions/cronos-workflow.ts"));
-        let installed = fs::read_to_string(&path).unwrap();
-        assert!(installed.contains("cronos_run_step"));
-        fs::write(&path, "stale").unwrap();
-        super::install_workflow_extension(temp.path()).unwrap();
-        assert_eq!(fs::read_to_string(&path).unwrap(), installed);
     }
 
     #[test]

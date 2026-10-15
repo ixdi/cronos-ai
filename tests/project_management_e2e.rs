@@ -496,3 +496,26 @@ fn the_agent_prioritizer_is_configured_and_consulted_from_the_cli() {
     assert_eq!(ranked["order"][0]["id"], docs.as_str());
     assert_eq!(ranked["reason"], "Docs unblock the launch");
 }
+
+#[test]
+fn the_planner_model_is_set_validated_and_cleared_from_the_cli() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("data");
+    let project_id = id(&cronos(&data, &["project", "create", "Planned"]).unwrap());
+
+    let set = cronos(
+        &data,
+        &["project", "set-planner-model", &project_id, "provider/jev"],
+    )
+    .unwrap();
+    assert_eq!(set["planner_model"], "provider/jev");
+    assert!(
+        cronos(
+            &data,
+            &["project", "set-planner-model", &project_id, "bad;model"]
+        )
+        .is_err()
+    );
+    let cleared = cronos(&data, &["project", "set-planner-model", &project_id]).unwrap();
+    assert!(cleared["planner_model"].is_null());
+}

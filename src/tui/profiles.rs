@@ -134,10 +134,10 @@ impl EditorField {
     fn help(self) -> &'static str {
         match self {
             Self::Id => {
-                "Stable name the orchestrator uses to pick this profile for an agent. Lowercase letters, digits, - and _, starting with a letter."
+                "Stable name the step planner uses to pick this profile for an agent. Lowercase letters, digits, - and _, starting with a letter."
             }
             Self::Description => {
-                "Shown to the orchestrator when it chooses a profile. Say what kind of agent this is for."
+                "Shown to the step planner when it chooses a profile. Say what kind of agent this is for."
             }
             Self::Steps => "Workflow steps whose agents may use this profile.",
             Self::Model => {

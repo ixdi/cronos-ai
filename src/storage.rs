@@ -390,6 +390,7 @@ mod tests {
             sandbox: false,
             prioritizer: Default::default(),
             prioritizer_model: None,
+            planner_model: None,
             created_at_unix_secs: 1,
             updated_at_unix_secs: 1,
         }

@@ -223,6 +223,7 @@ impl ProjectManager {
             sandbox: false,
             prioritizer: Default::default(),
             prioritizer_model: None,
+            planner_model: None,
             created_at_unix_secs: now,
             updated_at_unix_secs: now,
         };
@@ -483,6 +484,7 @@ impl ProjectManager {
             .run_planner(
                 &repository,
                 &skill,
+                project.planner_model.as_deref(),
                 &planning_prompt(&project, &tasks),
                 timeout,
             )
@@ -971,6 +973,21 @@ impl ProjectManager {
             )
             .map_err(ProjectError::Prioritizer)?;
         Ok(Some(parse_ranking(&answer, &startable)?))
+    }
+
+    /// Sets the model the task planner and the step planner run on; `None` uses Pi's default.
+    pub fn set_project_planner_model(
+        &self,
+        project_id: ProjectId,
+        model: Option<String>,
+    ) -> Result<Project, ProjectError> {
+        let _write = self.store.lock_writes()?;
+        let mut project = self.store.load_project(project_id)?;
+        project.planner_model = model;
+        project.updated_at_unix_secs = now_unix_secs()?;
+        project.validate()?;
+        self.store.save_project(&project)?;
+        Ok(project)
     }
 
     /// Chooses how the next task is picked; `model` names the agent prioritizer's model.
