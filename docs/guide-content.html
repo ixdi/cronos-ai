@@ -37,16 +37,20 @@
 				<p class="small" style="margin-top:12px">At startup, Cronos-AI checks for required tools and prompts if any are missing. It does not install tools automatically.</p>
 			</article>
 			<article class="card blue">
-				<h3>Create a project and task</h3>
-				<pre><code>cargo build --release
-./target/release/cronos-ai project create demo \
+				<h3>Work from the dashboard</h3>
+				<a href="./agent-profiles.png"><img class="tui-shot" src="./agent-profiles.png" alt="The Cronos-AI dashboard editing an agent profile: its ID, description, workflow steps, model, time limit, skills, extensions, and MCP settings, with help for the focused field."></a>
+				<p class="small" style="margin-top:10px">Create projects and tasks, plan tasks from requirements, start and review work, and manage agent profiles in the TUI. Every form checks its input before saving.</p>
+				<details class="cli-option">
+					<summary>Prefer the command line?</summary>
+					<pre><code>./target/release/cronos-ai project create demo \
   --repository /path/to/repository
 ./target/release/cronos-ai project set-check-command \
   &lt;PROJECT_ID&gt; -- ./scripts/check.sh
 ./target/release/cronos-ai task create &lt;PROJECT_ID&gt; \
   "Build the feature" --priority high</code></pre>
-				<p class="small">Use the project ID printed by <code>project create</code>. The repository needs a committed <code>openspec/</code>
-					directory, and the check command runs without a shell after verification. The task command prints its task ID as JSON.</p>
+					<p class="small">Each command prints JSON with the new IDs. The repository needs a committed <code>openspec/</code>
+						directory, and the check command runs without a shell after verification.</p>
+				</details>
 			</article>
 		</div>
 		<ol class="steps" style="margin-top:22px">
@@ -58,11 +62,14 @@
 			choose the project with <kbd>Enter</kbd>; on its task list press <kbd>s</kbd>
 			to start the next ready task. Press <kbd>b</kbd>
 			to switch between the table and a kanban board; both show the project's progress. Press <kbd>g</kbd>
-			to list the project's requirements and <kbd>p</kbd> to have a read-only planner propose the tasks that cover them; <kbd>y</kbd> creates them.</span></li>
+			to list the project's requirements and <kbd>p</kbd>
+			to have a read-only planner propose the tasks that cover them; <kbd>y</kbd>
+			creates them.</span></li>
 			<li><span><strong>Follow the task:</strong>
 			open it with <kbd>Enter</kbd>. The details page shows its status, step and elapsed time, worktree, branch, OpenSpec change, decisions, and agent activity. Press <kbd>v</kbd>
 			for the review view, which ends with each changed file's diff; <kbd>]</kbd>
-			and <kbd>[</kbd> jump between files.</span></li>
+			and <kbd>[</kbd>
+			jump between files.</span></li>
 		</ol>
 		<p class="small" style="margin-top:18px">You can also create a project from the TUI: press <kbd>n</kbd>
 			on the project list, enter its required name and optional description, Git repository path, and check command, then press <kbd>Enter</kbd>. Use <kbd>Tab</kbd>
@@ -94,13 +101,15 @@
 			<article class="card"><h3>3. Approve and complete</h3><p>Final-code approval unlocks documentation. Rust archives the OpenSpec change, makes one documentation commit, and merges locally, or pushes the merge or opens a pull request when the project publishes that way. A merge conflict returns the task to code generation.</p></article>
 		</div>
 		<div class="notice" role="note"><strong>Local by default:</strong>
-		Cronos-AI pushes nothing unless the project's publish mode is <code>push</code> or <code>pull-request</code> (<code>cronos-ai project set-publish</code>). With <code>cronos-ai project set-releases on</code>, each local merge is also tagged as the next semantic version and added to <code>CHANGELOG.md</code>. A failed push or pull request stops the task with Error; retry the step once the cause is fixed.</div>
+		Cronos-AI pushes nothing unless the project's publish mode is <code>push</code>
+		or <code>pull-request</code>
+		(<code>cronos-ai project set-publish</code>). With <code>cronos-ai project set-releases on</code>, each local merge is also tagged as the next semantic version and added to <code>CHANGELOG.md</code>. A failed push or pull request stops the task with Error; retry the step once the cause is fixed.</div>
 		<div class="feature-actions">
-			<a class="button secondary" href="../design/workflow.drawio" download>Download editable draw.io source</a>
-			<a class="button secondary" href="../design/workflow.png">Open full-size preview</a>
+			<a class="button secondary" href="https://github.com/ixdi/cronos-ai/raw/main/design/workflow.drawio">Download editable draw.io source</a>
+			<a class="button secondary" href="./workflow.png">Open full-size preview</a>
 		</div>
 		<figure class="feature-preview">
-			<img src="../design/workflow.png" alt="A project fans out to independent feature tracks; each track proceeds through specs, build, verify, and human approval.">
+			<img src="./workflow.png" alt="A project fans out to independent feature tracks; each track proceeds through specs, build, verify, and human approval.">
 			<figcaption>Each feature track runs one task through its steps; a project runs as many tracks as its parallel capacity allows.</figcaption>
 		</figure>
 	</section>
@@ -144,7 +153,7 @@
 	<section id="architecture" aria-labelledby="architecture-title">
 		<div class="section-intro">
 			<div class="eyebrow">04 · Architecture</div>
-			<h2 id="architecture-title">Rust owns state and drives each task · Pi plans and works · Herdr runs agents · OpenSpec as one source of truth</h2>
+			<h2 id="architecture-title">Rust drives · Pi plans and builds · Herdr runs agents · OpenSpec specifies</h2>
 			<p>The boundary is intentional: a one-shot Pi planner may only read the worktree and propose each step's agents, and the agents may only write their result files; the Rust host runs the steps and alone validates and persists status transitions, approvals, and worktree operations.</p>
 		</div>
 		<div class="diagram-frame">
@@ -266,7 +275,8 @@
 			<article class="card blue">
 				<h3>Agent resource profiles</h3>
 				<p>Press <kbd>p</kbd>
-					on the project list to create, edit, and delete agent profiles: named sets of Pi skills, extensions, and optional MCP configs for specific workflow steps, stored in <code>agent-profiles.json</code> in Cronos-AI's data directory. The step planner sees the eligible profile IDs; Rust validates each assignment before Herdr starts workers.</p>
+					on the project list to create, edit, and delete agent profiles: named sets of Pi skills, extensions, and optional MCP configs for specific workflow steps, stored in <code>agent-profiles.json</code>
+					in Cronos-AI's data directory. The step planner sees the eligible profile IDs; Rust validates each assignment before Herdr starts workers.</p>
 				<p class="small">A profile can also set the worker's <code>model</code>
 					and <code>timeout_minutes</code>. Every worker loads Cronos-AI's built-in skill for its step; unprofiled workers load no optional user resources. MCP configs remain separate, and Cronos-AI never installs user resources or runs arbitrary shell hooks. See the <a href="agent-profiles.html">profile setup guide</a>
 					and <a href="../examples/agent-profiles.json">sample catalog</a>.</p>
@@ -287,24 +297,34 @@
 
 	<section id="cli" aria-labelledby="cli-title">
 		<div class="section-intro">
-			<div class="eyebrow">06 · CLI reference</div>
+			<div class="eyebrow">06 · Projects and tasks</div>
 			<h2 id="cli-title">Manage projects and the ready queue</h2>
-			<p>CLI commands print JSON records. Use the returned UUIDs for later commands. Starting and supervising a workflow happens in the dashboard.</p>
+			<p>Projects and their tasks live in the dashboard: create them, start ready work, and follow every task from one screen.</p>
 		</div>
-		<pre><code>cronos-ai [--data-dir DIR] project create &lt;name&gt; [--description TEXT] [--repository PATH]
-cronos-ai [--data-dir DIR] project set-repository &lt;project-id&gt; --repository PATH
+		<figure class="feature-preview">
+			<img src="./tui-tasks.png" alt="The Cronos-AI task list for a Storefront project with sample data: one completed task, two in progress at code review and final approval, one error, and two pending, with a progress summary and the keyboard shortcuts.">
+			<figcaption>A project's task list with sample data. Up to three tasks run at a time, and the summary shows progress, average completion time, and errors.</figcaption>
+		</figure>
+		<p class="small" style="margin-top:14px">On the project list, <kbd>n</kbd>
+			creates a project and <kbd>Enter</kbd>
+			opens its tasks. There, <kbd>n</kbd>
+			adds a task, <kbd>s</kbd>
+			starts ready tasks up to the project's capacity, <kbd>b</kbd>
+			switches to the kanban board, and <kbd>g</kbd>
+			opens the requirements and the task planner.</p>
+		<details class="cli-option">
+			<summary>Prefer the command line?</summary>
+			<p class="small">Every project and task action is also a CLI command that prints JSON; supervising a running workflow still happens in the dashboard.</p>
+			<pre><code>cronos-ai [--data-dir DIR] project create &lt;name&gt; [--description TEXT] [--repository PATH]
 cronos-ai [--data-dir DIR] project set-check-command &lt;project-id&gt; -- PROGRAM [ARGS...]
 cronos-ai [--data-dir DIR] project list
-cronos-ai [--data-dir DIR] project select &lt;project-id&gt;
-cronos-ai [--data-dir DIR] project update &lt;project-id&gt; [--name NAME] [--description TEXT]
-cronos-ai [--data-dir DIR] project archive &lt;project-id&gt;
-
-cronos-ai [--data-dir DIR] task create &lt;project-id&gt; &lt;title&gt; [--description TEXT] [--priority low|medium|high] [--depends-on TASK_ID[,TASK_ID...]]
+cronos-ai [--data-dir DIR] task create &lt;project-id&gt; &lt;title&gt; [--priority low|medium|high] [--depends-on TASK_ID[,TASK_ID...]]
 cronos-ai [--data-dir DIR] task list &lt;project-id&gt;
 cronos-ai [--data-dir DIR] task ready &lt;project-id&gt;</code></pre>
-		<p class="small">If <code>--data-dir</code>
-			is omitted, Cronos-AI checks <code>CRONOS_AI_DATA_DIR</code>, then uses the platform's user data directory. <code>project select</code>
-			reports a selection; it does not persist one globally.</p>
+			<p class="small">If <code>--data-dir</code>
+				is omitted, Cronos-AI checks <code>CRONOS_AI_DATA_DIR</code>, then uses the platform's user data directory. See <a href="project-task-commands.html">project and task commands</a>
+				for every command, including publishing, releases, parallel tasks, requirements, and planning.</p>
+		</details>
 	</section>
 
 	<section aria-labelledby="more-title">

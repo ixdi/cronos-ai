@@ -88,8 +88,13 @@
 			.feature-preview { margin: 18px 0 0; padding: 12px; background: #f7fafc; border: 1px solid var(--line); border-radius: 14px; }
 			.feature-preview img { display: block; width: 100%; height: auto; border-radius: 8px; }
 			.feature-preview figcaption { padding: 10px 4px 2px; color: var(--muted); font-size: .88rem; }
+			.card .tui-shot { display: block; width: 100%; height: auto; margin-top: 4px; border-radius: 8px; border: 1px solid var(--line); }
+			.cli-option { margin-top: 14px; border: 1px solid var(--line); border-radius: 10px; background: #f7fafc; }
+			.cli-option summary { padding: 10px 14px; color: #2e4962; font-weight: 700; cursor: pointer; }
+			.cli-option[open] summary { border-bottom: 1px solid var(--line); }
+			.cli-option > :not(summary) { margin: 12px 14px; }
 			.feature-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 15px; }
-			.status { display: inline-block; padding: 3px 9px; border-radius: 999px; background: #edf2f7; color: #304a62; font-size: .82rem; font-weight: 750; }
+			.status { display: inline-block; padding: 3px 9px; border-radius: 999px; background: #edf2f7; color: #304a62; font-size: .82rem; font-weight: 750; white-space: nowrap; }
 			.status.error { background: #fff0ed; color: #8a3829; }
 			.status.done { background: #e7f6ec; color: #25613a; }
 			.status.active { background: #e5f5f1; color: #08635f; }
