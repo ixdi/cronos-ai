@@ -55,7 +55,7 @@
 				<h3>Requirements</h3>
 				<ul>
 					<li>A Rust toolchain to build Cronos-AI.</li>
-					<li>Pi as agent orchestrator and worker.</li>
+					<li>Pi as worker and one-shot planner; a Rust runner drives each task.</li>
 					<li>Herdr to run and supervise the agents.</li>
 					<li>OpenSpec for the specifications.</li>
 					<li>Git, plus a project repository with a committed <code>openspec/</code>
@@ -181,7 +181,7 @@
   tui["Cronos CLI / TUI&lt;br/&gt;Review view · approvals&lt;br/&gt;resume · recovery"]
 
   subgraph host["Cronos Rust host · state owner"]
-    queue["Ready queue&lt;br/&gt;Priority + dependencies&lt;br/&gt;One active task in MVP"]
+    queue["Ready queue&lt;br/&gt;Priority or agent prioritizer&lt;br/&gt;parallel tracks up to capacity"]
     state[("Project + task JSON&lt;br/&gt;check command · revisions")]
     workspace["Per-attempt worktree&lt;br/&gt;local branch · .cronos/ excluded"]
     stepRunner["Workflow engine&lt;br/&gt;Per-task step lock · agent limits&lt;br/&gt;prompt contract · JSON results&lt;br/&gt;worktree checks"]
@@ -192,13 +192,13 @@
     merger["Local merge&lt;br/&gt;dirty base waits"]
   end
 
-  subgraph pi["Pi orchestrator · read-only"]
-    session["Pi RPC session&lt;br/&gt;read + Cronos tools only"]
-    extension["Embedded workflow extension"]
+  subgraph orchestration["Rust orchestration"]
+    runner["Task runner process&lt;br/&gt;one per active task&lt;br/&gt;loops until a gate"]
+    planner["Step planner&lt;br/&gt;one-shot read-only Pi&lt;br/&gt;default plan on failure"]
   end
 
   subgraph herdr["Herdr agent runtime"]
-    agents["Step agents&lt;br/&gt;1 writer, or 1-4 review / verify / docs&lt;br/&gt;per-step time limits&lt;br/&gt;one pane each, closed after"]
+    agents["Step agents&lt;br/&gt;1 spec author; 1-4 writers, reviewers,&lt;br/&gt;verifiers, or docs agents&lt;br/&gt;per-step time limits; one pane each"]
   end
 
   openspec["OpenSpec&lt;br/&gt;one change per task"]
@@ -211,12 +211,13 @@
   tui --&gt;|create project, task, check command| queue
   queue --&gt;|load and persist| state
   queue --&gt;|assign attempt| workspace
-  queue --&gt;|launch or resume task| session
+  queue --&gt;|launch or resume task| runner
   workspace --&gt; repository
 
-  session --&gt; extension
-  extension --&gt;|read-only task query| state
-  extension --&gt;|run current step| stepRunner
+  runner --&gt;|task, findings, notes| state
+  runner --&gt;|plan each agent step| planner
+  planner --&gt;|read only| workspace
+  runner --&gt;|validated agents| stepRunner
   stepRunner --&gt;|prompt + Rust contract| agents
   agents --&gt;|JSON result files; wait for all| stepRunner
   agents --&gt;|work in assigned worktree| workspace
@@ -233,7 +234,7 @@
   approval --&gt;|continue or revise| stepRunner
   stepRunner --&gt;|documentation agents done| archive
   archive --&gt; workspace
-  archive --&gt;|after Pi settles| merger
+  archive --&gt;|after the runner stops| merger
   merger &lt;--&gt;|worktree and local merge| repository
   merger --&gt;|success| completed
   merger -. conflict: abort .-&gt; revision
@@ -257,9 +258,9 @@
   classDef loop fill:#FFF8E8,stroke:#C9962B,color:#4B371F,stroke-width:1.5px
 
   class human,tui person
-  class queue,state,workspace,stepRunner,check,approval,archive,merger host
+  class queue,state,workspace,stepRunner,check,approval,archive,merger,runner host
   class revision loop
-  class session,extension,agents agent
+  class planner,agents agent
   class openspec,repository external
   class completed success
   class error,rejected failure</pre>
@@ -306,7 +307,7 @@
 			</article>
 		</div>
 		<div class="notice" role="note"><strong>Model access:</strong>
-		the orchestrator can read the worktree and use only read-only task-state and profile queries plus a narrow current-step command. Rust validates task status, step order, profile IDs, approval gates, agent inputs, and worktree paths, and appends its own rules to every agent prompt.</div>
+		a Rust runner drives each task, and its one-shot step planner can only read the worktree to propose each step's agents. Rust validates task status, step order, profile IDs, approval gates, agent inputs, and worktree paths, and appends its own rules to every agent prompt.</div>
 		<div class="notice" role="note"><strong>Trust boundary:</strong>
 		workers are full Pi sessions with shell access and your operating-system permissions. Cronos tools cannot change task status or approvals, but a worker's shell could. Turn on a project's write sandbox (<code>cronos-ai project set-sandbox</code>) to keep workers from writing Cronos data, the base checkout, and Git hooks; review the work at the approval gates, and run Cronos-AI as a dedicated user or in a container for untrusted work. See <a href="integration-contracts.html#trust-boundary">integration contracts</a>.</div>
 		<p>For field-level details, see <a href="storage-format.html">storage format</a>, <a href="workflow-states.html">workflow states</a>, <a href="monitoring.html">TUI controls</a>, and <a href="integration-contracts.html">integration contracts</a>.</p>

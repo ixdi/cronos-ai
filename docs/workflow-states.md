@@ -60,7 +60,7 @@ If the task branch changes the check program itself (for example `./scripts/chec
 | Retry step | **t** | Error becomes In Progress at the failed step, keeping the attempt, worktree, and approvals. Use it for transient failures. |
 | Retry | **r** | Discards the attempt's worktree and branch and starts a new attempt at specification generation. Downstream outputs are not reused. |
 | Clarify | **c** | Like Retry, plus context that the new specifications must apply. The new specifications need approval again. |
-| Resume | **s** | For an In Progress task with no running orchestrator (for example, after the TUI was closed). Cancels unfinished agents, then retries the merge or restarts Pi at the current step. |
+| Resume | **s** | For an In Progress task with no running task runner (for example, after the TUI was closed). Cancels unfinished agents, then retries the merge or restarts Pi at the current step. |
 | Abandon | **a** | Sets Rejected and records a reason. |
 
 Agent, approval, and recovery history stays tagged by attempt; the removed worktree path is kept in recovery history.

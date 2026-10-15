@@ -3,7 +3,7 @@
 Cronos-AI is an opinionated, human-supervised software factory. It takes the tasks of a project through an ordered workflow of AI agents and human approval gates, and produces committed, verified, and documented changes in a local Git repository.
 
 - **Rust** owns persisted state, validated transitions, human approvals, and all Git and OpenSpec bookkeeping.
-- **Pi** orchestrates the active task.
+- **Rust** also runs each active task's step loop; a one-shot **Pi** step planner proposes each step's agents, and Pi agents do the work.
 - **Herdr** runs the worker agents.
 - **OpenSpec** holds each task's specifications.
 
@@ -14,7 +14,7 @@ The OpenSpec specs in `openspec/specs/` are the source of truth for behavior. Th
 ## Execution model
 
 - **Implemented:**
-  - Up to the project's parallel capacity (1 by default, at most 8) of tasks run at the same time, each on its own feature track: worktree, branch, step lock, Herdr agents, and Pi orchestrator. Tasks in Error keep their track until recovered or abandoned.
+  - Up to the project's parallel capacity (1 by default, at most 8) of tasks run at the same time, each on its own feature track: worktree, branch, step lock, Herdr agents, and task runner. Tasks in Error keep their track until recovered or abandoned.
   - Scheduling is conflict-aware: a ready task that shares a requirement with an active task waits. Dependencies still order related work, store changes and merges are serialized, and a merge conflict returns the later task to code generation.
   - Within a task, steps run sequentially; a step starts only after the previous one finishes.
   - Independent agents within one step run in parallel.
@@ -34,8 +34,8 @@ The OpenSpec specs in `openspec/specs/` are the source of truth for behavior. Th
 | Component | Role | Status |
 |---|---|---|
 | Rust CLI + Ratatui TUI | Projects, tasks, monitoring, approvals, recovery, review view | Implemented |
-| Pi (RPC mode) | Orchestrator with the read-only `read` tool and the Cronos workflow tools only | Implemented |
-| Embedded Pi extension | `cronos_task_state`, `cronos_agent_profiles`, `cronos_run_step`; written to the data directory at launch | Implemented |
+| Rust task runner | One `internal workflow run-task` process per active task; loops over agent steps until a gate | Implemented |
+| Step planner (one-shot Pi) | Read-only Pi run in the worktree that proposes each step's agents; a default plan runs when it fails | Implemented |
 | Herdr | Runs each worker as a Pi agent in its own pane; prompt, wait with time limit, read, cancel | Implemented |
 | OpenSpec | One change per task; validated after specs and archived during documentation | Implemented |
 | Git worktrees | One worktree and branch per attempt; local merge only | Implemented |
@@ -127,7 +127,7 @@ Pi keeps running agent steps until the task reaches an approval gate, local merg
 | Retry step (`t`) | Error becomes In Progress at the failed step, keeping the attempt, worktree, and approvals. Use it for transient failures. Like `r`, `c`, and `s`, it first stops stale agents and waits for any running step process. |
 | Retry (`r`) | Discards the attempt's worktree and branch and starts a new attempt at specification generation. Downstream outputs are not reused. |
 | Clarify (`c`) | Like Retry, plus context that the new specifications must apply. The new specifications need approval again. |
-| Resume (`s`) | For an In Progress task with no running orchestrator (for example, after the TUI was closed). Marks unfinished agents as cancelled, then retries the merge or restarts Pi at the current step. |
+| Resume (`s`) | For an In Progress task with no running task runner (for example, after the TUI was closed). Marks unfinished agents as cancelled, then retries the merge or restarts Pi at the current step. |
 | Abandon (`a`) | Sets Rejected and records a reason. |
 
 ## OpenSpec usage

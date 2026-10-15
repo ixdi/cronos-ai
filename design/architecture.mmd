@@ -7,7 +7,7 @@ flowchart LR
   tui["Cronos CLI / TUI<br>Review view · approvals<br>resume · recovery"]
 
   subgraph host["Cronos Rust host · state owner"]
-    queue["Ready queue<br>Priority + dependencies<br>One active task in MVP"]
+    queue["Ready queue<br>Priority or agent prioritizer<br>parallel tracks up to capacity"]
     state[("Project + task JSON<br>check command · revisions")]
     workspace["Per-attempt worktree<br>local branch · .cronos/ excluded"]
     stepRunner["Workflow engine<br>Per-task step lock · agent limits<br>prompt contract · JSON results<br>worktree checks"]
@@ -18,13 +18,13 @@ flowchart LR
     merger["Local merge<br>dirty base waits"]
   end
 
-  subgraph pi["Pi orchestrator · read-only"]
-    session["Pi RPC session<br>read + Cronos tools only"]
-    extension["Embedded workflow extension"]
+  subgraph orchestration["Rust orchestration"]
+    runner["Task runner process<br>one per active task<br>loops until a gate"]
+    planner["Step planner<br>one-shot read-only Pi<br>default plan on failure"]
   end
 
   subgraph herdr["Herdr agent runtime"]
-    agents["Step agents<br>1 writer, or 1-4 review / verify / docs<br>per-step time limits<br>one pane each, closed after"]
+    agents["Step agents<br>1 spec author; 1-4 writers, reviewers,<br>verifiers, or docs agents<br>per-step time limits; one pane each"]
   end
 
   openspec["OpenSpec<br>one change per task"]
@@ -37,12 +37,13 @@ flowchart LR
   tui -->|create project, task, check command| queue
   queue -->|load and persist| state
   queue -->|assign attempt| workspace
-  queue -->|launch or resume task| session
+  queue -->|launch or resume task| runner
   workspace --> repository
 
-  session --> extension
-  extension -->|read-only task query| state
-  extension -->|run current step| stepRunner
+  runner -->|task, findings, notes| state
+  runner -->|plan each agent step| planner
+  planner -->|read only| workspace
+  runner -->|validated agents| stepRunner
   stepRunner -->|prompt + Rust contract| agents
   agents -->|JSON result files; wait for all| stepRunner
   agents -->|work in assigned worktree| workspace
@@ -59,7 +60,7 @@ flowchart LR
   approval -->|continue or revise| stepRunner
   stepRunner -->|documentation agents done| archive
   archive --> workspace
-  archive -->|after Pi settles| merger
+  archive -->|after the runner stops| merger
   merger <-->|worktree and local merge| repository
   merger -->|success| completed
   merger -. conflict: abort .-> revision
@@ -83,9 +84,9 @@ flowchart LR
   classDef loop fill:#FFF8E8,stroke:#C9962B,color:#4B371F,stroke-width:1.5px
 
   class human,tui person
-  class queue,state,workspace,stepRunner,check,approval,archive,merger host
+  class queue,state,workspace,stepRunner,check,approval,archive,merger,runner host
   class revision loop
-  class session,extension,agents agent
+  class planner,agents agent
   class openspec,repository external
   class completed success
   class error,rejected failure

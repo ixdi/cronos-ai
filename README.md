@@ -6,7 +6,7 @@
 
 Cronos-AI is a supervised software factory for taking a project task through a structured, agent-assisted workflow.
 
-It is an opinionated stack with a Rust TUI. Rust owns persisted task state and human approval gates, Pi orchestrates workflow steps, and Herdr manages the agents that work in parallel within a step.
+It is an opinionated stack with a Rust TUI. Rust owns persisted task state, human approval gates, and the step loop of every task, a one-shot Pi planner proposes each step's agents, and Herdr runs the Pi agents that work in parallel within a step.
 
 > [!NOTE]
 > Tasks run one at a time by default; set a project's parallel capacity to run several on separate feature tracks. Which task starts next follows its priority, or an agent prioritizer on the model you choose (`project set-prioritizer <ID> agent --model <model>`).
@@ -31,7 +31,7 @@ The diagram shows several feature tracks running in parallel, each through the s
 On startup, Cronos-AI checks for required tools and prompts if any are missing; it does not install them automatically.
 
 - A Rust toolchain to build the CLI and TUI.
-- Pi agent to orchestrate workflow steps.
+- Pi for the worker agents and the one-shot planners.
 - Herdr to manage agents and their work. Tasks only run when Cronos-AI is inside a Herdr session.
 - OpenSpec as single source of truth. Each project repository needs a committed `openspec/` directory (`openspec init`, then commit).
 - A Git repository and a check command (for example `./scripts/check.sh`) for each project that will run tasks. Each attempt gets its own worktree.
@@ -113,7 +113,7 @@ mkdir -p "$profile_dir"
 cp examples/agent-profiles.json "$profile_dir/agent-profiles.json"
 ```
 
-Profiles have stable IDs and list the workflow steps where they can be selected. The orchestrator discovers eligible profiles for each step; workers load only their assigned profile resources. MCP profiles point to a separate Pi-compatible server config and an explicitly installed adapter. Cronos-AI does not install tools or run arbitrary profile shell hooks. See the [agent profile guide](docs/agent-profiles.md) and [sample catalog](examples/agent-profiles.json) for the format and details.
+Profiles have stable IDs and list the workflow steps where they can be selected. The step planner sees the eligible profiles for each step; workers load only their assigned profile resources. MCP profiles point to a separate Pi-compatible server config and an explicitly installed adapter. Cronos-AI does not install tools or run arbitrary profile shell hooks. See the [agent profile guide](docs/agent-profiles.md) and [sample catalog](examples/agent-profiles.json) for the format and details.
 
 ## Development
 

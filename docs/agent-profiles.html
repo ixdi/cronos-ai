@@ -100,7 +100,7 @@
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="st">&quot;timeout_minutes&quot;</span><span class="er">:</span> <span class="dv">15</span></span></code></pre></div>
 <p>The complete, schema-valid catalog is in <a href="../examples/agent-profiles.json"><code>examples/agent-profiles.json</code></a>. Copy it and add actual resource paths; an empty profile is valid but adds no optional resources.</p>
 <h2 id="assign-a-profile-to-an-agent">Assign a profile to an agent</h2>
-<p>During a workflow step, the Pi orchestrator can call <code>cronos_agent_profiles</code> to see profiles allowed for that step. It may select a profile by adding its <code>id</code> as <code>profile_id</code> to that agent's plan. Different agents in the same step can use different profiles. Rust rejects unknown IDs or profiles assigned to another step before launching any sibling agent.</p>
+<p>Before a workflow step, the step planner is shown the profiles allowed for that step. It may select a profile by adding its <code>id</code> as <code>profile_id</code> to that agent's plan. Different agents in the same step can use different profiles. Rust rejects unknown IDs or profiles assigned to another step before launching any sibling agent.</p>
 <p>Every worker also loads Cronos-AI's built-in skill for its step, before any profile skills:</p>
 <table>
 <thead>

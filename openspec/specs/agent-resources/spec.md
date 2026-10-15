@@ -22,15 +22,15 @@ Cronos-AI SHALL load user-editable agent profiles from its data directory. Each 
 - **THEN** the worker starts with that model and is canceled if it exceeds that limit
 
 ### Requirement: Identify profiles for workflow agents
-The orchestrator SHALL be able to discover profiles permitted for the current workflow step and SHALL identify a selected profile by its stable identifier in an agent plan. Rust SHALL reject a profile that is missing, unknown, or not permitted for that step before starting that agent.
+The step planner SHALL be shown the profiles permitted for the current workflow step and SHALL identify a selected profile by its stable identifier in an agent plan. Rust SHALL reject a plan with a profile that is missing, unknown, or not permitted for that step before starting any agent; the step then runs its default plan.
 
 #### Scenario: Select a profile for a step
-- **WHEN** the orchestrator requests available profiles for the current step
-- **THEN** Cronos-AI returns only profiles permitted for that step
+- **WHEN** the step planner is asked to plan a step
+- **THEN** its prompt lists only the profiles permitted for that step
 
 #### Scenario: Reject a profile assigned to another step
 - **WHEN** an agent plan selects a profile that is not permitted for its step
-- **THEN** Cronos-AI reports a validation error and does not start any agent in that step
+- **THEN** Cronos-AI rejects the plan before starting any agent in that step and runs the default plan instead
 
 ### Requirement: Load only profile-assigned Pi resources
 A worker SHALL receive only its step's built-in skill and the skills, extensions, and MCP configuration assigned by its selected profile, in addition to Cronos-AI's required workflow behavior. Cronos-AI SHALL pass resource values as separate arguments, SHALL NOT install user-configured resources automatically, and SHALL fail before launch when a configured resource is missing or invalid.

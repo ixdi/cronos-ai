@@ -7,7 +7,7 @@ Defines how Cronos-AI executes tasks, one at a time or in parallel up to a proje
 ## Requirements
 
 ### Requirement: Parallel agents within a step
-The system SHALL run independent sub-agents assigned to the same workflow step in parallel and SHALL wait for their results before advancing to the next step. Specification generation SHALL use exactly one agent; code generation, code review, verification, and documentation SHALL accept one to four agents. Parallel code-generation agents SHALL each work in a separate worktree, and their branches SHALL be merged into the task branch in agent-name order. Code review and verification agents SHALL NOT modify the task worktree.
+The system SHALL run a step's independent agents in parallel and wait for all their results before advancing. Specification generation SHALL use exactly one agent; the other agent steps SHALL accept one to four. Parallel code-generation agents SHALL each work in a separate worktree, with their branches merged into the task branch in agent-name order. Code review and verification agents SHALL NOT modify the task worktree.
 
 #### Scenario: Run independent agents
 - **WHEN** multiple independent agents are assigned to one step
@@ -172,18 +172,11 @@ The specification and code generation agents SHALL commit their changes with Con
 - **THEN** the step fails and the task is marked Error
 
 ### Requirement: Orchestrator context and agent contract
-The orchestrator SHALL have read-only access to the task worktree and only the Cronos workflow tools. The system SHALL append a fixed contract to every agent prompt that states the result file, the OpenSpec change, the step's write rules, and that agents must not push or edit Cronos state.
+The step planner SHALL have read-only access to the task worktree and no tools that change files. The system SHALL append a fixed contract to every agent prompt that states the result file, the OpenSpec change, the step's write rules, and that agents must not push or edit Cronos state.
 
 #### Scenario: Agent receives the contract
 - **WHEN** an agent is launched for a step
 - **THEN** its prompt ends with the system-defined contract for that step
-
-### Requirement: Relocatable orchestrator extension
-The workflow extension SHALL be embedded in the Cronos-AI binary and written to the data directory before the orchestrator starts, so the binary does not depend on its source checkout.
-
-#### Scenario: Run a moved binary
-- **WHEN** the release binary runs outside its build directory
-- **THEN** the orchestrator loads the extension from the data directory
 
 ### Requirement: Documented worker trust boundary
 Documentation SHALL state that workers run with the user's operating-system permissions, that Cronos tools cannot change status or approvals but a worker's shell could, what the optional write sandbox protects and what it does not, and SHALL recommend a dedicated user or container for untrusted work.
@@ -328,3 +321,21 @@ When a project uses the agent prioritizer and more than one task may start, the 
 #### Scenario: Show the order without starting
 - **WHEN** a user asks for the start order
 - **THEN** the system shows the startable tasks in the order they would start, with the agent's reason when the agent ranked them, and starts nothing
+
+### Requirement: Rust step orchestration
+The system SHALL run each active task's agent steps from a Rust task runner that, for every agent step, obtains the agents from the step planner, validates them as a run-step request, runs the step, and stops at a human approval, the local merge, Error, or Completed.
+
+#### Scenario: Plan and run consecutive steps
+- **WHEN** a task's runner starts at code generation and every step succeeds
+- **THEN** code generation, code review, and verification each run with the planner's agents and the runner stops at final approval
+
+### Requirement: Step planner with a default plan
+The step planner SHALL be a one-shot, read-only agent in the task worktree whose prompt carries the task, the step's limits, the profiles allowed in the step, and the current attempt's findings, revision note, and clarification. When it fails, times out, or proposes an invalid plan, the system SHALL run a default one-agent plan carrying the same context and SHALL record why.
+
+#### Scenario: Planner unavailable
+- **WHEN** the step planner fails or proposes agents that break the step's rules
+- **THEN** the step runs a default plan with the task's context and the reason is recorded in the task's activity
+
+#### Scenario: Findings reach the next writer
+- **WHEN** review requested changes in the current attempt and the task returns to code generation
+- **THEN** the step planner's prompt, and the default plan's prompt, include those findings

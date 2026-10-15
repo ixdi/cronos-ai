@@ -70,7 +70,7 @@ The complete, schema-valid catalog is in [`examples/agent-profiles.json`](../exa
 
 ## Assign a profile to an agent
 
-During a workflow step, the Pi orchestrator can call `cronos_agent_profiles` to see profiles allowed for that step. It may select a profile by adding its `id` as `profile_id` to that agent's plan. Different agents in the same step can use different profiles. Rust rejects unknown IDs or profiles assigned to another step before launching any sibling agent.
+Before a workflow step, the step planner is shown the profiles allowed for that step. It may select a profile by adding its `id` as `profile_id` to that agent's plan. Different agents in the same step can use different profiles. Rust rejects unknown IDs or profiles assigned to another step before launching any sibling agent.
 
 Every worker also loads Cronos-AI's built-in skill for its step, before any profile skills:
 
