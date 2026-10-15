@@ -12,7 +12,7 @@ A project needs a local Git repository with a committed `openspec/` directory (`
 |---|---|---|---|
 | 1 | `specification-generation` | exactly 1 | The agent writes and commits OpenSpec change `cronos-<first 8 hex of the task ID>`. The worktree must be clean and `openspec validate <change> --strict` must pass. |
 | 2 | `specification-approval` | human | Approve to continue, or request a revision with a note to return to step 1. |
-| 3 | `code-generation` | exactly 1 | The agent implements the change with tests and commits. The worktree must be clean. |
+| 3 | `code-generation` | 1-4 | One agent implements the change with tests and commits; the worktree must be clean. Several agents each commit their own part in a separate worktree, and Rust merges their branches in agent-name order; a conflict resets the task branch and returns the task to code generation. |
 | 4 | `code-review` | 1-4 in parallel | Read-only: the commit and file status must not change. |
 | 5 | `verification` | 1-4 in parallel | Read-only. Then Rust runs the project check command in the worktree. |
 | 6 | `final-approval` | human | Approve to continue, or request a revision with a note to return to step 3. |

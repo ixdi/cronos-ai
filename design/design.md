@@ -72,7 +72,7 @@ Each step lists its agents and the rules Rust enforces.
 |---|---|---|---|
 | 1 | `specification-generation` | exactly 1 | The agent writes OpenSpec change `cronos-<task-id prefix>` and commits it. The worktree must be clean. `openspec validate --strict` must pass. |
 | 2 | `specification-approval` | human | Approve to continue to step 3, or request a revision with a note to return to step 1. |
-| 3 | `code-generation` | exactly 1 | The agent implements the change with tests and commits (Conventional Commit). The worktree must be clean. |
+| 3 | `code-generation` | 1-4 | One agent implements the change with tests and commits (Conventional Commit) in the task worktree, which must be left clean. Several agents each work on their own part in a separate worktree and branch (`attempt-<n>-agents/<agent>`); Rust merges their branches into the task branch in agent-name order. A conflict resets the task branch and sends the task back to code generation. |
 | 4 | `code-review` | 1-4 in parallel | Read-only: Rust compares `HEAD` and file status before and after the step. |
 | 5 | `verification` | 1-4 in parallel | Read-only. Afterwards, Rust runs the project check command in the worktree (the project's check time limit, 60 minutes by default and 1 to 480 when set; the whole process group is stopped on timeout). The check must not leave new files in the worktree. |
 | 6 | `final-approval` | human | Approve to continue to step 7, or request a revision with a note to return to step 3. |
@@ -173,5 +173,4 @@ Pi keeps running agent steps until the task reaches an approval gate, local merg
 ## Future work
 
 - Jev-based prioritization.
-- Parallel code-generation agents in separate sub-worktrees with a deterministic merge.
 - Sandboxed workers.

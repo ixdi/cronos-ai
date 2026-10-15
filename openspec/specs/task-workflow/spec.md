@@ -7,15 +7,23 @@ Defines how Cronos-AI executes tasks, one at a time or in parallel up to a proje
 ## Requirements
 
 ### Requirement: Parallel agents within a step
-The system SHALL run independent sub-agents assigned to the same workflow step in parallel and SHALL wait for their results before advancing to the next step. Specification and code generation SHALL use exactly one agent; code review, verification, and documentation SHALL accept one to four agents. Code review and verification agents SHALL NOT modify the task worktree.
+The system SHALL run independent sub-agents assigned to the same workflow step in parallel and SHALL wait for their results before advancing to the next step. Specification generation SHALL use exactly one agent; code generation, code review, verification, and documentation SHALL accept one to four agents. Parallel code-generation agents SHALL each work in a separate worktree, and their branches SHALL be merged into the task branch in agent-name order. Code review and verification agents SHALL NOT modify the task worktree.
 
 #### Scenario: Run independent agents
 - **WHEN** multiple independent agents are assigned to one step
 - **THEN** they run concurrently and the workflow waits for their results before advancing
 
 #### Scenario: Reject parallel writers
-- **WHEN** an agent plan assigns more than one agent to specification or code generation
+- **WHEN** an agent plan assigns more than one agent to specification generation
 - **THEN** the system rejects the plan before starting any agent
+
+#### Scenario: Merge parallel writers
+- **WHEN** two code-generation agents each commit their part in their own worktree
+- **THEN** both branches are merged into the task branch in agent-name order and their worktrees and branches are removed
+
+#### Scenario: Conflicting writers
+- **WHEN** two code-generation agents change the same lines
+- **THEN** the task branch is left as it was before the merge, the conflict is recorded, and the task returns to code generation
 
 #### Scenario: Read-only step modifies the worktree
 - **WHEN** a code review or verification step finishes and the worktree's commit or file status changed

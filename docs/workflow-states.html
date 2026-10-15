@@ -56,8 +56,8 @@
 <tr>
 <td>3</td>
 <td><code>code-generation</code></td>
-<td>exactly 1</td>
-<td>The agent implements the change with tests and commits. The worktree must be clean.</td>
+<td>1-4</td>
+<td>One agent implements the change with tests and commits; the worktree must be clean. Several agents each commit their own part in a separate worktree, and Rust merges their branches in agent-name order; a conflict resets the task branch and returns the task to code generation.</td>
 </tr>
 <tr>
 <td>4</td>
