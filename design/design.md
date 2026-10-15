@@ -161,6 +161,7 @@ Pi keeps running agent steps until the task reaches an approval gate, local merg
   - the attempt number and the automatic-revision count;
   - the worktree path.
 - **Writes and validation:** writes are atomic; records are validated when loaded; symlinks and oversized files are rejected.
+- **Concurrent changes:** every change reads, checks, and saves its records under an exclusive store lock (`<data>/locks/store.lock`), so the TUI, the CLI, and a running step never overwrite each other. When a task's step lock is also needed, it is taken first.
 - **Code:** never stored in JSON. It lives in the attempt worktree under the data directory.
 - **Future:** project requirements, prompts, and resource snapshots per task.
 

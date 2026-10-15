@@ -126,3 +126,18 @@ Task details SHALL show the worktree path, branch, OpenSpec change, and the curr
 #### Scenario: See step progress
 - **WHEN** a user views a running task
 - **THEN** the elapsed time of the current step is visible
+
+### Requirement: Serialized store changes
+The system SHALL apply every change to stored projects and tasks as one exclusive read-check-save operation, so that changes made at the same time by different processes or threads never overwrite each other. The system SHALL release this exclusivity when its holder exits, including after a crash, and SHALL NOT require it for reads.
+
+#### Scenario: Create tasks at the same time
+- **WHEN** two processes add tasks to the same project at the same time
+- **THEN** both tasks are saved and the project lists both of them
+
+#### Scenario: Change a task while a workflow step records activity
+- **WHEN** a user abandons or approves a task while a workflow step records agent activity for it
+- **THEN** the stored task keeps both the user's change and the recorded activity, or the later operation is rejected because the task is no longer in a state that allows it
+
+#### Scenario: Holder crashes
+- **WHEN** a process exits while changing the store
+- **THEN** the next change made by another process proceeds without manual cleanup

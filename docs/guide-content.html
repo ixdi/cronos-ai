@@ -252,7 +252,7 @@
 				<h3>State and storage</h3>
 				<p>Rust stores project and task records as JSON, writes updates atomically, validates records on load, and retains bounded step activity, approval, and recovery history.</p>
 				<p class="small">Project records are under <code>projects/&lt;project-id&gt;/project.json</code>; task records are under <code>projects/&lt;project-id&gt;/tasks/&lt;task-id&gt;.json</code>. A per-task lock under <code>locks/</code>
-					makes sure only one process runs a task's step at a time.</p>
+					makes sure only one process runs a task's step at a time, and a store lock keeps the TUI, the CLI, and running steps from overwriting each other's changes.</p>
 			</article>
 			<article class="card teal">
 				<h3>Git safety</h3>

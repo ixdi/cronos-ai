@@ -83,5 +83,4 @@ Rule applied: the specs and code are the truth. `design/design.md` now labels ev
 - The check-command limit is a fixed 60 minutes.
 - Code generation uses a single agent per step.
 - The live smoke test must be run manually in an isolated Herdr session.
-- Store writes are not locked against each other; the per-task step lock keeps the workflow and recovery from overlapping, but a TUI and CLI editing the same project at once can still race.
 - No default per-step worker skills are shipped; agents use only what the user's profiles assign.
