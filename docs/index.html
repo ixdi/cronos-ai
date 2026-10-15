@@ -172,8 +172,8 @@
 	<section id="architecture" aria-labelledby="architecture-title">
 		<div class="section-intro">
 			<div class="eyebrow">04 · Architecture</div>
-			<h2 id="architecture-title">Rust owns state · Pi orchestrates · Herdr runs agents · Openspec as one source of truth</h2>
-			<p>The boundary is intentional: the model can query task state and request the current step, but only the Rust host validates and persists status transitions, approvals, and worktree operations.</p>
+			<h2 id="architecture-title">Rust owns state and drives each task · Pi plans and works · Herdr runs agents · OpenSpec as one source of truth</h2>
+			<p>The boundary is intentional: a one-shot Pi planner may only read the worktree and propose each step's agents, and the agents may only write their result files; the Rust host runs the steps and alone validates and persists status transitions, approvals, and worktree operations.</p>
 		</div>
 		<div class="diagram-frame">
 			<pre class="mermaid" id="architecture-diagram">flowchart LR
@@ -309,7 +309,7 @@
 		<div class="notice" role="note"><strong>Model access:</strong>
 		a Rust runner drives each task, and its one-shot step planner can only read the worktree to propose each step's agents. Rust validates task status, step order, profile IDs, approval gates, agent inputs, and worktree paths, and appends its own rules to every agent prompt.</div>
 		<div class="notice" role="note"><strong>Trust boundary:</strong>
-		workers are full Pi sessions with shell access and your operating-system permissions. Cronos tools cannot change task status or approvals, but a worker's shell could. Turn on a project's write sandbox (<code>cronos-ai project set-sandbox</code>) to keep workers from writing Cronos data, the base checkout, and Git hooks; review the work at the approval gates, and run Cronos-AI as a dedicated user or in a container for untrusted work. See <a href="integration-contracts.html#trust-boundary">integration contracts</a>.</div>
+		workers are full Pi sessions with shell access and your operating-system permissions. Cronos gives agents no way to change task status or approvals, but a worker's shell could. Turn on a project's write sandbox (<code>cronos-ai project set-sandbox</code>) to keep workers from writing Cronos data, the base checkout, and Git hooks; review the work at the approval gates, and run Cronos-AI as a dedicated user or in a container for untrusted work. See <a href="integration-contracts.html#trust-boundary">integration contracts</a>.</div>
 		<p>For field-level details, see <a href="storage-format.html">storage format</a>, <a href="workflow-states.html">workflow states</a>, <a href="monitoring.html">TUI controls</a>, and <a href="integration-contracts.html">integration contracts</a>.</p>
 	</section>
 
