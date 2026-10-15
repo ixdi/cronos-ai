@@ -84,6 +84,7 @@ enum ProjectField {
     Publish,
     Releases,
     Parallel,
+    Sandbox,
 }
 
 impl ProjectField {
@@ -96,13 +97,14 @@ impl ProjectField {
             Self::CheckTimeout => Self::Publish,
             Self::Publish => Self::Releases,
             Self::Releases => Self::Parallel,
-            Self::Parallel => Self::Name,
+            Self::Parallel => Self::Sandbox,
+            Self::Sandbox => Self::Name,
         }
     }
 
     fn previous(self) -> Self {
         match self {
-            Self::Name => Self::Parallel,
+            Self::Name => Self::Sandbox,
             Self::Description => Self::Name,
             Self::Repository => Self::Description,
             Self::CheckCommand => Self::Repository,
@@ -110,6 +112,7 @@ impl ProjectField {
             Self::Publish => Self::CheckTimeout,
             Self::Releases => Self::Publish,
             Self::Parallel => Self::Releases,
+            Self::Sandbox => Self::Parallel,
         }
     }
 }
@@ -123,6 +126,7 @@ struct ProjectForm {
     publish: PublishMode,
     releases: bool,
     max_parallel_tasks: u32,
+    sandbox: bool,
     focus: ProjectField,
 }
 
@@ -137,6 +141,7 @@ impl Default for ProjectForm {
             publish: PublishMode::Local,
             releases: false,
             max_parallel_tasks: 1,
+            sandbox: false,
             focus: ProjectField::Name,
         }
     }
@@ -151,7 +156,10 @@ impl ProjectForm {
             ProjectField::Repository => Some(&mut self.repository),
             ProjectField::CheckCommand => Some(&mut self.check_command),
             ProjectField::CheckTimeout => Some(&mut self.check_timeout),
-            ProjectField::Publish | ProjectField::Releases | ProjectField::Parallel => None,
+            ProjectField::Publish
+            | ProjectField::Releases
+            | ProjectField::Parallel
+            | ProjectField::Sandbox => None,
         }
     }
 
@@ -1046,6 +1054,7 @@ impl Dashboard {
                     match form.focus {
                         ProjectField::Publish => form.cycle_publish(key == KeyCode::Right),
                         ProjectField::Releases => form.releases = key == KeyCode::Right,
+                        ProjectField::Sandbox => form.sandbox = key == KeyCode::Right,
                         ProjectField::Parallel => {
                             form.max_parallel_tasks = if key == KeyCode::Right {
                                 (form.max_parallel_tasks + 1).min(MAX_PARALLEL_TASKS)
@@ -1196,6 +1205,13 @@ impl Dashboard {
             {
                 self.error = Some(format!(
                     "Project created, but releases could not be turned on: {error}"
+                ));
+            }
+            if form.sandbox
+                && let Err(error) = self.manager.set_project_sandbox(project.id, true)
+            {
+                self.error = Some(format!(
+                    "Project created, but the worker sandbox could not be turned on: {error}"
                 ));
             }
             if form.max_parallel_tasks != 1
@@ -3041,6 +3057,15 @@ fn draw_dialog(frame: &mut Frame, app: &Dashboard) {
                     "Parallel tasks",
                     &format!("{} at a time", form.max_parallel_tasks),
                 ),
+                selector_field(
+                    form.focus == ProjectField::Sandbox,
+                    "Sandbox",
+                    if form.sandbox {
+                        "on: protect data, checkout, hooks"
+                    } else {
+                        "off"
+                    },
+                ),
             ],
             "Tab/Shift+Tab fields  ←/→ choose  Enter create  Esc cancel",
         ),
@@ -4235,6 +4260,28 @@ mod tests {
         app.handle_key(KeyCode::Enter);
         let backend = render(&app);
         rendered_text_position(&backend, "Factory · tasks · up to 3 at a time");
+    }
+
+    #[test]
+    fn project_form_turns_the_worker_sandbox_on() {
+        let root = tempfile::tempdir().unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+        app.handle_key(KeyCode::Char('n'));
+        for character in "Guarded".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        for _ in 0..8 {
+            app.handle_key(KeyCode::Tab);
+        }
+        let backend = render(&app);
+        rendered_text_position(&backend, "› Sandbox");
+        rendered_text_position(&backend, "◀ off ▶");
+        app.handle_key(KeyCode::Right);
+        let backend = render(&app);
+        rendered_text_position(&backend, "◀ on: protect data, checkout, hooks ▶");
+        app.handle_key(KeyCode::Enter);
+        assert!(matches!(app.dialog, Dialog::None), "{:?}", app.error);
+        assert!(app.manager.list_projects().unwrap()[0].sandbox);
     }
 
     #[test]

@@ -414,3 +414,17 @@ fn parallel_capacity_is_set_and_validated_from_the_cli() {
     let error = cronos(&data, &["project", "set-parallelism", &project_id, "9"]).unwrap_err();
     assert!(error.contains("between 1 and 8"), "{error}");
 }
+
+#[test]
+fn the_worker_sandbox_is_switched_on_and_off_from_the_cli() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("data");
+    let project = cronos(&data, &["project", "create", "Guarded"]).unwrap();
+    let project_id = id(&project);
+    assert_eq!(project["sandbox"], false);
+
+    let on = cronos(&data, &["project", "set-sandbox", &project_id, "on"]).unwrap();
+    assert_eq!(on["sandbox"], true);
+    let off = cronos(&data, &["project", "set-sandbox", &project_id, "off"]).unwrap();
+    assert_eq!(off["sandbox"], false);
+}

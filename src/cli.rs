@@ -104,6 +104,12 @@ enum ProjectAction {
         id: String,
         minutes: Option<u32>,
     },
+    /// Run workers in a write sandbox that protects Cronos data, the base checkout, and Git hooks (on), or not (off).
+    SetSandbox {
+        id: String,
+        #[arg(value_enum)]
+        state: SwitchArg,
+    },
     /// Set how many tasks may run at the same time (1-8).
     SetParallelism {
         id: String,
@@ -346,6 +352,12 @@ pub fn run() -> Result<Option<PathBuf>, Box<dyn Error>> {
             }
             ProjectAction::SetCheckCommand { id, command } => {
                 print_json(&manager.set_project_check_command(parse_project_id(&id)?, command)?)?;
+            }
+            ProjectAction::SetSandbox { id, state } => {
+                print_json(&manager.set_project_sandbox(
+                    parse_project_id(&id)?,
+                    matches!(state, SwitchArg::On),
+                )?)?;
             }
             ProjectAction::SetParallelism {
                 id,
