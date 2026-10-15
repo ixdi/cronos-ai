@@ -11,7 +11,10 @@ use tempfile::NamedTempFile;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::model::{ModelError, Project, ProjectId, Task, TaskId};
+use crate::{
+    model::{ModelError, Project, ProjectId, Task, TaskId},
+    planning::Plan,
+};
 
 const MAX_JSON_BYTES: u64 = 1024 * 1024;
 
@@ -256,6 +259,31 @@ impl ProjectStore {
             .into_iter()
             .map(|task_id| self.load_task(project_id, task_id))
             .collect()
+    }
+
+    /// Saves the plan waiting for approval next to the project record.
+    pub fn save_plan(&self, project_id: ProjectId, plan: &Plan) -> Result<(), StoreError> {
+        let path = self.project_directory(project_id, false)?.join("plan.json");
+        if std::fs::symlink_metadata(&path).is_ok() {
+            regular_file_exists(&path)?;
+        }
+        write_json_atomically(&path, plan)
+    }
+
+    pub fn load_plan(&self, project_id: ProjectId) -> Result<Option<Plan>, StoreError> {
+        let path = self.project_directory(project_id, false)?.join("plan.json");
+        if !regular_file_exists(&path)? {
+            return Ok(None);
+        }
+        read_json(&path).map(Some)
+    }
+
+    pub fn delete_plan(&self, project_id: ProjectId) -> Result<(), StoreError> {
+        let path = self.project_directory(project_id, false)?.join("plan.json");
+        if regular_file_exists(&path)? {
+            fs::remove_file(path)?;
+        }
+        Ok(())
     }
 
     fn project_directory(&self, id: ProjectId, create: bool) -> Result<PathBuf, StoreError> {

@@ -16,6 +16,7 @@ use crate::{
         Requirement, RequirementId, RequirementKind, Task, TaskId, TaskStatus, WorkflowStep,
         normalize_text,
     },
+    planning::{Plan, PlanError, parse_plan},
     release::{Version, changelog_section, insert_section, next_version, utc_date},
     storage::{ProjectStore, StoreError},
 };
@@ -109,6 +110,12 @@ pub enum ProjectError {
     DuplicateTask(String),
     #[error("the project has no requirement {0:?}")]
     UnknownRequirement(RequirementId),
+    #[error(transparent)]
+    Plan(#[from] PlanError),
+    #[error("the project has no plan waiting for approval")]
+    NoPendingPlan,
+    #[error("add requirements before planning tasks")]
+    NoRequirements,
 }
 
 /// Exclusive per-task lock held while a workflow step runs. The operating system releases it when
@@ -413,6 +420,82 @@ impl ProjectManager {
         project.validate()?;
         self.store.save_project(&project)?;
         Ok(project)
+    }
+
+    /// Validates the planner's answer against the project and keeps it for human approval. An
+    /// invalid answer is rejected and any earlier pending plan stays as it was.
+    pub fn propose_plan(&self, project_id: ProjectId, answer: &str) -> Result<Plan, ProjectError> {
+        let _write = self.store.lock_writes()?;
+        let project = self.store.load_project(project_id)?;
+        if project.requirements.is_empty() {
+            return Err(ProjectError::NoRequirements);
+        }
+        let tasks = self.store.list_tasks(project_id)?;
+        let mut plan = parse_plan(answer, &project, &tasks)?;
+        plan.created_at_unix_secs = now_unix_secs()?;
+        self.store.save_plan(project_id, &plan)?;
+        Ok(plan)
+    }
+
+    pub fn pending_plan(&self, project_id: ProjectId) -> Result<Option<Plan>, ProjectError> {
+        Ok(self.store.load_plan(project_id)?)
+    }
+
+    pub fn discard_plan(&self, project_id: ProjectId) -> Result<(), ProjectError> {
+        let _write = self.store.lock_writes()?;
+        Ok(self.store.delete_plan(project_id)?)
+    }
+
+    /// Creates the pending plan's tasks, dependencies first, and removes the plan. A planned task
+    /// whose title matches an open task by then reuses that task; requirement links that were
+    /// removed in the meantime are dropped.
+    pub fn apply_plan(&self, project_id: ProjectId) -> Result<Vec<Task>, ProjectError> {
+        let _write = self.store.lock_writes()?;
+        let plan = self
+            .store
+            .load_plan(project_id)?
+            .ok_or(ProjectError::NoPendingPlan)?;
+        let project = self.store.load_project(project_id)?;
+        let mut created: Vec<Option<Task>> = vec![None; plan.tasks.len()];
+        for index in plan.creation_order() {
+            let planned = &plan.tasks[index];
+            let open = self.store.list_tasks(project_id)?.into_iter().find(|task| {
+                !matches!(task.status, TaskStatus::Completed | TaskStatus::Rejected)
+                    && task.title.to_lowercase() == planned.title.to_lowercase()
+            });
+            let task = match open {
+                Some(task) => task,
+                None => {
+                    let dependencies = planned
+                        .depends_on
+                        .iter()
+                        .filter_map(|dependency| created[*dependency].as_ref().map(|task| task.id))
+                        .collect();
+                    let requirement_ids = planned
+                        .requirement_ids
+                        .iter()
+                        .copied()
+                        .filter(|id| {
+                            project
+                                .requirements
+                                .iter()
+                                .any(|requirement| requirement.id == *id)
+                        })
+                        .collect();
+                    self.create_task_for_requirements(
+                        project_id,
+                        planned.title.clone(),
+                        planned.description.clone(),
+                        planned.priority.clone(),
+                        dependencies,
+                        requirement_ids,
+                    )?
+                }
+            };
+            created[index] = Some(task);
+        }
+        self.store.delete_plan(project_id)?;
+        Ok(created.into_iter().flatten().collect())
     }
 
     pub fn create_task(
@@ -1551,6 +1634,104 @@ mod tests {
                 Vec::new(),
             )
             .unwrap();
+    }
+
+    const PLAN_ANSWER: &str = r#"```json
+{"tasks": [
+  {"key": "csv", "title": "Add CSV export", "priority": "high", "depends_on": [], "requirements": ["R1"]},
+  {"key": "fast", "title": "Stream large exports", "description": "Keep memory flat.", "priority": "medium", "depends_on": ["csv"], "requirements": ["R2"]}
+]}
+```"#;
+
+    fn planned_project(manager: &ProjectManager) -> (ProjectId, Vec<crate::model::RequirementId>) {
+        let project = manager.create_project("Planned".to_owned(), None).unwrap();
+        let ids = [
+            ("Users can export CSV", RequirementKind::Functional),
+            (
+                "Exports stream in constant memory",
+                RequirementKind::NonFunctional,
+            ),
+        ]
+        .into_iter()
+        .map(|(text, kind)| {
+            manager
+                .add_requirement(project.id, kind, text.to_owned())
+                .unwrap()
+                .id
+        })
+        .collect();
+        (project.id, ids)
+    }
+
+    #[test]
+    fn an_applied_plan_creates_linked_tasks_in_dependency_order() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(temp.path()).unwrap();
+        let (project_id, requirements) = planned_project(&manager);
+
+        let plan = manager.propose_plan(project_id, PLAN_ANSWER).unwrap();
+        assert_eq!(plan.tasks.len(), 2);
+        assert!(plan.created_at_unix_secs > 0);
+        assert_eq!(manager.pending_plan(project_id).unwrap(), Some(plan));
+        assert!(
+            manager.list_tasks(project_id).unwrap().is_empty(),
+            "nothing before approval"
+        );
+
+        let tasks = manager.apply_plan(project_id).unwrap();
+        assert_eq!(tasks.len(), 2);
+        let csv = tasks
+            .iter()
+            .find(|task| task.title == "Add CSV export")
+            .unwrap();
+        let fast = tasks
+            .iter()
+            .find(|task| task.title == "Stream large exports")
+            .unwrap();
+        assert_eq!(csv.priority, Priority::High);
+        assert_eq!(csv.requirement_ids, vec![requirements[0]]);
+        assert_eq!(fast.dependencies, vec![csv.id]);
+        assert_eq!(fast.description.as_deref(), Some("Keep memory flat."));
+        assert_eq!(manager.pending_plan(project_id).unwrap(), None);
+        assert!(matches!(
+            manager.apply_plan(project_id),
+            Err(ProjectError::NoPendingPlan)
+        ));
+    }
+
+    #[test]
+    fn a_plan_reuses_open_tasks_and_invalid_answers_are_not_kept() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(temp.path()).unwrap();
+        let (project_id, _) = planned_project(&manager);
+        let existing = manager
+            .create_task(
+                project_id,
+                "add csv export".to_owned(),
+                None,
+                Priority::Low,
+                Vec::new(),
+            )
+            .unwrap();
+
+        assert!(matches!(
+            manager.propose_plan(project_id, "I could not decide."),
+            Err(ProjectError::Plan(crate::planning::PlanError::NoPlan))
+        ));
+        assert_eq!(manager.pending_plan(project_id).unwrap(), None);
+
+        manager.propose_plan(project_id, PLAN_ANSWER).unwrap();
+        let tasks = manager.apply_plan(project_id).unwrap();
+        assert_eq!(manager.list_tasks(project_id).unwrap().len(), 2);
+        let fast = tasks
+            .iter()
+            .find(|task| task.title == "Stream large exports")
+            .unwrap();
+        assert_eq!(fast.dependencies, vec![existing.id]);
+
+        manager.propose_plan(project_id, PLAN_ANSWER).unwrap();
+        manager.discard_plan(project_id).unwrap();
+        assert_eq!(manager.pending_plan(project_id).unwrap(), None);
     }
 
     #[test]
