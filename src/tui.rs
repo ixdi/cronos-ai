@@ -28,7 +28,7 @@ use crate::{
     integrations::{GitAdapter, PiRpcHandle, ToolCommands, herdr_session_available},
     model::{
         AgentActivity, AgentStatus, ApprovalDecision, ApprovalGate, Priority, Project,
-        ProjectStatus, Task, TaskId, TaskStatus, WorkflowStep,
+        ProjectStatus, PublishMode, Task, TaskId, TaskStatus, WorkflowStep,
     },
     project::{MAX_AUTOMATIC_REVISIONS, MergeOutcome, ProjectError, ProjectManager},
     workflow::{cancel_interrupted_agents, check_program_changed},
@@ -70,6 +70,7 @@ enum ProjectField {
     Repository,
     CheckCommand,
     CheckTimeout,
+    Publish,
 }
 
 impl ProjectField {
@@ -79,17 +80,19 @@ impl ProjectField {
             Self::Description => Self::Repository,
             Self::Repository => Self::CheckCommand,
             Self::CheckCommand => Self::CheckTimeout,
-            Self::CheckTimeout => Self::Name,
+            Self::CheckTimeout => Self::Publish,
+            Self::Publish => Self::Name,
         }
     }
 
     fn previous(self) -> Self {
         match self {
-            Self::Name => Self::CheckTimeout,
+            Self::Name => Self::Publish,
             Self::Description => Self::Name,
             Self::Repository => Self::Description,
             Self::CheckCommand => Self::Repository,
             Self::CheckTimeout => Self::CheckCommand,
+            Self::Publish => Self::CheckTimeout,
         }
     }
 }
@@ -100,6 +103,7 @@ struct ProjectForm {
     repository: String,
     check_command: String,
     check_timeout: String,
+    publish: PublishMode,
     focus: ProjectField,
 }
 
@@ -111,20 +115,36 @@ impl Default for ProjectForm {
             repository: String::new(),
             check_command: String::new(),
             check_timeout: String::new(),
+            publish: PublishMode::Local,
             focus: ProjectField::Name,
         }
     }
 }
 
 impl ProjectForm {
-    fn focused_value_mut(&mut self) -> &mut String {
+    /// The focused text field; `None` for the publish selector, which ignores typing.
+    fn focused_value_mut(&mut self) -> Option<&mut String> {
         match self.focus {
-            ProjectField::Name => &mut self.name,
-            ProjectField::Description => &mut self.description,
-            ProjectField::Repository => &mut self.repository,
-            ProjectField::CheckCommand => &mut self.check_command,
-            ProjectField::CheckTimeout => &mut self.check_timeout,
+            ProjectField::Name => Some(&mut self.name),
+            ProjectField::Description => Some(&mut self.description),
+            ProjectField::Repository => Some(&mut self.repository),
+            ProjectField::CheckCommand => Some(&mut self.check_command),
+            ProjectField::CheckTimeout => Some(&mut self.check_timeout),
+            ProjectField::Publish => None,
         }
+    }
+
+    fn cycle_publish(&mut self, forward: bool) {
+        let modes = PublishMode::ALL;
+        let index = modes
+            .iter()
+            .position(|mode| *mode == self.publish)
+            .unwrap_or(0);
+        self.publish = if forward {
+            modes[(index + 1).min(modes.len() - 1)]
+        } else {
+            modes[index.saturating_sub(1)]
+        };
     }
 }
 
@@ -750,9 +770,16 @@ impl Dashboard {
             .manager
             .merge_and_complete_task(project_id, task_id, &GitAdapter::default())
         {
-            Ok(MergeOutcome::Completed(_)) => {
-                self.workflow_status =
-                    Some("Task merged locally and completed; nothing was pushed.".to_owned());
+            Ok(MergeOutcome::Completed(task)) => {
+                self.workflow_status = Some(match task.published {
+                    Some(published) => {
+                        format!(
+                            "Task completed and published: {}",
+                            terminal_safe(&published)
+                        )
+                    }
+                    None => "Task merged locally and completed; nothing was pushed.".to_owned(),
+                });
             }
             Ok(MergeOutcome::BaseDirty(path)) => {
                 self.error = Some(format!(
@@ -854,19 +881,28 @@ impl Dashboard {
                 self.error = None;
             }
             KeyCode::Backspace => {
-                if let Dialog::CreateProject(form) = &mut self.dialog {
-                    form.focused_value_mut().pop();
+                if let Dialog::CreateProject(form) = &mut self.dialog
+                    && let Some(value) = form.focused_value_mut()
+                {
+                    value.pop();
                 }
                 self.error = None;
             }
             KeyCode::Char(character) if !character.is_control() => {
-                if let Dialog::CreateProject(form) = &mut self.dialog {
-                    let value = form.focused_value_mut();
-                    if value.chars().count() < 10_000 {
-                        value.push(character);
-                    }
+                if let Dialog::CreateProject(form) = &mut self.dialog
+                    && let Some(value) = form.focused_value_mut()
+                    && value.chars().count() < 10_000
+                {
+                    value.push(character);
                 }
                 self.error = None;
+            }
+            KeyCode::Left | KeyCode::Right => {
+                if let Dialog::CreateProject(form) = &mut self.dialog
+                    && form.focus == ProjectField::Publish
+                {
+                    form.cycle_publish(key == KeyCode::Right);
+                }
             }
             KeyCode::Enter => self.submit_project_creation(),
             _ => {}
@@ -906,9 +942,21 @@ impl Dashboard {
             check_timeout,
             &GitAdapter::default(),
         );
+        self.error = None;
+        // Project creation stays one atomic write; a non-default publish mode is applied right after.
+        let result = result.inspect(|project| {
+            if form.publish != PublishMode::Local
+                && let Err(error) = self
+                    .manager
+                    .set_project_publish(project.id, form.publish, None)
+            {
+                self.error = Some(format!(
+                    "Project created, but its publish mode could not be saved: {error}"
+                ));
+            }
+        });
         match result {
             Ok(project) => {
-                self.error = None;
                 self.refresh_for_ui();
                 self.selected_project = self
                     .projects
@@ -1884,6 +1932,55 @@ fn now_unix_secs() -> u64 {
 }
 
 /// One line showing every workflow step: done, current, or still ahead.
+const PROGRESS_CONNECTOR: &str = " ─ ";
+
+/// Splits the progress line between stages so a wrapped row ends with "─" and the next row
+/// starts with a stage.
+fn wrap_progress(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
+    let connector_style = line
+        .spans
+        .iter()
+        .find(|span| span.content == PROGRESS_CONNECTOR)
+        .map_or_else(Style::default, |span| span.style);
+    let stages = line
+        .spans
+        .into_iter()
+        .filter(|span| span.content != PROGRESS_CONNECTOR)
+        .collect::<Vec<_>>();
+    let trailing = " ─";
+    let mut lines: Vec<Vec<Span<'static>>> = vec![Vec::new()];
+    let mut used = 0;
+    let count = stages.len();
+    for (index, stage) in stages.into_iter().enumerate() {
+        let row = lines.last_mut().expect("there is always a current row");
+        let lead = if row.is_empty() {
+            0
+        } else {
+            PROGRESS_CONNECTOR.chars().count()
+        };
+        // A stage followed by others must leave room for the trailing connector if it wraps.
+        let reserve = if index + 1 < count {
+            trailing.chars().count()
+        } else {
+            0
+        };
+        if !row.is_empty() && used + lead + stage.width() + reserve > width {
+            row.push(Span::styled(trailing, connector_style));
+            lines.push(Vec::new());
+            used = 0;
+        } else if lead > 0 {
+            row.push(Span::styled(PROGRESS_CONNECTOR, connector_style));
+            used += lead;
+        }
+        used += stage.width();
+        lines
+            .last_mut()
+            .expect("there is always a current row")
+            .push(stage);
+    }
+    lines.into_iter().map(Line::from).collect()
+}
+
 fn workflow_progress_line(task: &Task) -> Line<'static> {
     let steps = std::iter::successors(Some(WorkflowStep::SpecificationGeneration), |step| {
         step.next()
@@ -1897,7 +1994,7 @@ fn workflow_progress_line(task: &Task) -> Line<'static> {
     let mut spans = Vec::new();
     for (index, step) in steps.iter().enumerate() {
         if index > 0 {
-            spans.push(Span::styled(" ─ ", Style::default().fg(MUTED)));
+            spans.push(Span::styled(PROGRESS_CONNECTOR, Style::default().fg(MUTED)));
         }
         let label = match step {
             WorkflowStep::SpecificationGeneration => "specs",
@@ -1924,6 +2021,51 @@ fn workflow_progress_line(task: &Task) -> Line<'static> {
             ("○", Style::default().fg(MUTED))
         };
         spans.push(Span::styled(format!("{symbol} {label}"), style));
+    }
+    Line::from(spans)
+}
+
+fn publish_label(mode: PublishMode) -> &'static str {
+    match mode {
+        PublishMode::Local => "local merge only",
+        PublishMode::Push => "merge and push",
+        PublishMode::PullRequest => "pull request",
+    }
+}
+
+/// Where a task's approved work goes, or where it went once published.
+fn publish_target(project: &Project, task: &Task) -> String {
+    if let Some(published) = &task.published {
+        return terminal_safe(published);
+    }
+    let remote = terminal_safe(project.remote_name());
+    match project.publish {
+        PublishMode::Local => "local merge only".to_owned(),
+        PublishMode::Push => format!("push to {remote}"),
+        PublishMode::PullRequest => format!("pull request on {remote}"),
+    }
+}
+
+/// A form row whose value is chosen with ←/→ rather than typed.
+fn selector_field(focused: bool, label: &str, value: &str) -> Line<'static> {
+    let label_style = if focused {
+        Style::default().fg(PRIMARY).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(MUTED)
+    };
+    let mut spans = vec![
+        Span::styled(
+            if focused { "› " } else { "  " },
+            Style::default().fg(PRIMARY).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!("{label:<16}"), label_style),
+    ];
+    if focused {
+        spans.push(Span::styled("◀ ", Style::default().fg(SHORTCUT)));
+    }
+    spans.push(Span::raw(value.to_owned()));
+    if focused {
+        spans.push(Span::styled(" ▶", Style::default().fg(SHORTCUT)));
     }
     Line::from(spans)
 }
@@ -1971,97 +2113,154 @@ fn draw_task_detail(frame: &mut Frame, app: &Dashboard, area: Rect) {
             Style::default().fg(MUTED),
         ));
     }
+    // Border and horizontal padding take two columns on each side.
+    let inner_width = area.width.saturating_sub(4);
+    let progress = wrap_progress(workflow_progress_line(task), usize::from(inner_width));
+    let progress_rows = progress.len() as u16;
     let areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(11),
+            Constraint::Length(12 + progress_rows),
             Constraint::Length(decisions.len().min(6) as u16 + 2),
             Constraint::Min(4),
         ])
         .split(area);
 
-    let mut current_step = terminal_safe(task.current_step.as_deref().unwrap_or("Not started"));
-    if task.status == TaskStatus::InProgress
-        && let Some(elapsed) = step_elapsed(task)
-    {
-        current_step.push_str(&format!(" (running {})", elapsed_label(elapsed)));
-    }
+    let step = terminal_safe(task.current_step.as_deref().unwrap_or("Not started"));
+    let elapsed = (task.status == TaskStatus::InProgress)
+        .then(|| step_elapsed(task))
+        .flatten()
+        .map(|elapsed| format!(" (running {})", elapsed_label(elapsed)))
+        .unwrap_or_default();
+    let left_lines = |step: String| {
+        vec![
+            field("Status", vec![status_badge(&task.status)]),
+            field("Priority", vec![priority_badge(&task.priority)]),
+            field("Step", vec![Span::raw(step)]),
+            field(
+                "Attempt",
+                vec![Span::raw(format!(
+                    "{} · revisions {}/{MAX_AUTOMATIC_REVISIONS}",
+                    task.attempt, task.automatic_revisions
+                ))],
+            ),
+        ]
+    };
+    let approvals = field(
+        "Approvals",
+        vec![
+            Span::raw("specs "),
+            Span::styled(
+                approval_status(task, ApprovalGate::Specifications),
+                Style::default().fg(approval_status_color(task, ApprovalGate::Specifications)),
+            ),
+            Span::styled(" · ", Style::default().fg(MUTED)),
+            Span::raw("final code "),
+            Span::styled(
+                approval_status(task, ApprovalGate::FinalCode),
+                Style::default().fg(approval_status_color(task, ApprovalGate::FinalCode)),
+            ),
+        ],
+    );
+    let change = field("OpenSpec change", vec![Span::raw(task.openspec_change())]);
+    let publish = field(
+        "Publish",
+        vec![Span::raw(
+            app.selected_project()
+                .map(|project| publish_target(project, task))
+                .unwrap_or_default(),
+        )],
+    );
+    let worktree = task.worktree.as_deref().map(terminal_safe);
+    let branch = crate::integrations::GitAdapter::worktree_branch(task.id, task.attempt);
+
+    // Size the columns from their content: the right column keeps the values that must stay
+    // whole (change, approvals, publishing); paths shrink from the start with "…".
+    let inner = usize::from(inner_width);
+    let line_width = |lines: &[&Line]| lines.iter().map(|line| line.width()).max().unwrap_or(0);
+    let right_core = line_width(&[&change, &approvals, &publish]);
+    let right_full = right_core
+        .max("Worktree: ".len() + worktree.as_deref().map_or(11, |path| path.chars().count()))
+        .max("Branch: ".len() + branch.len());
+    let left_full = line_width(
+        &left_lines(format!("{step}{elapsed}"))
+            .iter()
+            .collect::<Vec<_>>(),
+    );
+    let gap = if left_full + right_core + 2 <= inner {
+        2
+    } else {
+        1
+    };
+    let left_width = if left_full + right_full + gap <= inner {
+        left_full
+    } else {
+        left_full
+            .min(inner.saturating_sub(gap + right_core))
+            .max(inner * 3 / 10)
+    };
+    let right_width = inner.saturating_sub(left_width + gap);
+    let left = if left_full <= left_width {
+        left_lines(format!("{step}{elapsed}"))
+    } else {
+        left_lines(step)
+    };
+    let path_width = right_width.saturating_sub("Worktree: ".len()).max(16);
+    let right = vec![
+        field(
+            "Worktree",
+            vec![Span::raw(
+                worktree.map_or("not created".to_owned(), |path| {
+                    truncate_start(&path, path_width)
+                }),
+            )],
+        ),
+        field(
+            "Branch",
+            vec![Span::raw(truncate_start(
+                &branch,
+                right_width.saturating_sub("Branch: ".len()).max(16),
+            ))],
+        ),
+        change,
+        approvals,
+        publish,
+    ];
+
     let overview = panel(terminal_safe(&task.title)).padding(Padding::horizontal(1));
     let inner = overview.inner(areas[0]);
     frame.render_widget(overview, areas[0]);
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(progress_rows),
             Constraint::Length(1),
+            Constraint::Length(5),
             Constraint::Length(1),
-            Constraint::Length(4),
             Constraint::Min(1),
         ])
         .split(inner);
-    frame.render_widget(Paragraph::new(workflow_progress_line(task)), rows[0]);
+    frame.render_widget(Paragraph::new(progress), rows[0]);
     let columns = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
-        .spacing(2)
+        .constraints([Constraint::Length(left_width as u16), Constraint::Fill(1)])
+        .spacing(gap as u16)
         .split(rows[2]);
-    let left = vec![
-        field("Status", vec![status_badge(&task.status)]),
-        field("Priority", vec![priority_badge(&task.priority)]),
-        field("Active step", vec![Span::raw(current_step)]),
-        field(
-            "Attempt",
-            vec![Span::raw(format!(
-                "{}  ·  Automatic revisions: {}/{MAX_AUTOMATIC_REVISIONS}",
-                task.attempt, task.automatic_revisions
-            ))],
-        ),
-    ];
-    let path_width = usize::from(columns[1].width).saturating_sub(12).max(16);
-    let right = vec![
-        field(
-            "Worktree",
-            vec![Span::raw(
-                task.worktree
-                    .as_deref()
-                    .map_or("not created".to_owned(), |path| {
-                        truncate_start(&terminal_safe(path), path_width)
-                    }),
-            )],
-        ),
-        field(
-            "Branch",
-            vec![Span::raw(crate::integrations::GitAdapter::worktree_branch(
-                task.id,
-                task.attempt,
-            ))],
-        ),
-        field("OpenSpec change", vec![Span::raw(task.openspec_change())]),
-        field(
-            "Approvals",
-            vec![
-                Span::raw("specs "),
-                Span::styled(
-                    approval_status(task, ApprovalGate::Specifications),
-                    Style::default().fg(approval_status_color(task, ApprovalGate::Specifications)),
-                ),
-                Span::styled("  ·  ", Style::default().fg(MUTED)),
-                Span::raw("final code "),
-                Span::styled(
-                    approval_status(task, ApprovalGate::FinalCode),
-                    Style::default().fg(approval_status_color(task, ApprovalGate::FinalCode)),
-                ),
-            ],
-        ),
-    ];
-    frame.render_widget(Paragraph::new(left), columns[0]);
-    frame.render_widget(Paragraph::new(right), columns[1]);
+    let fit = |lines: Vec<Line<'static>>, area: Rect| {
+        lines
+            .into_iter()
+            .map(|line| fit_line(line, usize::from(area.width)))
+            .collect::<Vec<_>>()
+    };
+    frame.render_widget(Paragraph::new(fit(left, columns[0])), columns[0]);
+    frame.render_widget(Paragraph::new(fit(right, columns[1])), columns[1]);
     frame.render_widget(
         Paragraph::new(match task.description.as_deref() {
             Some(description) => Line::raw(terminal_safe(description)),
             None => Line::styled("No description.", Style::default().fg(MUTED)),
         })
         .wrap(Wrap { trim: true }),
-        rows[3],
+        rows[4],
     );
 
     frame.render_widget(
@@ -2197,6 +2396,28 @@ fn truncate_start(value: &str, max_chars: usize) -> String {
     format!("…{tail}")
 }
 
+/// Shortens a styled line to `width` columns, ending it with "…" instead of cutting mid-word.
+fn fit_line(line: Line<'static>, width: usize) -> Line<'static> {
+    if line.width() <= width || width < 2 {
+        return line;
+    }
+    let mut remaining = width - 1;
+    let mut spans = Vec::new();
+    for span in line.spans {
+        let span_width = span.width();
+        if span_width <= remaining {
+            remaining -= span_width;
+            spans.push(span);
+            continue;
+        }
+        let head = span.content.chars().take(remaining).collect::<String>();
+        spans.push(Span::styled(head, span.style));
+        break;
+    }
+    spans.push(Span::styled("…", Style::default().fg(MUTED)));
+    Line::from(spans)
+}
+
 fn truncate_end(value: &str, max_chars: usize) -> String {
     if value.chars().count() <= max_chars || max_chars < 2 {
         return value.to_owned();
@@ -2316,6 +2537,11 @@ fn draw_dialog(frame: &mut Frame, app: &Dashboard) {
                     "Check limit",
                     &form.check_timeout,
                     "minutes, default 60",
+                ),
+                selector_field(
+                    form.focus == ProjectField::Publish,
+                    "Publish",
+                    publish_label(form.publish),
                 ),
             ],
             "Tab/Shift+Tab fields  Enter create  Esc cancel",
@@ -2960,6 +3186,130 @@ mod tests {
     }
 
     #[test]
+    fn project_form_chooses_how_completed_tasks_are_published() {
+        let root = tempfile::tempdir().unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+        app.handle_key(KeyCode::Char('n'));
+        for character in "Factory".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        for _ in 0..5 {
+            app.handle_key(KeyCode::Tab);
+        }
+        let backend = render(&app);
+        rendered_text_position(&backend, "› Publish");
+        rendered_text_position(&backend, "◀ local merge only ▶");
+
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Char('x'));
+        let backend = render(&app);
+        rendered_text_position(&backend, "◀ pull request ▶");
+        app.handle_key(KeyCode::Enter);
+
+        assert!(matches!(app.dialog, Dialog::None), "{:?}", app.error);
+        let project = &app.manager.list_projects().unwrap()[0];
+        assert_eq!(project.publish, crate::model::PublishMode::PullRequest);
+        assert_eq!(project.name, "Factory");
+    }
+
+    #[test]
+    fn task_overview_fits_an_80_column_terminal_without_cutting_values() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(root.path()).unwrap();
+        let project = manager.create_project("Demo".to_owned(), None).unwrap();
+        let task = manager
+            .create_task(
+                project.id,
+                "Build".to_owned(),
+                Some("Parse the config.".to_owned()),
+                Priority::Medium,
+                Vec::new(),
+            )
+            .unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+        app.handle_key(KeyCode::Enter);
+        app.handle_key(KeyCode::Enter);
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| super::draw(frame, &app)).unwrap();
+        let backend = terminal.backend().clone();
+
+        rendered_text_position(&backend, "Attempt: 1 · revisions 0/3");
+        rendered_text_position(&backend, "Approvals: specs pending · final code pending");
+        rendered_text_position(&backend, "/attempt-1");
+        let branch = crate::integrations::GitAdapter::worktree_branch(task.id, 1);
+        assert!(!branch.is_empty());
+        let (_, publish_row) = rendered_text_position(&backend, "Publish: local merge only");
+        let (_, description_row) = rendered_text_position(&backend, "Parse the config.");
+        assert_eq!(
+            description_row,
+            publish_row + 2,
+            "a blank line separates the description"
+        );
+    }
+
+    #[test]
+    fn workflow_progress_wraps_instead_of_dropping_stages_on_narrow_terminals() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(root.path()).unwrap();
+        let project = manager.create_project("Demo".to_owned(), None).unwrap();
+        manager
+            .create_task(
+                project.id,
+                "Build".to_owned(),
+                None,
+                Priority::Medium,
+                Vec::new(),
+            )
+            .unwrap();
+        manager.start_next_task(project.id).unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+        app.handle_key(KeyCode::Enter);
+        app.handle_key(KeyCode::Enter);
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| super::draw(frame, &app)).unwrap();
+        let backend = terminal.backend().clone();
+
+        let (_, first_row) = rendered_text_position(&backend, "○ verify ─ ");
+        let (x, second_row) =
+            rendered_text_position(&backend, "○ final approval ─ ○ docs ─ ○ merge");
+        assert_eq!(second_row, first_row + 1);
+        assert_eq!(x, 2, "the wrapped row starts at a stage, not a connector");
+        rendered_text_position(&backend, "Step: specification-generation");
+    }
+
+    #[test]
+    fn task_details_show_where_the_task_is_published() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(root.path()).unwrap();
+        let project = manager.create_project("Demo".to_owned(), None).unwrap();
+        manager
+            .set_project_publish(
+                project.id,
+                crate::model::PublishMode::Push,
+                Some("upstream".to_owned()),
+            )
+            .unwrap();
+        manager
+            .create_task(
+                project.id,
+                "Build".to_owned(),
+                None,
+                Priority::Medium,
+                Vec::new(),
+            )
+            .unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+        app.handle_key(KeyCode::Enter);
+        app.handle_key(KeyCode::Enter);
+
+        let backend = render(&app);
+        rendered_text_position(&backend, "Publish: push to upstream");
+    }
+
+    #[test]
     fn task_details_show_location_progress_and_step_retry() {
         let root = tempfile::tempdir().unwrap();
         let manager = ProjectManager::new(root.path()).unwrap();
@@ -2984,7 +3334,7 @@ mod tests {
             &backend,
             &format!("OpenSpec change: {}", task.openspec_change()),
         );
-        rendered_text_position(&backend, "Automatic revisions: 0/3");
+        rendered_text_position(&backend, "revisions 0/3");
 
         app.handle_key(KeyCode::Char('v'));
         assert_eq!(app.screen, Screen::TaskDetail);

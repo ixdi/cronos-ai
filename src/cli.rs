@@ -6,7 +6,7 @@ use uuid::Uuid;
 use crate::{
     agent_profiles::AgentProfileCatalog,
     integrations::{GitAdapter, ToolCommands, herdr_session_available, require_tools},
-    model::{Priority, ProjectId, TaskId, WorkflowStep},
+    model::{Priority, ProjectId, PublishMode, TaskId, WorkflowStep},
     project::ProjectManager,
     workflow::{AgentPlan, HerdrAgentAdapter, WorkflowEngine},
 };
@@ -62,6 +62,15 @@ enum ProjectAction {
     SetCheckTimeout {
         id: String,
         minutes: Option<u32>,
+    },
+    /// Set how completed tasks are published: merged locally, merged and pushed, or opened as a pull request.
+    SetPublish {
+        id: String,
+        #[arg(value_enum)]
+        mode: PublishArg,
+        /// Git remote to push to (default: origin).
+        #[arg(long)]
+        remote: Option<String>,
     },
     Select {
         id: String,
@@ -127,6 +136,23 @@ enum TaskAction {
     Ready {
         project_id: String,
     },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum PublishArg {
+    Local,
+    Push,
+    PullRequest,
+}
+
+impl From<PublishArg> for PublishMode {
+    fn from(value: PublishArg) -> Self {
+        match value {
+            PublishArg::Local => Self::Local,
+            PublishArg::Push => Self::Push,
+            PublishArg::PullRequest => Self::PullRequest,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
@@ -229,6 +255,13 @@ pub fn run() -> Result<Option<PathBuf>, Box<dyn Error>> {
             }
             ProjectAction::SetCheckCommand { id, command } => {
                 print_json(&manager.set_project_check_command(parse_project_id(&id)?, command)?)?;
+            }
+            ProjectAction::SetPublish { id, mode, remote } => {
+                print_json(&manager.set_project_publish(
+                    parse_project_id(&id)?,
+                    mode.into(),
+                    remote,
+                )?)?;
             }
             ProjectAction::SetCheckTimeout { id, minutes } => {
                 print_json(&manager.set_project_check_timeout(parse_project_id(&id)?, minutes)?)?;

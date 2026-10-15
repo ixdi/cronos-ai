@@ -220,3 +220,38 @@ fn check_time_limit_is_set_rejected_when_out_of_range_and_reset_from_the_cli() {
     let reset = cronos(&data, &["project", "set-check-timeout", &project_id]).unwrap();
     assert!(reset["check_timeout_minutes"].is_null());
 }
+
+#[test]
+fn publish_mode_and_remote_are_set_and_validated_from_the_cli() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("data");
+    let project = cronos(&data, &["project", "create", "Published"]).unwrap();
+    let project_id = id(&project);
+    assert_eq!(project["publish"], "local");
+
+    let configured = cronos(
+        &data,
+        &[
+            "project",
+            "set-publish",
+            &project_id,
+            "pull-request",
+            "--remote",
+            "upstream",
+        ],
+    )
+    .unwrap();
+    assert_eq!(configured["publish"], "pull_request");
+    assert_eq!(configured["remote"], "upstream");
+
+    let error = cronos(
+        &data,
+        &["project", "set-publish", &project_id, "push", "--remote=-c"],
+    )
+    .unwrap_err();
+    assert!(error.contains("remote name"), "{error}");
+
+    let reset = cronos(&data, &["project", "set-publish", &project_id, "push"]).unwrap();
+    assert_eq!(reset["publish"], "push");
+    assert!(reset["remote"].is_null());
+}
