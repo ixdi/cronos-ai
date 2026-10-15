@@ -57,6 +57,7 @@
 			.section-intro { max-width: 820px; margin-bottom: 22px; }
 			.grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
 			.grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+			.grid.one { grid-template-columns: minmax(0, 1fr); }
 			.card { min-width: 0; padding: 19px; background: #fbfdff; border: 1px solid var(--line); border-radius: 14px; }
 			.card.teal { background: var(--teal-soft); border-color: #c7e7df; }
 			.card.blue { background: var(--blue-soft); border-color: #d0dfef; }
@@ -93,6 +94,7 @@
 			.cli-option summary { padding: 10px 14px; color: #2e4962; font-weight: 700; cursor: pointer; }
 			.cli-option[open] summary { border-bottom: 1px solid var(--line); }
 			.cli-option > :not(summary) { margin: 12px 14px; }
+			.cli-option pre { overflow-x: auto; }
 			.feature-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 15px; }
 			.status { display: inline-block; padding: 3px 9px; border-radius: 999px; background: #edf2f7; color: #304a62; font-size: .82rem; font-weight: 750; white-space: nowrap; }
 			.status.error { background: #fff0ed; color: #8a3829; }
