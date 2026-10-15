@@ -2,6 +2,8 @@ use std::{
     fs::{self, File},
     io::{Read, Write},
     path::{Path, PathBuf},
+    sync::{Condvar, Mutex, MutexGuard, PoisonError},
+    thread::{self, ThreadId},
 };
 
 use serde::{Serialize, de::DeserializeOwned};
@@ -41,6 +43,38 @@ pub enum StoreError {
 
 pub struct ProjectStore {
     root: PathBuf,
+    write_lock: Mutex<WriteLockState>,
+    write_lock_released: Condvar,
+}
+
+/// Who holds the store write lock in this process. The file lock excludes other processes; the
+/// owner and depth make it reentrant for the holding thread and exclusive across threads.
+#[derive(Default)]
+struct WriteLockState {
+    owner: Option<ThreadId>,
+    depth: usize,
+    file: Option<File>,
+}
+
+/// Exclusive right to change the store, held until dropped. Every read-check-save of projects and
+/// tasks runs under it so concurrent changes never overwrite each other. The operating system
+/// releases the file lock when the holder exits, so a crash never leaves the store locked.
+#[must_use = "the store is unlocked as soon as the guard is dropped"]
+pub struct StoreWriteLock<'a> {
+    store: &'a ProjectStore,
+}
+
+impl Drop for StoreWriteLock<'_> {
+    fn drop(&mut self) {
+        let mut state = self.store.write_lock_state();
+        state.depth -= 1;
+        if state.depth == 0 {
+            state.owner = None;
+            // Closing the file releases the operating-system lock.
+            state.file = None;
+            self.store.write_lock_released.notify_one();
+        }
+    }
 }
 
 impl ProjectStore {
@@ -71,7 +105,52 @@ impl ProjectStore {
         if !root.is_dir() {
             return Err(StoreError::UnsafePath(root));
         }
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            write_lock: Mutex::default(),
+            write_lock_released: Condvar::new(),
+        })
+    }
+
+    /// Waits for the exclusive store write lock. A thread that already holds it gets it again
+    /// immediately, so composite operations can nest.
+    pub fn lock_writes(&self) -> Result<StoreWriteLock<'_>, StoreError> {
+        let current = thread::current().id();
+        let mut state = self.write_lock_state();
+        loop {
+            match state.owner {
+                None => break,
+                Some(owner) if owner == current => {
+                    state.depth += 1;
+                    return Ok(StoreWriteLock { store: self });
+                }
+                Some(_) => {
+                    state = self
+                        .write_lock_released
+                        .wait(state)
+                        .unwrap_or_else(PoisonError::into_inner);
+                }
+            }
+        }
+        let directory = self.checked_directory(&self.root.join("locks"), true)?;
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(directory.join("store.lock"))?;
+        file.lock()?;
+        *state = WriteLockState {
+            owner: Some(current),
+            depth: 1,
+            file: Some(file),
+        };
+        Ok(StoreWriteLock { store: self })
+    }
+
+    fn write_lock_state(&self) -> MutexGuard<'_, WriteLockState> {
+        self.write_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     pub fn save_project(&self, project: &Project) -> Result<(), StoreError> {
@@ -317,6 +396,53 @@ mod tests {
         let reopened = ProjectStore::new(root.path()).unwrap();
         assert_eq!(reopened.load_project(project.id).unwrap(), project);
         assert_eq!(reopened.load_task(project.id, task_id).unwrap(), task);
+    }
+
+    fn lock_file_is_held(root: &std::path::Path) -> bool {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(root.join("locks").join("store.lock"))
+            .unwrap();
+        match file.try_lock() {
+            Ok(()) => false,
+            Err(std::fs::TryLockError::WouldBlock) => true,
+            Err(std::fs::TryLockError::Error(error)) => panic!("{error}"),
+        }
+    }
+
+    #[test]
+    fn write_lock_is_reentrant_and_held_until_the_outermost_guard_drops() {
+        let root = tempfile::tempdir().unwrap();
+        let store = ProjectStore::new(root.path()).unwrap();
+
+        let outer = store.lock_writes().unwrap();
+        let inner = store.lock_writes().unwrap();
+        drop(inner);
+        assert!(lock_file_is_held(root.path()));
+        drop(outer);
+        assert!(!lock_file_is_held(root.path()));
+    }
+
+    #[test]
+    fn write_lock_excludes_other_threads() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let root = tempfile::tempdir().unwrap();
+        let store = ProjectStore::new(root.path()).unwrap();
+        let acquired = AtomicBool::new(false);
+
+        let guard = store.lock_writes().unwrap();
+        std::thread::scope(|scope| {
+            let waiter = scope.spawn(|| {
+                let _guard = store.lock_writes().unwrap();
+                acquired.store(true, Ordering::SeqCst);
+            });
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            assert!(!acquired.load(Ordering::SeqCst));
+            drop(guard);
+            waiter.join().unwrap();
+        });
+        assert!(acquired.load(Ordering::SeqCst));
     }
 
     #[test]
