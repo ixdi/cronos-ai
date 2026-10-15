@@ -95,6 +95,19 @@ pub enum GitError {
     MergeConflict(String),
     #[error("local merge failed: {0}")]
     MergeFailed(String),
+    #[error("push failed: {0}")]
+    PushFailed(String),
+    #[error("could not open a pull request: {0}")]
+    PullRequestFailed(String),
+}
+
+/// A pull request from a pushed task branch into the base branch.
+pub struct PullRequest<'a> {
+    pub remote: &'a str,
+    pub base: &'a str,
+    pub head: &'a str,
+    pub title: &'a str,
+    pub body: &'a str,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -299,6 +312,91 @@ impl GitAdapter {
         self.git_text(path, &["rev-parse", "HEAD"])
     }
 
+    /// Whether `branch` is already part of the repository's checked-out branch.
+    pub fn is_merged(&self, repository: &Path, branch: &str) -> Result<bool, GitError> {
+        if !valid_branch_name(branch) {
+            return Err(GitError::InvalidBranch);
+        }
+        match self.tools.run_git(&[
+            OsStr::new("-C"),
+            repository.as_os_str(),
+            OsStr::new("merge-base"),
+            OsStr::new("--is-ancestor"),
+            OsStr::new(branch),
+            OsStr::new("HEAD"),
+        ]) {
+            Ok(_) => Ok(true),
+            // Exit status 1 means "not an ancestor"; other failures carry an error message.
+            Err(IntegrationError::Failed { stderr, .. }) if stderr.is_empty() => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Pushes `branch` from `path` to the same branch name on `remote`.
+    pub fn push(&self, path: &Path, remote: &str, branch: &str) -> Result<(), GitError> {
+        let reference = format!("refs/heads/{branch}");
+        // Any branch may be pushed (the base branch too), but only one Git itself accepts.
+        if branch.starts_with('-')
+            || self
+                .tools
+                .run_git(&[OsStr::new("check-ref-format"), OsStr::new(&reference)])
+                .is_err()
+        {
+            return Err(GitError::InvalidBranch);
+        }
+        let refspec = format!("{reference}:{reference}");
+        self.tools
+            .run_git(&[
+                OsStr::new("-C"),
+                path.as_os_str(),
+                OsStr::new("push"),
+                OsStr::new("--"),
+                OsStr::new(remote),
+                OsStr::new(&refspec),
+            ])
+            .map(|_| ())
+            .map_err(|error| GitError::PushFailed(format!("{remote}: {error}")))
+    }
+
+    /// Pushes the task branch and returns the URL of its open pull request, creating it only when
+    /// none exists, so retrying never opens a duplicate.
+    pub fn open_pull_request(
+        &self,
+        repository: &Path,
+        worktree: &Path,
+        request: &PullRequest<'_>,
+    ) -> Result<String, GitError> {
+        self.ensure_clean(worktree)?;
+        self.push(worktree, request.remote, request.head)?;
+        if let Ok(output) = self.tools.run_gh(
+            repository,
+            &["pr", "view", request.head, "--json", "url", "--jq", ".url"],
+        ) && let Some(url) = last_line(&output.stdout)
+        {
+            return Ok(url);
+        }
+        let output = self
+            .tools
+            .run_gh(
+                repository,
+                &[
+                    "pr",
+                    "create",
+                    "--base",
+                    request.base,
+                    "--head",
+                    request.head,
+                    "--title",
+                    request.title,
+                    "--body",
+                    request.body,
+                ],
+            )
+            .map_err(|error| GitError::PullRequestFailed(error.to_string()))?;
+        last_line(&output.stdout)
+            .ok_or_else(|| GitError::PullRequestFailed("gh printed no pull request URL".to_owned()))
+    }
+
     pub fn current_branch(&self, path: &Path) -> Result<String, GitError> {
         self.git_text(path, &["rev-parse", "--abbrev-ref", "HEAD"])
     }
@@ -496,6 +594,8 @@ pub struct ToolCommands {
     herdr: PathBuf,
     openspec: PathBuf,
     git: PathBuf,
+    /// GitHub CLI; optional, needed only for pull-request publishing.
+    gh: PathBuf,
 }
 
 impl Default for ToolCommands {
@@ -505,6 +605,7 @@ impl Default for ToolCommands {
             herdr: "herdr".into(),
             openspec: "openspec".into(),
             git: "git".into(),
+            gh: "gh".into(),
         }
     }
 }
@@ -619,7 +720,18 @@ impl ToolCommands {
             herdr,
             openspec,
             git,
+            gh: "gh".into(),
         }
+    }
+
+    pub fn with_gh(mut self, gh: PathBuf) -> Self {
+        self.gh = gh;
+        self
+    }
+
+    fn run_gh(&self, dir: &Path, args: &[&str]) -> Result<Output, IntegrationError> {
+        let args = args.iter().map(OsStr::new).collect::<Vec<_>>();
+        run_program(&self.gh, "gh", Some(dir), &args)
     }
 
     pub fn is_available(&self, tool: RequiredTool) -> bool {
@@ -947,24 +1059,40 @@ impl ToolCommands {
             RequiredTool::OpenSpec => &self.openspec,
             RequiredTool::Git => &self.git,
         };
-        let mut command = Command::new(executable);
-        command.args(args);
-        if let Some(dir) = dir {
-            command.current_dir(dir);
-        }
-        let output = command.output().map_err(|source| IntegrationError::Io {
-            tool: tool.executable(),
-            source,
-        })?;
-        if !output.status.success() {
-            return Err(IntegrationError::Failed {
-                tool: tool.executable(),
-                status: output.status.to_string(),
-                stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-            });
-        }
-        Ok(output)
+        run_program(executable, tool.executable(), dir, args)
     }
+}
+
+fn run_program(
+    executable: &Path,
+    tool: &'static str,
+    dir: Option<&Path>,
+    args: &[&OsStr],
+) -> Result<Output, IntegrationError> {
+    let mut command = Command::new(executable);
+    command.args(args);
+    if let Some(dir) = dir {
+        command.current_dir(dir);
+    }
+    let output = command
+        .output()
+        .map_err(|source| IntegrationError::Io { tool, source })?;
+    if !output.status.success() {
+        return Err(IntegrationError::Failed {
+            tool,
+            status: output.status.to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    Ok(output)
+}
+
+fn last_line(output: &[u8]) -> Option<String> {
+    String::from_utf8_lossy(output)
+        .lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty())
+        .map(str::to_owned)
 }
 
 const ORCHESTRATOR_TOOLS: &str = "read,cronos_task_state,cronos_agent_profiles,cronos_run_step";
@@ -1108,7 +1236,7 @@ fn quote_shell_word(value: &str) -> String {
 #[cfg(all(test, unix))]
 mod tests {
     use super::{
-        GitAdapter, GitError, IntegrationError, RequiredTool, ToolCommands,
+        GitAdapter, GitError, IntegrationError, PullRequest, RequiredTool, ToolCommands,
         missing_required_tools_with, prompt_to_install, quote_shell_word, require_tools,
     };
     use std::{
@@ -1430,6 +1558,114 @@ mod tests {
             !log.lines()
                 .any(|line| line.split_whitespace().any(|token| token == "push"))
         );
+    }
+
+    fn repository_with_task_commit(temp: &Path) -> (PathBuf, PathBuf, PathBuf, &'static str) {
+        let repository = temp.join("repo");
+        let remote = temp.join("remote.git");
+        let worktree = temp.join("worktrees/task/attempt-1");
+        init_git_fixture(&repository);
+        fixture_git(temp, &["init", "--bare", remote.to_str().unwrap()]);
+        fixture_git(
+            &repository,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        fs::create_dir_all(worktree.parent().unwrap()).unwrap();
+        let branch = "cronos-ai/task/attempt-1";
+        GitAdapter::default()
+            .add_worktree(&repository, &worktree, branch)
+            .unwrap();
+        fs::write(worktree.join("generated.txt"), "task output\n").unwrap();
+        fixture_git(&worktree, &["add", "generated.txt"]);
+        fixture_git(&worktree, &["commit", "-m", "task output"]);
+        (repository, remote, worktree, branch)
+    }
+
+    #[test]
+    fn merged_branch_is_detected_and_push_publishes_the_base_branch() {
+        let temp = tempfile::tempdir().unwrap();
+        let (repository, remote, worktree, branch) = repository_with_task_commit(temp.path());
+        let git = GitAdapter::default();
+
+        assert!(!git.is_merged(&repository, branch).unwrap());
+        git.merge_worktree(&repository, &worktree, branch).unwrap();
+        assert!(git.is_merged(&repository, branch).unwrap());
+
+        let base = git.current_branch(&repository).unwrap();
+        git.push(&repository, "origin", &base).unwrap();
+        assert_eq!(
+            fixture_git(&remote, &["rev-parse", &base]),
+            fixture_git(&repository, &["rev-parse", "HEAD"])
+        );
+    }
+
+    #[test]
+    fn push_failure_reports_the_remote_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let (repository, _, _, branch) = repository_with_task_commit(temp.path());
+
+        let error = GitAdapter::default()
+            .push(&repository, "missing-remote", branch)
+            .unwrap_err();
+
+        assert!(
+            matches!(&error, GitError::PushFailed(detail) if detail.contains("missing-remote")),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn pull_request_pushes_the_task_branch_and_reuses_an_open_request() {
+        let temp = tempfile::tempdir().unwrap();
+        let (repository, remote, worktree, branch) = repository_with_task_commit(temp.path());
+        let gh = temp.path().join("gh");
+        fs::write(
+            &gh,
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "$(dirname "$0")/gh-calls"
+if [ "$1 $2" = "pr view" ]; then
+  [ -f "$(dirname "$0")/pr-open" ] || exit 1
+  printf 'https://example.invalid/pull/7\n'
+elif [ "$1 $2" = "pr create" ]; then
+  touch "$(dirname "$0")/pr-open"
+  printf 'Creating pull request\nhttps://example.invalid/pull/7\n'
+fi
+"#,
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&gh).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&gh, permissions).unwrap();
+        let git = GitAdapter::with_tools(ToolCommands::default().with_gh(gh));
+        let base = git.current_branch(&repository).unwrap();
+
+        for _ in 0..2 {
+            let url = git
+                .open_pull_request(
+                    &repository,
+                    &worktree,
+                    &PullRequest {
+                        remote: "origin",
+                        base: &base,
+                        head: branch,
+                        title: "Add output",
+                        body: "Body",
+                    },
+                )
+                .unwrap();
+            assert_eq!(url, "https://example.invalid/pull/7");
+        }
+
+        assert_eq!(
+            fixture_git(&remote, &["rev-parse", branch]),
+            fixture_git(&worktree, &["rev-parse", "HEAD"])
+        );
+        assert!(!git.is_merged(&repository, branch).unwrap());
+        let calls = fs::read_to_string(temp.path().join("gh-calls")).unwrap();
+        assert_eq!(calls.matches("pr create").count(), 1, "{calls}");
+        assert!(calls.contains(&format!(
+            "pr create --base {base} --head {branch} --title Add output --body Body"
+        )));
     }
 
     #[test]
