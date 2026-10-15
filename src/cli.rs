@@ -104,6 +104,11 @@ enum ProjectAction {
         id: String,
         minutes: Option<u32>,
     },
+    /// Set how many tasks may run at the same time (1-8).
+    SetParallelism {
+        id: String,
+        max_parallel_tasks: u32,
+    },
     /// Ask the read-only planner for tasks covering the requirements; the plan waits for approval.
     Plan {
         id: String,
@@ -327,6 +332,14 @@ pub fn run() -> Result<Option<PathBuf>, Box<dyn Error>> {
             }
             ProjectAction::SetCheckCommand { id, command } => {
                 print_json(&manager.set_project_check_command(parse_project_id(&id)?, command)?)?;
+            }
+            ProjectAction::SetParallelism {
+                id,
+                max_parallel_tasks,
+            } => {
+                print_json(
+                    &manager.set_project_parallelism(parse_project_id(&id)?, max_parallel_tasks)?,
+                )?;
             }
             ProjectAction::Plan {
                 id,

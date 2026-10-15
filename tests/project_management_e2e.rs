@@ -400,3 +400,17 @@ PLAN
     assert_eq!(ready[0]["title"], "Add CSV export");
     assert!(run(&["project", "plan-show", &project_id]).is_null());
 }
+
+#[test]
+fn parallel_capacity_is_set_and_validated_from_the_cli() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("data");
+    let project = cronos(&data, &["project", "create", "Parallel"]).unwrap();
+    let project_id = id(&project);
+    assert_eq!(project["max_parallel_tasks"], 1);
+
+    let configured = cronos(&data, &["project", "set-parallelism", &project_id, "3"]).unwrap();
+    assert_eq!(configured["max_parallel_tasks"], 3);
+    let error = cronos(&data, &["project", "set-parallelism", &project_id, "9"]).unwrap_err();
+    assert!(error.contains("between 1 and 8"), "{error}");
+}
