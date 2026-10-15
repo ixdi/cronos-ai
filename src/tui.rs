@@ -21,8 +21,10 @@ use ratatui::{
 
 mod board;
 mod profiles;
+mod requirements;
 
 use board::TaskView;
+use requirements::{PlanJob, RequirementField, RequirementForm};
 
 use profiles::{EditorAction, ProfileEditor, ProfileList};
 
@@ -31,8 +33,10 @@ use crate::{
     integrations::{GitAdapter, PiRpcHandle, ToolCommands, herdr_session_available},
     model::{
         AgentActivity, AgentStatus, ApprovalDecision, ApprovalGate, Priority, Project,
-        ProjectStatus, PublishMode, Task, TaskId, TaskStatus, WorkflowStep,
+        ProjectStatus, PublishMode, RequirementId, RequirementKind, Task, TaskId, TaskStatus,
+        WorkflowStep,
     },
+    planning::Plan,
     project::{MAX_AUTOMATIC_REVISIONS, MergeOutcome, ProjectError, ProjectManager},
     workflow::{cancel_interrupted_agents, check_program_changed},
 };
@@ -54,6 +58,7 @@ enum Screen {
     Review,
     Profiles,
     ProfileEditor,
+    Requirements,
 }
 
 enum Dialog {
@@ -64,6 +69,8 @@ enum Dialog {
     Abandon { note: String },
     CreateProject(ProjectForm),
     CreateTask(TaskForm),
+    AddRequirement(RequirementForm),
+    DeleteRequirement { id: RequirementId, label: String },
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -251,6 +258,11 @@ struct Dashboard {
     profile_list: ProfileList,
     profile_editor: Option<ProfileEditor>,
     task_view: TaskView,
+    /// Tool paths used for planning; tests point them at fakes.
+    tools: ToolCommands,
+    plan_job: Option<PlanJob>,
+    pending_plan: Option<Plan>,
+    selected_requirement: usize,
 }
 
 impl Dashboard {
@@ -276,6 +288,10 @@ impl Dashboard {
             profile_list: ProfileList::default(),
             profile_editor: None,
             task_view: TaskView::default(),
+            tools: ToolCommands::default(),
+            plan_job: None,
+            pending_plan: None,
+            selected_requirement: 0,
         })
     }
 
@@ -310,6 +326,17 @@ impl Dashboard {
                     .min(self.projects.len().saturating_sub(1))
             });
 
+        if self.screen == Screen::Requirements {
+            let project = self.selected_project().map(|project| project.id);
+            self.pending_plan = match project {
+                Some(project) => self.manager.pending_plan(project)?,
+                None => None,
+            };
+            let count = self
+                .selected_project()
+                .map_or(0, |project| project.requirements.len());
+            self.selected_requirement = self.selected_requirement.min(count.saturating_sub(1));
+        }
         if self.screen == Screen::Projects {
             self.tasks.clear();
         } else if let Some(project) = self.selected_project() {
@@ -381,6 +408,10 @@ impl Dashboard {
                     self.refresh_for_ui();
                 }
                 Screen::Review => self.screen = Screen::TaskDetail,
+                Screen::Requirements => {
+                    self.screen = Screen::Tasks;
+                    self.refresh_for_ui();
+                }
                 Screen::Profiles => {
                     self.screen = Screen::Projects;
                     self.refresh_for_ui();
@@ -490,6 +521,48 @@ impl Dashboard {
                     self.dialog = Dialog::CreateTask(TaskForm::default());
                 } else {
                     self.error = Some("Archived projects cannot receive tasks.".to_owned());
+                }
+            }
+            (Screen::Tasks, KeyCode::Char('g')) => {
+                self.screen = Screen::Requirements;
+                self.selected_requirement = 0;
+                self.refresh_for_ui();
+            }
+            (Screen::Requirements, KeyCode::Up) => {
+                self.selected_requirement = self.selected_requirement.saturating_sub(1);
+            }
+            (Screen::Requirements, KeyCode::Down) => {
+                let count = self
+                    .selected_project()
+                    .map_or(0, |project| project.requirements.len());
+                self.selected_requirement =
+                    (self.selected_requirement + 1).min(count.saturating_sub(1));
+            }
+            (Screen::Requirements, KeyCode::Char('n')) => {
+                self.dialog = Dialog::AddRequirement(RequirementForm::default());
+            }
+            (Screen::Requirements, KeyCode::Char('d')) => {
+                if let Some(requirement) = self
+                    .selected_project()
+                    .and_then(|project| project.requirements.get(self.selected_requirement))
+                {
+                    self.dialog = Dialog::DeleteRequirement {
+                        id: requirement.id,
+                        label: format!("R{}", self.selected_requirement + 1),
+                    };
+                }
+            }
+            (Screen::Requirements, KeyCode::Char('p')) => self.start_planning(),
+            (Screen::Requirements, KeyCode::Char('y')) if self.pending_plan.is_some() => {
+                self.apply_plan()
+            }
+            (Screen::Requirements, KeyCode::Char('x')) if self.pending_plan.is_some() => {
+                if let Some(project) = self.selected_project().map(|project| project.id) {
+                    match self.manager.discard_plan(project) {
+                        Ok(()) => self.workflow_status = Some("Plan discarded.".to_owned()),
+                        Err(error) => self.error = Some(error.to_string()),
+                    }
+                    self.refresh_for_ui();
                 }
             }
             (Screen::Tasks, KeyCode::Char('b')) => {
@@ -971,6 +1044,90 @@ impl Dashboard {
         }
     }
 
+    fn save_requirement(&mut self) {
+        let dialog = std::mem::replace(&mut self.dialog, Dialog::None);
+        let Dialog::AddRequirement(form) = dialog else {
+            self.dialog = dialog;
+            return;
+        };
+        let Some(project) = self.selected_project().map(|project| project.id) else {
+            return;
+        };
+        match self
+            .manager
+            .add_requirement(project, form.kind, form.text.clone())
+        {
+            Ok(_) => {
+                self.refresh_for_ui();
+                self.selected_requirement = self
+                    .selected_project()
+                    .map_or(0, |project| project.requirements.len().saturating_sub(1));
+            }
+            Err(error) => {
+                self.error = Some(error.to_string());
+                self.dialog = Dialog::AddRequirement(form);
+            }
+        }
+    }
+
+    fn start_planning(&mut self) {
+        let Some(project) = self.selected_project() else {
+            return;
+        };
+        if self.plan_job.is_some() {
+            self.error = Some("The planner is already running.".to_owned());
+            return;
+        }
+        if project.requirements.is_empty() {
+            self.error = Some("Add requirements before planning tasks.".to_owned());
+            return;
+        }
+        if project.repository.is_none() {
+            self.error = Some("Set the project's repository before planning tasks.".to_owned());
+            return;
+        }
+        self.plan_job = Some(PlanJob::start(
+            self.manager.data_dir().to_path_buf(),
+            project.id,
+            self.tools.clone(),
+        ));
+        self.workflow_status = Some("The planner is reading the repository.".to_owned());
+    }
+
+    /// Collects a finished planner's plan or error.
+    fn poll_plan_job(&mut self) {
+        let Some(result) = self.plan_job.as_ref().and_then(PlanJob::finished) else {
+            return;
+        };
+        self.plan_job = None;
+        match result {
+            Ok(plan) => {
+                self.workflow_status = Some(format!(
+                    "Plan ready: {} tasks. Review it on the requirements screen.",
+                    plan.tasks.len()
+                ));
+            }
+            Err(error) => self.error = Some(error),
+        }
+        self.refresh_for_ui();
+    }
+
+    fn apply_plan(&mut self) {
+        let Some(project) = self.selected_project().map(|project| project.id) else {
+            return;
+        };
+        match self.manager.apply_plan(project) {
+            Ok(tasks) => {
+                self.workflow_status = Some(format!(
+                    "Created {} tasks from the plan; start the next one with s on the task list.",
+                    tasks.len()
+                ));
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+        self.refresh_for_ui();
+    }
+
     fn submit_project_creation(&mut self) {
         let dialog = std::mem::replace(&mut self.dialog, Dialog::None);
         let Dialog::CreateProject(form) = dialog else {
@@ -1192,6 +1349,54 @@ impl Dashboard {
     }
 
     fn handle_dialog_key(&mut self, key: KeyCode) {
+        if let Dialog::DeleteRequirement { id, .. } = &self.dialog {
+            match key {
+                KeyCode::Char('y') => {
+                    let id = *id;
+                    self.dialog = Dialog::None;
+                    if let Some(project) = self.selected_project().map(|project| project.id)
+                        && let Err(error) = self.manager.remove_requirement(project, id)
+                    {
+                        self.error = Some(error.to_string());
+                    }
+                    self.refresh_for_ui();
+                }
+                KeyCode::Char('n') | KeyCode::Esc => self.dialog = Dialog::None,
+                _ => {}
+            }
+            return;
+        }
+        if let Dialog::AddRequirement(form) = &mut self.dialog {
+            match key {
+                KeyCode::Esc => self.dialog = Dialog::None,
+                KeyCode::Tab | KeyCode::BackTab => {
+                    form.focus = match form.focus {
+                        RequirementField::Text => RequirementField::Kind,
+                        RequirementField::Kind => RequirementField::Text,
+                    };
+                }
+                KeyCode::Left | KeyCode::Right if form.focus == RequirementField::Kind => {
+                    form.kind = if key == KeyCode::Right {
+                        RequirementKind::NonFunctional
+                    } else {
+                        RequirementKind::Functional
+                    };
+                }
+                KeyCode::Backspace if form.focus == RequirementField::Text => {
+                    form.text.pop();
+                }
+                KeyCode::Char(character)
+                    if form.focus == RequirementField::Text
+                        && !character.is_control()
+                        && form.text.chars().count() < 2_000 =>
+                {
+                    form.text.push(character);
+                }
+                KeyCode::Enter => self.save_requirement(),
+                _ => {}
+            }
+            return;
+        }
         if let Dialog::DeleteProfile { id } = &self.dialog {
             match key {
                 KeyCode::Char('y') => {
@@ -1229,7 +1434,9 @@ impl Dashboard {
                 Dialog::None
                 | Dialog::CreateProject(_)
                 | Dialog::CreateTask(_)
-                | Dialog::DeleteProfile { .. } => {}
+                | Dialog::DeleteProfile { .. }
+                | Dialog::AddRequirement(_)
+                | Dialog::DeleteRequirement { .. } => {}
             }
             return;
         }
@@ -1303,9 +1510,11 @@ impl Dashboard {
                 self.error = Some("An abandonment reason is required.".to_owned());
             }
             Dialog::None => {}
-            Dialog::CreateProject(_) | Dialog::CreateTask(_) | Dialog::DeleteProfile { .. } => {
-                unreachable!()
-            }
+            Dialog::CreateProject(_)
+            | Dialog::CreateTask(_)
+            | Dialog::DeleteProfile { .. }
+            | Dialog::AddRequirement(_)
+            | Dialog::DeleteRequirement { .. } => unreachable!(),
         }
     }
 
@@ -1560,6 +1769,7 @@ pub fn run(data_dir: PathBuf) -> Result<(), Box<dyn Error>> {
 
     while !app.should_quit {
         app.poll_workflow();
+        app.poll_plan_job();
         terminal.draw(|frame| draw(frame, &app))?;
         if event::poll(Duration::from_millis(200))? {
             match event::read()? {
@@ -1615,6 +1825,21 @@ fn draw(frame: &mut Frame, app: &Dashboard) {
             Some(editor) => profiles::draw_editor(frame, editor, areas[1]),
             None => profiles::draw_profiles(frame, &app.profile_list, areas[1]),
         },
+        Screen::Requirements => {
+            if let Some(project) = app.selected_project() {
+                requirements::draw_requirements(
+                    frame,
+                    project,
+                    &app.tasks,
+                    app.pending_plan.as_ref(),
+                    app.plan_job
+                        .as_ref()
+                        .filter(|job| job.project_id == project.id),
+                    app.selected_requirement,
+                    areas[1],
+                );
+            }
+        }
     }
     draw_footer(frame, app, areas[2]);
     draw_dialog(frame, app);
@@ -1644,11 +1869,14 @@ fn draw_header(frame: &mut Frame, app: &Dashboard, area: Rect) {
     }
     if matches!(
         app.screen,
-        Screen::Tasks | Screen::TaskDetail | Screen::Review
+        Screen::Tasks | Screen::TaskDetail | Screen::Review | Screen::Requirements
     ) && let Some(project) = app.selected_project()
     {
         crumbs.push(Span::styled(" › ", Style::default().fg(MUTED)));
         crumbs.push(Span::raw(terminal_safe(&project.name)));
+    }
+    if app.screen == Screen::Requirements {
+        crumbs.push(Span::styled(" › requirements", Style::default().fg(MUTED)));
     }
     if matches!(app.screen, Screen::TaskDetail | Screen::Review)
         && let Some(task) = app.selected_task()
@@ -1690,10 +1918,16 @@ fn footer_help(app: &Dashboard) -> &'static str {
             .as_ref()
             .map_or("Esc back", ProfileEditor::hints),
         Screen::Tasks if app.task_view == TaskView::Board => {
-            "←/→/↑/↓ select  Enter details  n new task  s start/resume  b table  Backspace projects  q quit"
+            "←/→/↑/↓ select  Enter details  n new task  s start/resume  b table  g requirements  Backspace projects  q quit"
         }
         Screen::Tasks => {
-            "↑/↓ select  Enter details  n new task  s start/resume  b board  Backspace projects  q quit"
+            "↑/↓ select  Enter details  n new task  s start/resume  b board  g requirements  Backspace projects  q quit"
+        }
+        Screen::Requirements if app.pending_plan.is_some() => {
+            "y create planned tasks  x discard plan  p plan again  n new  d delete  ↑/↓ select  Backspace tasks  q quit"
+        }
+        Screen::Requirements => {
+            "↑/↓ select  n new requirement  d delete  p plan tasks  Backspace tasks  q quit"
         }
         Screen::TaskDetail
             if app
@@ -2633,6 +2867,40 @@ fn note_dialog(prompt: &str, note: &str) -> Vec<Line<'static>> {
 fn draw_dialog(frame: &mut Frame, app: &Dashboard) {
     let (title, border, mut lines, hints) = match &app.dialog {
         Dialog::None => return,
+        Dialog::AddRequirement(form) => (
+            "New requirement".to_owned(),
+            PRIMARY,
+            vec![
+                form_field(
+                    form.focus == RequirementField::Text,
+                    "Requirement",
+                    &form.text,
+                    "what the product must do or how well",
+                ),
+                selector_field(
+                    form.focus == RequirementField::Kind,
+                    "Kind",
+                    requirements::kind_label(form.kind),
+                ),
+            ],
+            "Tab/Shift+Tab fields  ←/→ kind  Enter add  Esc cancel",
+        ),
+        Dialog::DeleteRequirement { label, .. } => (
+            "Delete requirement".to_owned(),
+            ERROR,
+            vec![
+                Line::from(vec![
+                    Span::raw("Delete requirement "),
+                    Span::styled(label.clone(), Style::default().add_modifier(Modifier::BOLD)),
+                    Span::raw("?"),
+                ]),
+                Line::styled(
+                    "Tasks already planned from it keep their link as history.",
+                    Style::default().fg(MUTED),
+                ),
+            ],
+            "y delete  n cancel",
+        ),
         Dialog::DeleteProfile { id } => (
             "Delete agent profile".to_owned(),
             ERROR,
@@ -3657,6 +3925,206 @@ mod tests {
 
         let backend = render(&app);
         rendered_text_position(&backend, "░░░░░░░░░░ 0/2 done (0%) · 1 error");
+    }
+
+    #[test]
+    fn requirements_wrap_and_plan_rows_fit_an_80_column_terminal() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(root.path()).unwrap();
+        let project = manager.create_project("Exporter".to_owned(), None).unwrap();
+        for text in [
+            "Users can export any report as CSV from the report menu",
+            "Exports finish within two seconds",
+        ] {
+            manager
+                .add_requirement(
+                    project.id,
+                    crate::model::RequirementKind::Functional,
+                    text.to_owned(),
+                )
+                .unwrap();
+        }
+        manager
+            .propose_plan(
+                project.id,
+                r#"{"tasks": [
+                    {"key": "csv", "title": "Add CSV export to the report menu everywhere", "priority": "high", "depends_on": [], "requirements": ["R1"]},
+                    {"key": "fast", "title": "Stream large exports", "priority": "medium", "depends_on": ["csv"], "requirements": ["R2", "R1"]}
+                ]}"#,
+            )
+            .unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+        app.handle_key(KeyCode::Enter);
+        app.handle_key(KeyCode::Char('g'));
+        let mut terminal = Terminal::new(TestBackend::new(80, 26)).unwrap();
+        terminal.draw(|frame| super::draw(frame, &app)).unwrap();
+        let backend = terminal.backend().clone();
+
+        let (_, first) = rendered_text_position(&backend, "Users can export any report as CSV");
+        let (_, second) = rendered_text_position(&backend, "report menu ");
+        assert_eq!(
+            second,
+            first + 1,
+            "a long requirement wraps onto the next row"
+        );
+        rendered_text_position(&backend, "R1, R2");
+        let (_, title_row) = rendered_text_position(&backend, "Add CSV export to the");
+        let row = (0..80)
+            .map(|x| backend.buffer()[(x, title_row)].symbol().to_owned())
+            .collect::<String>();
+        assert!(
+            row.contains('…') && !row.contains("everywhere"),
+            "a long planned title is shortened with an ellipsis: {row}"
+        );
+        let (_, last_task) = rendered_text_position(&backend, "Stream large exports");
+        let (_, bottom) = rendered_text_position(&backend, "╰─");
+        let bottom = (0..26)
+            .filter(|row| {
+                (0..80)
+                    .map(|x| backend.buffer()[(x, *row)].symbol().to_owned())
+                    .collect::<String>()
+                    .starts_with("╰")
+            })
+            .max()
+            .unwrap_or(bottom);
+        assert_eq!(
+            bottom,
+            last_task + 1,
+            "the plan panel has no trailing blank row"
+        );
+    }
+
+    #[test]
+    fn requirements_screen_adds_and_deletes_requirements() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(root.path()).unwrap();
+        let project = manager.create_project("Planned".to_owned(), None).unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+        app.handle_key(KeyCode::Enter);
+        app.handle_key(KeyCode::Char('g'));
+        assert_eq!(app.screen, Screen::Requirements);
+        let backend = render(&app);
+        rendered_text_position(&backend, "No requirements yet. Press n to add one.");
+
+        app.handle_key(KeyCode::Char('n'));
+        for character in "Exports stream in constant memory".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Right);
+        let backend = render(&app);
+        rendered_text_position(&backend, "◀ non-functional ▶");
+        app.handle_key(KeyCode::Enter);
+        assert!(matches!(app.dialog, Dialog::None), "{:?}", app.error);
+        let requirements = manager.get_project(project.id).unwrap().requirements;
+        assert_eq!(requirements.len(), 1);
+        assert_eq!(
+            requirements[0].kind,
+            crate::model::RequirementKind::NonFunctional
+        );
+        let backend = render(&app);
+        rendered_text_position(&backend, "R1");
+        rendered_text_position(&backend, "Exports stream in constant memory");
+
+        app.handle_key(KeyCode::Char('d'));
+        let backend = render(&app);
+        rendered_text_position(&backend, "Delete requirement R1?");
+        app.handle_key(KeyCode::Char('y'));
+        assert!(
+            manager
+                .get_project(project.id)
+                .unwrap()
+                .requirements
+                .is_empty()
+        );
+        app.handle_key(KeyCode::Backspace);
+        assert_eq!(app.screen, Screen::Tasks);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn planning_runs_in_the_background_and_the_plan_is_applied_after_review() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        std::fs::create_dir_all(&repository).unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repository)
+                .arg("init")
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        let manager = ProjectManager::new(temp.path().join("data")).unwrap();
+        let project = manager
+            .create_project_with_repository(
+                "Planned".to_owned(),
+                None,
+                Some(&repository),
+                None,
+                None,
+                &crate::integrations::GitAdapter::default(),
+            )
+            .unwrap();
+        for text in ["Users can export CSV", "Exports stream in constant memory"] {
+            manager
+                .add_requirement(
+                    project.id,
+                    crate::model::RequirementKind::Functional,
+                    text.to_owned(),
+                )
+                .unwrap();
+        }
+        let pi = temp.path().join("pi");
+        std::fs::write(
+            &pi,
+            "#!/bin/sh\nsleep 0.2\ncat <<'PLAN'\n```json\n{\"tasks\": [\n{\"key\": \"csv\", \"title\": \"Add CSV export\", \"priority\": \"high\", \"depends_on\": [], \"requirements\": [\"R1\"]},\n{\"key\": \"fast\", \"title\": \"Stream large exports\", \"priority\": \"medium\", \"depends_on\": [\"csv\"], \"requirements\": [\"R2\"]}\n]}\n```\nPLAN\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&pi, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut app =
+            Dashboard::new(ProjectManager::new(temp.path().join("data")).unwrap()).unwrap();
+        app.tools = crate::integrations::ToolCommands::with_paths(
+            pi,
+            "herdr".into(),
+            "openspec".into(),
+            "git".into(),
+        );
+        app.handle_key(KeyCode::Enter);
+        app.handle_key(KeyCode::Char('g'));
+
+        app.handle_key(KeyCode::Char('p'));
+        assert!(app.plan_job.is_some());
+        let backend = render(&app);
+        rendered_text_position(&backend, "Planning");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while app.plan_job.is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the planner never finished"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            app.poll_plan_job();
+        }
+        assert_eq!(app.error, None);
+        let backend = render(&app);
+        rendered_text_position(&backend, "Proposed plan");
+        rendered_text_position(&backend, "Stream large exports");
+        rendered_text_position(&backend, "after Add CSV export");
+
+        app.handle_key(KeyCode::Char('y'));
+        assert_eq!(manager.list_tasks(project.id).unwrap().len(), 2);
+        assert_eq!(manager.pending_plan(project.id).unwrap(), None);
+        assert!(
+            app.workflow_status
+                .as_deref()
+                .unwrap()
+                .contains("Created 2 tasks")
+        );
     }
 
     #[test]
