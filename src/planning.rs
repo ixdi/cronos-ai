@@ -317,6 +317,7 @@ mod tests {
                 })
                 .collect(),
             max_parallel_tasks: 1,
+            sandbox: false,
             created_at_unix_secs: 1,
             updated_at_unix_secs: 1,
         }

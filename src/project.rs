@@ -215,6 +215,7 @@ impl ProjectManager {
             releases: false,
             requirements: Vec::new(),
             max_parallel_tasks: 1,
+            sandbox: false,
             created_at_unix_secs: now,
             updated_at_unix_secs: now,
         };
@@ -292,6 +293,21 @@ impl ProjectManager {
         let _write = self.store.lock_writes()?;
         let mut project = self.store.load_project(project_id)?;
         project.check_timeout_minutes = minutes;
+        project.updated_at_unix_secs = now_unix_secs()?;
+        project.validate()?;
+        self.store.save_project(&project)?;
+        Ok(project)
+    }
+
+    /// Turns the worker write sandbox on or off for the project.
+    pub fn set_project_sandbox(
+        &self,
+        project_id: ProjectId,
+        sandbox: bool,
+    ) -> Result<Project, ProjectError> {
+        let _write = self.store.lock_writes()?;
+        let mut project = self.store.load_project(project_id)?;
+        project.sandbox = sandbox;
         project.updated_at_unix_secs = now_unix_secs()?;
         project.validate()?;
         self.store.save_project(&project)?;

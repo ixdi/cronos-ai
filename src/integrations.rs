@@ -1192,6 +1192,23 @@ impl ToolCommands {
         self.run(RequiredTool::Herdr, &args)
     }
 
+    /// Types `command` into a pane's shell and runs it.
+    pub fn herdr_run_in_pane(
+        &self,
+        pane_id: &str,
+        command: &str,
+    ) -> Result<Output, IntegrationError> {
+        self.run(
+            RequiredTool::Herdr,
+            &[
+                OsStr::new("pane"),
+                OsStr::new("run"),
+                OsStr::new(pane_id),
+                OsStr::new(command),
+            ],
+        )
+    }
+
     pub fn herdr_prompt_agent(
         &self,
         name: &str,

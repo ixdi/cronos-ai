@@ -166,6 +166,9 @@ pub struct Project {
     /// Tasks that may be active (In Progress or Error) at the same time.
     #[serde(default = "default_parallelism")]
     pub max_parallel_tasks: u32,
+    /// Whether workers run inside the write sandbox.
+    #[serde(default)]
+    pub sandbox: bool,
     pub created_at_unix_secs: u64,
     pub updated_at_unix_secs: u64,
 }
@@ -707,6 +710,7 @@ mod tests {
             releases: false,
             requirements: Vec::new(),
             max_parallel_tasks: 1,
+            sandbox: false,
             created_at_unix_secs: 0,
             updated_at_unix_secs: 0,
         };
@@ -745,6 +749,7 @@ mod tests {
             releases: false,
             requirements: Vec::new(),
             max_parallel_tasks: 1,
+            sandbox: false,
             created_at_unix_secs: 0,
             updated_at_unix_secs: 0,
         };

@@ -295,8 +295,22 @@ pub fn run() -> Result<Option<PathBuf>, Box<dyn Error>> {
                     })?;
                     let agents: Vec<AgentPlan> = serde_json::from_str(&agents_json)?;
                     let profiles = AgentProfileCatalog::load(&root)?;
-                    let adapter = HerdrAgentAdapter::with_profiles(profiles.clone())
+                    let mut adapter = HerdrAgentAdapter::with_profiles(profiles.clone())
                         .with_step_skills(crate::step_skills::install_step_skills(&root)?);
+                    let project = manager.get_project(parse_project_id(&project_id)?)?;
+                    if project.sandbox {
+                        // A sandboxed project never runs its workers unprotected.
+                        crate::sandbox::sandbox_available()?;
+                        let repository = project
+                            .repository
+                            .as_deref()
+                            .ok_or("a sandboxed project needs a repository")?;
+                        adapter = adapter.with_sandbox(crate::sandbox::SandboxPolicy::for_project(
+                            &root,
+                            std::path::Path::new(repository),
+                            &GitAdapter::default(),
+                        )?);
+                    }
                     let task = WorkflowEngine::with_profiles(manager, adapter, profiles).run_step(
                         parse_project_id(&project_id)?,
                         parse_task_id(&task_id)?,

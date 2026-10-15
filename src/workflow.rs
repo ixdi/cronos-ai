@@ -18,6 +18,7 @@ use crate::{
     integrations::{GitAdapter, ToolCommands, ensure_real_directory, run_check_command},
     model::{AgentStatus, ProjectId, Task, TaskId, TaskStatus, WorkflowStep},
     project::{ProjectError, ProjectManager},
+    sandbox::{SandboxPolicy, macos_profile, sandboxed_shell_command},
     step_skills::StepSkills,
 };
 
@@ -289,6 +290,8 @@ pub struct HerdrAgentAdapter {
     pane_creation: Mutex<()>,
     profiles: AgentProfileCatalog,
     step_skills: StepSkills,
+    /// When set, every worker's pane shell is replaced with a sandboxed one before Pi starts.
+    sandbox: Option<SandboxPolicy>,
     /// Herdr names of agents whose cancellation was requested. Checked before every launch stage,
     /// so a sibling that has not started yet never starts after its step failed.
     cancelled: Mutex<HashSet<String>>,
@@ -305,8 +308,42 @@ impl HerdrAgentAdapter {
             pane_creation: Mutex::new(()),
             profiles,
             step_skills: StepSkills::default(),
+            sandbox: None,
             cancelled: Mutex::new(HashSet::new()),
         }
+    }
+
+    /// Runs every worker inside the write sandbox described by `policy`.
+    pub fn with_sandbox(mut self, policy: SandboxPolicy) -> Self {
+        self.sandbox = Some(policy);
+        self
+    }
+
+    /// Replaces the pane's shell with a sandboxed shell for a worker in `worktree`.
+    fn enter_sandbox(
+        &self,
+        herdr_name: &str,
+        pane_id: &str,
+        worktree: &Path,
+    ) -> Result<(), String> {
+        let Some(policy) = &self.sandbox else {
+            return Ok(());
+        };
+        let directory = ensure_real_directory(&policy.data_dir.join("sandbox"))
+            .map_err(|error| format!("could not prepare the sandbox: {error}"))?;
+        let worktree = std::fs::canonicalize(worktree)
+            .map_err(|error| format!("could not resolve the worktree: {error}"))?;
+        let profile = directory.join(format!("{herdr_name}.sb"));
+        std::fs::write(&profile, macos_profile(policy, &worktree))
+            .map_err(|error| format!("could not write the sandbox profile: {error}"))?;
+        let shell = std::env::var_os("SHELL")
+            .filter(|shell| Path::new(shell).is_absolute())
+            .map_or_else(|| PathBuf::from("/bin/sh"), PathBuf::from);
+        let command = sandboxed_shell_command(policy, &worktree, &profile, &shell)?;
+        self.tools
+            .herdr_run_in_pane(pane_id, &command)
+            .map(|_| ())
+            .map_err(|error| format!("could not start the sandboxed shell: {error}"))
     }
 
     /// Gives every worker the installed built-in skill for its step.
@@ -439,16 +476,20 @@ impl AgentAdapter for HerdrAgentAdapter {
                 .herdr_split_pane(worktree)
                 .map_err(|error| error.to_string())?
         };
-        let result = self.launch_and_wait(
-            &herdr_name,
-            &pane_id,
-            &pi_args,
-            &agent.prompt,
-            timeout_minutes,
-            worktree,
-            step,
-            &agent.name,
-        );
+        let result = self
+            .enter_sandbox(&herdr_name, &pane_id, worktree)
+            .and_then(|()| {
+                self.launch_and_wait(
+                    &herdr_name,
+                    &pane_id,
+                    &pi_args,
+                    &agent.prompt,
+                    timeout_minutes,
+                    worktree,
+                    step,
+                    &agent.name,
+                )
+            });
         if result.is_err() {
             let _ = self.tools.herdr_cancel_agent(&herdr_name);
         }

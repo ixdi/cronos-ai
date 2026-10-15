@@ -458,3 +458,107 @@ fn run_step_from_the_cli_gives_every_worker_the_built_in_skill_for_its_step() {
         &skill.to_string_lossy()
     ));
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_sandboxed_project_starts_each_worker_inside_the_sandbox() {
+    let temp = tempfile::tempdir().unwrap();
+    let repository = temp.path().join("repo");
+    let data_dir = temp.path().join("cronos-data");
+    init_repository(&repository);
+    let manager = ProjectManager::new(&data_dir).unwrap();
+    let git = GitAdapter::default();
+    let project = manager
+        .create_project_with_repository(
+            "Sandboxed".to_owned(),
+            None,
+            Some(&repository),
+            Some(vec!["true".to_owned()]),
+            None,
+            &git,
+        )
+        .unwrap();
+    manager.set_project_sandbox(project.id, true).unwrap();
+    let task = manager
+        .create_task(
+            project.id,
+            "Review".to_owned(),
+            None,
+            Priority::High,
+            Vec::new(),
+        )
+        .unwrap();
+    manager.start_next_task(project.id).unwrap();
+    manager
+        .prepare_task_worktree(project.id, task.id, &git)
+        .unwrap();
+    manager
+        .complete_workflow_step(project.id, task.id, WorkflowStep::SpecificationGeneration)
+        .unwrap();
+    manager
+        .record_approval(
+            project.id,
+            task.id,
+            ApprovalGate::Specifications,
+            ApprovalDecision::Approved,
+            None,
+        )
+        .unwrap();
+    manager
+        .complete_workflow_step(project.id, task.id, WorkflowStep::CodeGeneration)
+        .unwrap();
+    let bin = temp.path().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let log = temp.path().join("herdr-args.log");
+    fake_herdr(&bin.join("herdr"), &log);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cronos-ai"))
+        .arg("--data-dir")
+        .arg(&data_dir)
+        .args([
+            "internal",
+            "workflow",
+            "run-step",
+            &project.id.0.to_string(),
+            &task.id.0.to_string(),
+            "code-review",
+            r#"[{"name":"reviewer","prompt":"Review the branch"}]"#,
+        ])
+        .env(
+            "PATH",
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+        )
+        .env("GIT_CONFIG_GLOBAL", EMPTY_GLOBAL_GIT_CONFIG)
+        .env("SHELL", "/bin/zsh")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let calls = logged_calls(&log);
+    let run = calls
+        .iter()
+        .find(|args| args.starts_with(&["pane".to_owned(), "run".to_owned()]))
+        .expect("the pane's shell is replaced before the agent starts");
+    assert!(
+        run[3].starts_with("exec '/usr/bin/sandbox-exec' '-f' "),
+        "{run:?}"
+    );
+    assert!(run[3].ends_with("'/bin/zsh' '-i'"), "{run:?}");
+    let profile = fs::read_dir(fs::canonicalize(&data_dir).unwrap().join("sandbox"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let rules = fs::read_to_string(profile).unwrap();
+    assert!(rules.contains("(deny file-write* (subpath"), "{rules}");
+    assert!(
+        calls
+            .iter()
+            .any(|args| args.starts_with(&["agent".to_owned(), "start".to_owned()]))
+    );
+}
