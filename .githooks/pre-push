@@ -1,0 +1,12 @@
+#!/usr/bin/env sh
+# Runs the project quality checks before every push so a broken build never
+# leaves the machine. Enable with `mise run install-hooks`. Bypass a single
+# push with `git push --no-verify`.
+set -eu
+
+root=$(git rev-parse --show-toplevel)
+echo "pre-push: running scripts/check.sh" >&2
+if ! "$root/scripts/check.sh"; then
+  echo "pre-push: checks failed; push aborted" >&2
+  exit 1
+fi
