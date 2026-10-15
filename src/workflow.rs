@@ -580,6 +580,14 @@ pub struct WorkflowEngine<A> {
 }
 
 impl<A: AgentAdapter> WorkflowEngine<A> {
+    pub fn manager(&self) -> &ProjectManager {
+        &self.manager
+    }
+
+    pub fn adapter(&self) -> &A {
+        &self.adapter
+    }
+
     pub fn new(manager: ProjectManager, adapter: A) -> Self {
         Self::with_tools(
             manager,

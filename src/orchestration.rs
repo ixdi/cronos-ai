@@ -2,12 +2,21 @@
 //! one-shot planner proposes the agents and their prompts, Rust validates the proposal (or uses a
 //! templated default plan), and the workflow engine runs the step.
 
+use std::{path::Path, time::Duration};
+
 use serde::Deserialize;
 
 use crate::{
     agent_profiles::AgentProfileCatalog,
-    model::{AgentStatus, ApprovalDecision, RecoveryAction, Task, WorkflowStep},
-    workflow::{AgentPlan, agent_count_range, validate_agents, validate_profile_assignments},
+    integrations::ToolCommands,
+    model::{
+        AgentStatus, ApprovalDecision, ProjectId, RecoveryAction, Task, TaskId, TaskStatus,
+        WorkflowStep,
+    },
+    workflow::{
+        AgentAdapter, AgentPlan, WorkflowEngine, WorkflowError, agent_count_range, validate_agents,
+        validate_profile_assignments,
+    },
 };
 
 /// Findings recorded for the current attempt that a step's agents should act on.
@@ -225,6 +234,94 @@ pub fn default_plan(task: &Task, step: WorkflowStep, context: &StepContext) -> V
     }]
 }
 
+/// Proposes the agents for a step; the answer is parsed and validated by the caller.
+pub trait StepPlanner {
+    fn plan(&self, task: &Task, step: WorkflowStep, prompt: &str) -> Result<String, String>;
+}
+
+/// The production step planner: a one-shot, read-only Pi run in the task's worktree.
+pub struct PiStepPlanner {
+    pub tools: ToolCommands,
+    pub model: Option<String>,
+    pub timeout: Duration,
+}
+
+impl StepPlanner for PiStepPlanner {
+    fn plan(&self, task: &Task, _step: WorkflowStep, prompt: &str) -> Result<String, String> {
+        let worktree = task
+            .worktree
+            .as_deref()
+            .ok_or("the task has no worktree to read")?;
+        self.tools
+            .run_step_planner(
+                Path::new(worktree),
+                self.model.as_deref(),
+                prompt,
+                self.timeout,
+            )
+            .map_err(|error| error.to_string())
+    }
+}
+
+/// Runs the task's agent steps one after another until it reaches a human approval, the local
+/// merge, Error, or Completed, and returns the task as it stands then. Each step is planned by
+/// `planner`; when that fails or proposes an invalid plan, the default plan runs instead and the
+/// reason is recorded as `orchestrator` activity.
+pub fn run_task<A: AgentAdapter, P: StepPlanner>(
+    engine: &WorkflowEngine<A>,
+    planner: &P,
+    profiles: &AgentProfileCatalog,
+    project_id: ProjectId,
+    task_id: TaskId,
+    progress: &mut dyn FnMut(&str),
+) -> Result<Task, WorkflowError> {
+    loop {
+        let task = engine.manager().get_task(project_id, task_id)?;
+        let Some(step) = task
+            .current_step
+            .as_deref()
+            .and_then(WorkflowStep::parse)
+            .filter(|step| task.status == TaskStatus::InProgress && step.runs_agents())
+        else {
+            return Ok(task);
+        };
+        let context = StepContext::for_task(&task, step);
+        progress(&format!("{}: planning the agents", step.as_str()));
+        let prompt = step_planning_prompt(&task, step, &context, profiles);
+        let agents = match planner
+            .plan(&task, step, &prompt)
+            .and_then(|answer| parse_step_plan(&answer, step, profiles))
+        {
+            Ok(agents) => agents,
+            Err(reason) => {
+                engine.manager().record_agent_activity(
+                    project_id,
+                    task_id,
+                    "orchestrator".to_owned(),
+                    step.as_str().to_owned(),
+                    AgentStatus::Completed,
+                    Some(format!(
+                        "Step planner unavailable, so the default plan ran: {reason}"
+                    )),
+                )?;
+                default_plan(&task, step, &context)
+            }
+        };
+        progress(&format!(
+            "{}: {} {} running ({})",
+            step.as_str(),
+            agents.len(),
+            if agents.len() == 1 { "agent" } else { "agents" },
+            agents
+                .iter()
+                .map(|agent| agent.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+        engine.run_step(project_id, task_id, step, agents)?;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -287,6 +384,138 @@ mod tests {
             timeout_minutes: None,
         }])
         .unwrap()
+    }
+
+    struct RecordingAgents(std::sync::Mutex<Vec<(String, String)>>);
+
+    impl crate::workflow::AgentAdapter for RecordingAgents {
+        fn run(
+            &self,
+            _task: &Task,
+            step: WorkflowStep,
+            agent: &crate::workflow::AgentPlan,
+        ) -> Result<crate::workflow::AgentReport, String> {
+            self.0
+                .lock()
+                .unwrap()
+                .push((step.as_str().to_owned(), agent.name.clone()));
+            Ok(crate::workflow::AgentReport::success("done"))
+        }
+
+        fn cancel(&self, _: &Task, _: WorkflowStep, _: &crate::workflow::AgentPlan) {}
+    }
+
+    /// Answers with a plan for review and verification, and fails for every other step.
+    struct ScriptedPlanner;
+
+    impl super::StepPlanner for ScriptedPlanner {
+        fn plan(&self, _task: &Task, step: WorkflowStep, prompt: &str) -> Result<String, String> {
+            assert!(prompt.contains(step.as_str()));
+            match step {
+                WorkflowStep::SpecificationGeneration => Ok(
+                    "{\"agents\": [{\"name\": \"writer\", \"prompt\": \"Specify it\"}]}".to_owned(),
+                ),
+                WorkflowStep::CodeReview | WorkflowStep::Verification => Ok(
+                    "{\"agents\": [{\"name\": \"quality\", \"prompt\": \"Check it\"}, {\"name\": \"security\", \"prompt\": \"Probe it\"}]}".to_owned(),
+                ),
+                _ => Err("the planner timed out".to_owned()),
+            }
+        }
+    }
+
+    #[test]
+    fn the_step_loop_runs_agent_steps_until_a_human_or_rust_step() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = crate::project::ProjectManager::new(root.path()).unwrap();
+        let project = manager.create_project("Loop".to_owned(), None).unwrap();
+        let task = manager
+            .create_task(
+                project.id,
+                "Build".to_owned(),
+                None,
+                Priority::High,
+                Vec::new(),
+            )
+            .unwrap();
+        manager.start_next_task(project.id).unwrap();
+        let agents = RecordingAgents(std::sync::Mutex::new(Vec::new()));
+        let engine = crate::workflow::WorkflowEngine::new(
+            crate::project::ProjectManager::new(root.path()).unwrap(),
+            agents,
+        );
+        let mut progress = Vec::new();
+
+        let waiting = super::run_task(
+            &engine,
+            &ScriptedPlanner,
+            &AgentProfileCatalog::default(),
+            project.id,
+            task.id,
+            &mut |line: &str| progress.push(line.to_owned()),
+        )
+        .unwrap();
+        assert_eq!(
+            waiting.current_step.as_deref(),
+            Some("specification-approval")
+        );
+
+        manager
+            .record_approval(
+                project.id,
+                task.id,
+                ApprovalGate::Specifications,
+                ApprovalDecision::Approved,
+                None,
+            )
+            .unwrap();
+        let waiting = super::run_task(
+            &engine,
+            &ScriptedPlanner,
+            &AgentProfileCatalog::default(),
+            project.id,
+            task.id,
+            &mut |line: &str| progress.push(line.to_owned()),
+        )
+        .unwrap();
+
+        assert_eq!(waiting.current_step.as_deref(), Some("final-approval"));
+        let mut ran = engine_agents(&engine);
+        ran.sort();
+        assert_eq!(
+            ran,
+            [
+                ("code-generation", "builder"),
+                ("code-review", "quality"),
+                ("code-review", "security"),
+                ("specification-generation", "writer"),
+                ("verification", "quality"),
+                ("verification", "security"),
+            ]
+            .map(|(step, name)| (step.to_owned(), name.to_owned()))
+        );
+        let fallback = waiting
+            .agent_activity
+            .iter()
+            .find(|activity| activity.agent_name == "orchestrator")
+            .unwrap();
+        assert!(
+            fallback
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("the planner timed out")
+        );
+        assert!(
+            progress
+                .iter()
+                .any(|line| line.contains("code-review: 2 agents"))
+        );
+    }
+
+    fn engine_agents(
+        engine: &crate::workflow::WorkflowEngine<RecordingAgents>,
+    ) -> Vec<(String, String)> {
+        engine.adapter().0.lock().unwrap().clone()
     }
 
     #[test]

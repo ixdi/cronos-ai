@@ -938,6 +938,21 @@ impl ToolCommands {
         self.run_one_shot_pi(repository, &args, prompt, timeout, "planner")
     }
 
+    /// Runs Pi once, read-only, in a task worktree to plan the agents of a workflow step.
+    pub fn run_step_planner(
+        &self,
+        worktree: &Path,
+        model: Option<&str>,
+        prompt: &str,
+        timeout: Duration,
+    ) -> Result<String, IntegrationError> {
+        let mut args = vec![OsString::from("--tools"), "read,grep,find,ls".into()];
+        if let Some(model) = model {
+            args.extend(["--model".into(), model.into()]);
+        }
+        self.run_one_shot_pi(worktree, &args, prompt, timeout, "step planner")
+    }
+
     /// Runs Pi once with no tools at all, on `model` when given, for a quick decision such as
     /// which task to start next.
     pub fn run_prioritizer(
