@@ -1634,12 +1634,26 @@ fn selected_row_style() -> Style {
 fn draw_empty_state(frame: &mut Frame, block: Block<'static>, area: Rect, message: Line<'static>) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let row = Rect {
-        y: inner.y + inner.height / 2,
-        height: 1.min(inner.height),
+    let text = Rect {
+        x: inner.x + 2.min(inner.width / 2),
+        width: inner.width.saturating_sub(4).max(1),
         ..inner
     };
-    frame.render_widget(Paragraph::new(message).alignment(Alignment::Center), row);
+    // Word wrapping can need one line more than the plain width estimate.
+    let lines = (message.width() as u16).div_ceil(text.width);
+    let lines = if lines > 1 { lines + 1 } else { lines };
+    let height = lines.min(inner.height);
+    let row = Rect {
+        y: inner.y + (inner.height - height) / 2,
+        height,
+        ..text
+    };
+    frame.render_widget(
+        Paragraph::new(message)
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true }),
+        row,
+    );
 }
 
 fn key_hint(before: &str, key: &str, after: &str) -> Line<'static> {
@@ -1736,7 +1750,8 @@ fn draw_projects(frame: &mut Frame, app: &Dashboard, area: Rect) {
             "Tasks",
         ]))
         .column_spacing(2)
-        .block(block)
+        // Mirrors the highlight-symbol column so the last column never touches the border.
+        .block(block.padding(Padding::right(1)))
         .highlight_symbol("▌")
         .row_highlight_style(selected_row_style()),
         area,
@@ -2855,6 +2870,36 @@ mod tests {
             project.check_command.as_deref(),
             Some(&["./scripts/check.sh".to_owned(), "--all".to_owned()][..])
         );
+    }
+
+    #[test]
+    fn long_empty_state_messages_wrap_inside_narrow_panels() {
+        let root = tempfile::tempdir().unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+        app.handle_key(KeyCode::Char('p'));
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| super::draw(frame, &app)).unwrap();
+        let backend = terminal.backend().clone();
+
+        assert!(rendered_text_position(&backend, "to create one.").1 > 0);
+        let (x, _) = rendered_text_position(&backend, "No agent profiles yet.");
+        assert!(x >= 2, "the message keeps a gap from the panel border");
+    }
+
+    #[test]
+    fn project_table_keeps_a_gap_before_the_right_border() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(root.path()).unwrap();
+        manager.create_project("Demo".to_owned(), None).unwrap();
+        let app = Dashboard::new(manager).unwrap();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| super::draw(frame, &app)).unwrap();
+        let backend = terminal.backend().clone();
+
+        let (x, y) = rendered_text_position(&backend, "Tasks");
+        assert_eq!(backend.buffer()[(x + 5, y)].symbol(), " ");
     }
 
     #[test]
