@@ -2250,6 +2250,9 @@ fn draw_projects(frame: &mut Frame, app: &Dashboard, area: Rect) {
         );
         return;
     }
+    // Borders, right padding, the selection marker, column gaps, and the fixed columns; the rest
+    // is shared by the name, repository, and check command columns.
+    let flexible = usize::from(area.width).saturating_sub(4 + 10 + 11 + 7 + 5) / 3;
     let rows = app.projects.iter().map(|project| {
         let status = match project.status {
             ProjectStatus::Active => "● active",
@@ -2257,11 +2260,11 @@ fn draw_projects(frame: &mut Frame, app: &Dashboard, area: Rect) {
         };
         let repository = project.repository.as_deref().map_or_else(
             || Span::styled("— not set", Style::default().fg(WARNING)),
-            |path| Span::raw(truncate_start(&terminal_safe(path), 48)),
+            |path| Span::raw(truncate_start(&terminal_safe(path), flexible)),
         );
         let check = project.check_command.as_ref().map_or_else(
             || Span::styled("— not set", Style::default().fg(WARNING)),
-            |command| Span::raw(truncate_end(&terminal_safe(&command.join(" ")), 30)),
+            |command| Span::raw(truncate_end(&terminal_safe(&command.join(" ")), flexible)),
         );
         // The default limit is muted so a project-specific one stands out.
         let limit = Span::styled(
@@ -2273,20 +2276,23 @@ fn draw_projects(frame: &mut Frame, app: &Dashboard, area: Rect) {
             },
         );
         Row::new(vec![
-            Cell::from(Line::from(vec![
-                Span::styled(
-                    terminal_safe(&project.name),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    project
-                        .description
-                        .as_deref()
-                        .map(|description| format!("  {}", terminal_safe(description)))
-                        .unwrap_or_default(),
-                    Style::default().fg(MUTED),
-                ),
-            ])),
+            Cell::from(fit_line(
+                Line::from(vec![
+                    Span::styled(
+                        terminal_safe(&project.name),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        project
+                            .description
+                            .as_deref()
+                            .map(|description| format!("  {}", terminal_safe(description)))
+                            .unwrap_or_default(),
+                        Style::default().fg(MUTED),
+                    ),
+                ]),
+                flexible,
+            )),
             Cell::from(Span::styled(
                 status,
                 Style::default().fg(project_status_color(&project.status)),
@@ -3759,6 +3765,32 @@ mod tests {
         assert!(rendered_text_position(&backend, "to create one.").1 > 0);
         let (x, _) = rendered_text_position(&backend, "No agent profiles yet.");
         assert!(x >= 2, "the message keeps a gap from the panel border");
+    }
+
+    #[test]
+    fn long_project_descriptions_end_with_an_ellipsis() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(root.path()).unwrap();
+        manager
+            .create_project(
+                "Docs site".to_owned(),
+                Some("Public documentation for every product".to_owned()),
+            )
+            .unwrap();
+        let app = Dashboard::new(manager).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(112, 13)).unwrap();
+        terminal.draw(|frame| super::draw(frame, &app)).unwrap();
+        let backend = terminal.backend().clone();
+
+        let (_, row) = rendered_text_position(&backend, "Docs site");
+        let line = (0..112)
+            .map(|x| backend.buffer()[(x, row)].symbol().to_owned())
+            .collect::<String>();
+        assert!(line.contains("Public docum"), "{line}");
+        assert!(
+            line.contains("…  ● active"),
+            "the name column ends with an ellipsis: {line}"
+        );
     }
 
     #[test]
