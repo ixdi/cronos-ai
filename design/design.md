@@ -41,7 +41,7 @@ The OpenSpec specs in `openspec/specs/` are the source of truth for behavior. Th
 | Git worktrees | One worktree and branch per attempt; local merge only | Implemented |
 | Agent profiles | Per-step Pi skills, extensions, MCP config, model, and time limit; managed in the TUI (`p`) or by editing `agent-profiles.json` | Implemented |
 | Built-in step skills | One Pi skill per agent step (`skills/`), embedded in the binary and loaded by every worker before profile skills | Implemented |
-| Jev | Prioritization and dependency model | Future (built-in priority/dependency ordering is used) |
+| Jev / agent prioritizer | Choosing which startable task goes first | Implemented as an optional agent prioritizer on any Pi model; set it to Jev once Pi can run it |
 | Remote push / GitHub | Publishing after merge: local only, merge and push, or pull request through `gh` | Implemented |
 | Release numbers, changelog per release | Opt-in per project: each local merge is tagged with the next semantic version from its Conventional Commits and prepended to `CHANGELOG.md`; computed on the base at merge time so parallel tasks never conflict | Implemented |
 
@@ -62,7 +62,7 @@ The OpenSpec specs in `openspec/specs/` are the source of truth for behavior. Th
    - *Future:* more input sources, such as issue trackers.
 2. **Task prioritization.**
    - *Implemented:* priority (high, medium, low), dependencies within the same project, and a ready queue that never starts a task before its dependencies are Completed.
-   - *Future:* Jev-based ranking.
+   - *Implemented, optional:* an agent prioritizer (a one-shot, tool-less Pi run on the project's chosen model, intended for a fast selection model such as Jev) ranks the startable tasks; it only reorders what the rules allow, and a failed or invalid answer falls back to the built-in order.
 
 ### Per-task steps
 
@@ -173,4 +173,4 @@ Pi keeps running agent steps until the task reaches an approval gate, local merg
 
 ## Future work
 
-- Jev-based prioritization.
+- No open items; see the Future notes above (web dashboard, more task input sources, per-task prompt and resource snapshots).

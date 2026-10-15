@@ -28,7 +28,7 @@ Rule applied: the specs and code are the truth. `design/design.md` now labels ev
 | Model per step                        | Implemented through profile `model`.                                                                                                                                 |
 | Release number and changelog per task | Future, as per-release versioning, so parallel tasks don't conflict.                                                                                                 |
 | Kanban and analytics                  | Future.                                                                                                                                                              |
-| Jev                                   | Future; built-in priority and dependency ordering is used.                                                                                                           |
+| Jev                                   | Implemented as an optional agent prioritizer on a configurable model; built-in ordering stays the default and fallback.                                              |
 
 ## OpenSpec questions
 

@@ -43,6 +43,8 @@ Cronos tools cannot change task status, approvals, or worktree paths, and Rust v
 
 With `project set-sandbox on`, each worker instead runs in a write sandbox (`sandbox-exec` on macOS, bubblewrap on Linux): it can still write its worktree, the repository's Git objects, build caches, and temporary files, but not Cronos data, the base checkout, or the repository's `.git/hooks` and `.git/config`. The sandbox does not limit network access or reading files, and a worker can still weaken tests inside its worktree, so the human gates remain the real protection. Run Cronos-AI as a dedicated OS user or in a container for untrusted work.
 
-## Jev
+## Prioritizer (Jev)
 
-Jev is not installed and is not required by this release. Use the built-in priority/dependency ordering for the MVP. A later change will create a Pi extension that integrates Jev.
+The original design picked Jev, a fast selection model, to choose the next task. Cronos-AI runs that decision as a one-shot Pi call instead, so it works with any model Pi can reach: `pi -p --mode text --no-session --no-tools --no-approve` with discovery off and `--model` from `project set-prioritizer --model` (Pi's default model otherwise). Set the model to Jev once Pi can run it.
+
+The prompt lists only the tasks the scheduling rules already allow to start, under keys `T1`, `T2`, ..., plus the running tasks. The answer must contain `{"order": ["T2", "T1"], "reason": "..."}`; Rust rejects unknown or repeated keys, keeps omitted tasks after the ranked ones in built-in order, and falls back to the built-in order on any failure or after two minutes. The reason is recorded as `prioritizer` activity on the first task started.

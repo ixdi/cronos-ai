@@ -236,3 +236,14 @@ A project SHALL store whether its workers run in the write sandbox, defaulting t
 #### Scenario: Turn the sandbox on
 - **WHEN** a user turns the sandbox on for a project
 - **THEN** the setting is saved and later workflow steps run their workers in the sandbox
+
+### Requirement: Project prioritizer setting
+A project SHALL store its prioritizer, `built-in` by default or `agent`, and an optional prioritizer model, set from the CLI, with the prioritizer also selectable in the TUI project form. A model name SHALL start with a letter or digit and contain only letters, digits, `.`, `_`, `:`, `/`, and `-`.
+
+#### Scenario: Use a fast selection model
+- **WHEN** a user sets the agent prioritizer with a model such as a fast selection model
+- **THEN** later rankings run on that model
+
+#### Scenario: Reject an unsafe model name
+- **WHEN** a user sets a prioritizer model that starts with `-` or contains other characters
+- **THEN** the project is unchanged and the user sees the allowed format

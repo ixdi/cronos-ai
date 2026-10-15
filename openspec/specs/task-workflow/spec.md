@@ -309,3 +309,22 @@ When a project's sandbox is on, the system SHALL run every worker inside an oper
 #### Scenario: Sandbox tool missing
 - **WHEN** a sandboxed project's step starts on a machine without the sandbox tool
 - **THEN** the step does not start and the user is told what to install
+
+### Requirement: Agent prioritization
+When a project uses the agent prioritizer and more than one task may start, the system SHALL ask a tool-less Pi agent, on the project's prioritizer model when one is set, to rank the startable tasks, SHALL start tasks in that order, and SHALL record the agent's reason on the first task it starts. The agent SHALL only reorder tasks the scheduling rules allow to start. A failed, timed-out, or invalid ranking SHALL fall back to the built-in order.
+
+#### Scenario: The agent chooses the next task
+- **WHEN** the agent ranks a medium-priority task that unblocks other work above an older task of the same priority
+- **THEN** the unblocking task starts first and its activity records the agent's reason
+
+#### Scenario: The agent cannot widen the choice
+- **WHEN** the agent ranks a task whose dependencies are not Completed first
+- **THEN** that task does not start and the next startable task in the agent's order starts instead
+
+#### Scenario: The agent fails
+- **WHEN** the prioritizer fails, times out, or answers without a valid ranking
+- **THEN** tasks start in the built-in order and the user is told why
+
+#### Scenario: Show the order without starting
+- **WHEN** a user asks for the start order
+- **THEN** the system shows the startable tasks in the order they would start, with the agent's reason when the agent ranked them, and starts nothing
