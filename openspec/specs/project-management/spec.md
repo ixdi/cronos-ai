@@ -106,7 +106,7 @@ The TUI SHALL retain textual status, error, outcome, and keyboard-action labels 
 - **THEN** status, error, outcome, and keyboard-action text still communicates the same meaning
 
 ### Requirement: Project check command
-A project SHALL store an optional check command as a program and arguments, run without a shell. Users SHALL set it from the CLI or the TUI project form. Starting tasks SHALL require a configured check command.
+A project SHALL store an optional check command as a program and arguments, run without a shell, and an optional check time limit from 1 to 480 minutes that defaults to 60 minutes when unset. Users SHALL set both from the CLI or the TUI project form. Starting tasks SHALL require a configured check command.
 
 #### Scenario: Configure a check command
 - **WHEN** a user sets a project's check command
@@ -115,6 +115,18 @@ A project SHALL store an optional check command as a program and arguments, run 
 #### Scenario: Start without a check command
 - **WHEN** a user starts a task in a project without a check command
 - **THEN** the TUI explains that a check command is required and starts nothing
+
+#### Scenario: Configure a check time limit
+- **WHEN** a user sets a project's check time limit to a whole number of minutes from 1 to 480
+- **THEN** it is saved, shown with the project, and verification stops the check command when that limit is reached
+
+#### Scenario: Reject an invalid check time limit
+- **WHEN** a user sets a check time limit of 0, more than 480, or a value that is not a whole number of minutes
+- **THEN** the project is unchanged and the user sees why the limit was rejected
+
+#### Scenario: Restore the default limit
+- **WHEN** a user clears a project's check time limit
+- **THEN** verification stops the check command after 60 minutes
 
 ### Requirement: Approval review view
 Task details SHALL show the worktree path, branch, OpenSpec change, and the current step's elapsed time. A review view SHALL show the task's OpenSpec change, its commits and diff summary against the base, and the latest check-command output.

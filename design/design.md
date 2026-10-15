@@ -73,7 +73,7 @@ Each step lists its agents and the rules Rust enforces.
 | 2 | `specification-approval` | human | Approve to continue to step 3, or request a revision with a note to return to step 1. |
 | 3 | `code-generation` | exactly 1 | The agent implements the change with tests and commits (Conventional Commit). The worktree must be clean. |
 | 4 | `code-review` | 1-4 in parallel | Read-only: Rust compares `HEAD` and file status before and after the step. |
-| 5 | `verification` | 1-4 in parallel | Read-only. Afterwards, Rust runs the project check command in the worktree (60-minute limit, whole process group stopped on timeout). The check must not leave new files in the worktree. |
+| 5 | `verification` | 1-4 in parallel | Read-only. Afterwards, Rust runs the project check command in the worktree (the project's check time limit, 60 minutes by default and 1 to 480 when set; the whole process group is stopped on timeout). The check must not leave new files in the worktree. |
 | 6 | `final-approval` | human | Approve to continue to step 7, or request a revision with a note to return to step 3. |
 | 7 | `documentation` | 1-4 in parallel | Agents write documentation files without committing. Rust archives the OpenSpec change (syncing its specs) and makes one `docs: document <title>` commit. |
 | 8 | `local-merge` | Rust | Requires a clean base and worktree, then runs `git merge --no-ff`. Nothing is pushed. |
@@ -179,5 +179,4 @@ Pi keeps running agent steps until the task reaches an approval gate, local merg
 - Optional remote push or PR creation after merge; release numbering; changelog per release.
 - Kanban, analytics, and inline diff views in the TUI.
 - Parallel code-generation agents in separate sub-worktrees with a deterministic merge.
-- A configurable check-command time limit.
 - Sandboxed workers.

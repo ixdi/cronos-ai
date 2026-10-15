@@ -31,7 +31,7 @@ Rust appends a fixed contract to every agent prompt: the result file, the OpenSp
 
 Rust decides the step outcome from these files, never from terminal output. `.cronos/` is listed in the repository's local `info/exclude`, so result files and check output are never committed. Cronos refuses to read or remove result files through a symlinked directory.
 
-Agents run under a time limit: 30 minutes for specification generation, code review, and documentation; 60 minutes for code generation and verification. A profile's `timeout_minutes` overrides it. The check command has a fixed 60-minute limit; on timeout its whole process group is stopped.
+Agents run under a time limit: 30 minutes for specification generation, code review, and documentation; 60 minutes for code generation and verification. A profile's `timeout_minutes` overrides it. The check command runs under the project's check time limit, 60 minutes unless the project sets 1 to 480 minutes with `project set-check-timeout` or the TUI project form; on timeout its whole process group is stopped.
 
 ## Outcomes
 

@@ -6,6 +6,7 @@ Cronos-AI starts the TUI when invoked without a subcommand. Project and task man
 cronos-ai [--data-dir DIR] project create <name> [--description <text>] [--repository <PATH>]
 cronos-ai [--data-dir DIR] project set-repository <project-id> --repository <PATH>
 cronos-ai [--data-dir DIR] project set-check-command <project-id> -- <program> [args...]
+cronos-ai [--data-dir DIR] project set-check-timeout <project-id> [minutes]
 cronos-ai [--data-dir DIR] project list
 cronos-ai [--data-dir DIR] project select <project-id>
 cronos-ai [--data-dir DIR] project update <project-id> [--name <name>] [--description <text>]
@@ -15,7 +16,7 @@ cronos-ai [--data-dir DIR] task list <project-id>
 cronos-ai [--data-dir DIR] task ready <project-id>
 ```
 
-Commands print the affected record or result as JSON. `project set-check-command` stores the program and its arguments separately; the check runs without a shell in the task worktree after the verification agents, and a relative program such as `./scripts/check.sh` resolves inside the worktree. `project select` prints an active project for the current command; it does not persist a global selection. Archived projects remain visible in `project list` but cannot be selected for active work or receive new tasks. A task dependency must refer to another task in the same project. `task ready` returns pending tasks whose dependencies are all completed, ordered by priority (high first) and then creation time.
+Commands print the affected record or result as JSON. `project set-check-command` stores the program and its arguments separately; the check runs without a shell in the task worktree after the verification agents, and a relative program such as `./scripts/check.sh` resolves inside the worktree. `project set-check-timeout` sets how many minutes (1 to 480) the check may run before it is stopped; omit the minutes to restore the 60-minute default. `project select` prints an active project for the current command; it does not persist a global selection. Archived projects remain visible in `project list` but cannot be selected for active work or receive new tasks. A task dependency must refer to another task in the same project. `task ready` returns pending tasks whose dependencies are all completed, ordered by priority (high first) and then creation time.
 
 ## Create a project from the TUI
 

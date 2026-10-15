@@ -34,7 +34,7 @@ Projects store the canonical root of a user-selected local Git repository. When 
 
 ## Check command
 
-The project check command runs without a shell in the task worktree after the verification agents, in its own process group so a timeout stops everything it started. Output goes to `.cronos/check-output.log`, which Cronos creates fresh and never writes through a symlink. A non-zero exit, or new files left in the worktree, sends the task back to code generation. A relative program such as `./scripts/check.sh` runs the task branch's version; if the branch changed it, Cronos records a warning for the human reviewer.
+The project check command runs without a shell in the task worktree after the verification agents, in its own process group so reaching the project's check time limit (60 minutes unless the project sets 1 to 480) stops everything it started. Output goes to `.cronos/check-output.log`, which Cronos creates fresh and never writes through a symlink. A non-zero exit, or new files left in the worktree, sends the task back to code generation. A relative program such as `./scripts/check.sh` runs the task branch's version; if the branch changed it, Cronos records a warning for the human reviewer.
 
 ## Trust boundary
 

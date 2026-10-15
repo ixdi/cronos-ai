@@ -65,11 +65,12 @@ You can also create projects and tasks directly in the dashboard:
 2. Select the project with **Enter**. On its task list, press **n** to create a task. Enter a title and optional description; priority defaults to **Medium**. Use **Tab**/**Shift+Tab** to move between fields, **←/→** to change priority, and **↑/↓** plus **Space** to select task dependencies.
 3. Press **Enter** to save. The task remains **Pending**; press **s** when you are ready to start the next ready task.
 
-The project form is only for new projects. To add a repository or check command to an existing project, use the CLI:
+The project form is only for new projects. To add a repository, check command, or check time limit to an existing project, use the CLI:
 
 ```sh
 ./target/release/cronos-ai project set-repository <PROJECT_ID> --repository /path/to/repository
 ./target/release/cronos-ai project set-check-command <PROJECT_ID> -- ./scripts/check.sh
+./target/release/cronos-ai project set-check-timeout <PROJECT_ID> 90   # minutes, 1-480; omit to restore 60
 ```
 
 ## When something fails

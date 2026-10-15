@@ -271,7 +271,7 @@
 				<h3>Results, checks, and limits</h3>
 				<p>Every agent writes a JSON result (<code>success</code>, <code>changes_requested</code>, or <code>failed</code>) under <code>.cronos/</code>
 					in the worktree, which is never committed. Rust decides each step from these results, then runs your check command without a shell after verification.</p>
-				<p class="small">Agents have 30- or 60-minute limits per step. A check that fails or leaves files behind sends the code back; a task branch that edits the check program is flagged in the review view.</p>
+				<p class="small">Agents have 30- or 60-minute limits per step, and the check command has a per-project limit (60 minutes by default). A check that fails or leaves files behind sends the code back; a task branch that edits the check program is flagged in the review view.</p>
 			</article>
 		</div>
 		<div class="notice" role="note"><strong>Model access:</strong>
