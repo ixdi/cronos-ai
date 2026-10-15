@@ -82,7 +82,8 @@ pub fn ranking_prompt(project: &str, candidates: &[Task], running: &[Task]) -> S
          Tasks already running:\n{running}\n\n\
          Prefer work that unblocks other work, reduces risk early, and delivers user value; \
          use the stated priority as a strong hint, not a rule. Answer only with JSON:\n\
-         {{\"order\": [\"T2\", \"T1\"], \"reason\": \"one sentence on why the first task goes first\"}}"
+         {{\"order\": [\"T2\", \"T1\"], \"reason\": \"one sentence on why the first task goes first\"}}\n\
+         In the reason, name tasks by their titles, never by T keys."
     )
 }
 
@@ -174,6 +175,7 @@ mod tests {
         assert!(prompt.contains("T2 [low] Fix login"));
         assert!(prompt.contains("- Set up CI"));
         assert!(prompt.contains("\"order\""));
+        assert!(prompt.contains("name tasks by their titles, never by T keys"));
     }
 
     #[test]
