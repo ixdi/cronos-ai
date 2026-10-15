@@ -826,14 +826,19 @@ impl Dashboard {
             .merge_and_complete_task(project_id, task_id, &GitAdapter::default())
         {
             Ok(MergeOutcome::Completed(task)) => {
+                let release = task
+                    .release
+                    .as_deref()
+                    .map(|release| format!(" as {}", terminal_safe(release)))
+                    .unwrap_or_default();
                 self.workflow_status = Some(match task.published {
-                    Some(published) => {
-                        format!(
-                            "Task completed and published: {}",
-                            terminal_safe(&published)
-                        )
+                    Some(published) => format!(
+                        "Task completed{release} and published: {}",
+                        terminal_safe(&published)
+                    ),
+                    None => {
+                        format!("Task merged locally{release} and completed; nothing was pushed.")
                     }
-                    None => "Task merged locally and completed; nothing was pushed.".to_owned(),
                 });
             }
             Ok(MergeOutcome::BaseDirty(path)) => {
