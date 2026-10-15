@@ -15,9 +15,12 @@ It is an opinionated stack with a Rust TUI. Rust owns persisted task state, huma
 
 - Manage projects and prioritized, dependency-aware tasks from the CLI and TUI.
 - Record a project's functional and non-functional requirements and let a read-only Pi planner propose the tasks that cover them; nothing is created until you approve the plan.
-- Monitor task status and agent activity in a terminal dashboard.
+- Monitor task status and agent activity in a terminal dashboard, as a table or a kanban board, with a progress summary and per-file diffs in the review view.
 - Manage named Pi skill, extension, MCP, model, and time-limit profiles for workflow agents from the TUI.
 - Run each task through specification, implementation, review, verification, approval, documentation, and local merge steps, one task at a time or several in parallel up to a per-project capacity, never two tasks that share a requirement. Agents report structured results; Rust decides each step from them and runs the project's check command before final approval.
+- Drive each task with a Rust step loop: before every agent step, a one-shot, read-only Pi step planner proposes the agents and their prompts, with a templated default plan if it fails.
+- Choose which ready task starts next by priority, or let an agent prioritizer decide on a model you pick, such as a fast selection model.
+- Optionally run workers in a write sandbox that keeps them from changing Cronos data, the base checkout, and Git hooks.
 - Send code back for automatic revision (up to 3 per attempt) when reviewers, verifiers, or the check command find problems.
 - Require human approval of specifications and final code, with a review view of the spec, commits, diff, and check output; request revisions, retry a failed step, or recover failed attempts with additional context.
 - Give each attempt an isolated local Git worktree. After final approval, changes are merged locally by default, or, per project, merged and pushed or opened as a pull request with the GitHub CLI. Projects can also tag each merge as a semantic-version release and record it in `CHANGELOG.md`.

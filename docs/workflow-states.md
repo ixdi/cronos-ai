@@ -2,7 +2,7 @@
 
 ## Task queue
 
-Cronos runs up to the project's parallel capacity of tasks at a time (1 by default; set 1 to 8 with `project set-parallelism` or the project form). Tasks that are In Progress or Error fill the tracks, so an Error task must be recovered or abandoned to free its track. `start_next_task` selects the highest-priority ready Pending task whose dependencies are Completed and that shares no requirement with an active task; a task that would touch the same requirement waits. With `project set-prioritizer agent`, a fast agent first ranks the startable tasks and they start in its order; it cannot start a task the rules disallow, and the built-in order is used when it fails. In the TUI, **s** resumes every interrupted task and then starts ready tasks until the tracks are full, each with its own Pi orchestrator.
+Cronos runs up to the project's parallel capacity of tasks at a time (1 by default; set 1 to 8 with `project set-parallelism` or the project form). Tasks that are In Progress or Error fill the tracks, so an Error task must be recovered or abandoned to free its track. `start_next_task` selects the highest-priority ready Pending task whose dependencies are Completed and that shares no requirement with an active task; a task that would touch the same requirement waits. With `project set-prioritizer agent`, a fast agent first ranks the startable tasks and they start in its order; it cannot start a task the rules disallow, and the built-in order is used when it fails. In the TUI, **s** resumes every interrupted task and then starts ready tasks until the tracks are full, each with its own task runner.
 
 A project needs a local Git repository with a committed `openspec/` directory (`openspec init`, then commit it) and a check command before its tasks can start.
 
@@ -51,7 +51,7 @@ If the task branch changes the check program itself (for example `./scripts/chec
 
 ## One step process per task
 
-`cronos-ai internal workflow run-step` holds an exclusive per-task lock (`locks/<task-id>.lock` in the data directory) while its agents run. The operating system releases the lock when the process exits, even after a crash. Resume, step retry, retry, and clarification refuse to act while the lock is held. After the lock is free, they first stop any agents the dead process left running and close their panes. A step that finishes after the task was changed by a human (another attempt, a different step, or no longer In Progress) discards its results. Herdr agent names include the attempt, so a new attempt never reuses an older attempt's agents.
+Each step run by a task's runner (`cronos-ai internal workflow run-task`) holds an exclusive per-task lock (`locks/<task-id>.lock` in the data directory) while its agents run. The operating system releases the lock when the process exits, even after a crash. Resume, step retry, retry, and clarification refuse to act while the lock is held. After the lock is free, they first stop any agents the dead process left running and close their panes. A step that finishes after the task was changed by a human (another attempt, a different step, or no longer In Progress) discards its results. Herdr agent names include the attempt, so a new attempt never reuses an older attempt's agents.
 
 ## Recovery
 

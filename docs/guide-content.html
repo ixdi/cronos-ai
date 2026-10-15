@@ -243,7 +243,7 @@
 			<a href="../design/workflow.drawio">Editable feature-flow diagram</a>
 			<a href="../design/workflow.png">Feature-flow preview</a>
 		</div>
-		<p class="small" style="margin-top:14px">Tasks run on parallel tracks up to the project's capacity (one by default), each with its own worktree and orchestrator, while independent agents within each task's active step run concurrently.</p>
+		<p class="small" style="margin-top:14px">Tasks run on parallel tracks up to the project's capacity (one by default), each with its own worktree and task runner, while independent agents within each task's active step run concurrently.</p>
 	</section>
 
 	<section id="technical" aria-labelledby="technical-title">
@@ -266,7 +266,7 @@
 			<article class="card blue">
 				<h3>Agent resource profiles</h3>
 				<p>Press <kbd>p</kbd>
-					on the project list to create, edit, and delete agent profiles: named sets of Pi skills, extensions, and optional MCP configs for specific workflow steps, stored in <code>agent-profiles.json</code> in Cronos-AI's data directory. The orchestrator discovers eligible profile IDs; Rust validates each assignment before Herdr starts workers.</p>
+					on the project list to create, edit, and delete agent profiles: named sets of Pi skills, extensions, and optional MCP configs for specific workflow steps, stored in <code>agent-profiles.json</code> in Cronos-AI's data directory. The step planner sees the eligible profile IDs; Rust validates each assignment before Herdr starts workers.</p>
 				<p class="small">A profile can also set the worker's <code>model</code>
 					and <code>timeout_minutes</code>. Every worker loads Cronos-AI's built-in skill for its step; unprofiled workers load no optional user resources. MCP configs remain separate, and Cronos-AI never installs user resources or runs arbitrary shell hooks. See the <a href="agent-profiles.html">profile setup guide</a>
 					and <a href="../examples/agent-profiles.json">sample catalog</a>.</p>
