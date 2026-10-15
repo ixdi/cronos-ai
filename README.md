@@ -11,6 +11,15 @@ It is an opinionated stack with a Rust TUI. Rust owns persisted task state, huma
 > [!NOTE]
 > Tasks run one at a time by default; set a project's parallel capacity to run several on separate feature tracks. Which task starts next follows its priority, or an agent prioritizer on the model you choose (`project set-prioritizer <ID> agent --model <model>`).
 
+## See it in action
+
+![Cronos-AI TUI demo: adding a requirement, approving the planned tasks, and following a task from specification to local merge](docs/tui-demo.gif)
+
+A requirement is added and the planner proposes tasks for it.
+The next task then runs from specification to local merge, with parallel writers and reviewers and two human approvals.
+The project is fake, but the TUI and the task runner are real; only Herdr, Pi, and OpenSpec are stand-ins.
+Re-record it with `mise run demo` (needs [VHS](https://github.com/charmbracelet/vhs)).
+
 ## What it does
 
 - Manage projects and prioritized, dependency-aware tasks from the CLI and TUI.

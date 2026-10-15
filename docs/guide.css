@@ -87,7 +87,7 @@
 			.diagram-status { margin: 10px 2px 0; font-size: .86rem; }
 			.diagram-links { display: flex; flex-wrap: wrap; gap: 12px 22px; margin-top: 14px; }
 			.feature-preview { margin: 18px 0 0; padding: 12px; background: #f7fafc; border: 1px solid var(--line); border-radius: 14px; }
-			.feature-preview img { display: block; width: 100%; height: auto; border-radius: 8px; }
+			.feature-preview img, .feature-preview video { display: block; width: 100%; height: auto; border-radius: 8px; }
 			.feature-preview figcaption { padding: 10px 4px 2px; color: var(--muted); font-size: .88rem; }
 			.card .tui-shot { display: block; width: 100%; height: auto; margin-top: 4px; border-radius: 8px; border: 1px solid var(--line); }
 			.cli-option { margin-top: 14px; border: 1px solid var(--line); border-radius: 10px; background: #f7fafc; }

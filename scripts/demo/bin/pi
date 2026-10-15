@@ -1,0 +1,36 @@
+#!/bin/sh
+# Stand-in for Pi in the TUI demo: answers the task planner and the step planner with fixed plans.
+set -eu
+[ "${1:-}" = "--version" ] && { echo "pi 1.0.0 (demo)"; exit 0; }
+for prompt; do :; done
+case "$prompt" in
+  "Plan the work for the project"*)
+    sleep 5
+    cat <<'JSON'
+```json
+{"tasks": [
+  {"key": "cart", "title": "Add shopping cart", "description": "Keep a cart per shopper and show it at /cart.", "priority": "high", "depends_on": [], "requirements": ["R2"]},
+  {"key": "pay", "title": "Integrate card payments", "description": "Charge the cart total by card at checkout.", "priority": "high", "depends_on": ["cart"], "requirements": ["R2"]},
+  {"key": "email", "title": "Send order confirmation emails", "description": "Email the order summary and a tracking link after payment.", "priority": "medium", "depends_on": ["pay"], "requirements": ["R4"]},
+  {"key": "speed", "title": "Paginate and cache search results", "description": "Serve search pages from cache so they load in under 2 seconds on 4G.", "priority": "low", "depends_on": [], "requirements": ["R1", "R3"]}
+]}
+```
+JSON
+    ;;
+  *"Plan the \`specification-generation\` step"*)
+    sleep 2
+    echo '{"agents": [{"name": "author", "prompt": "Write the OpenSpec change for the shopping cart."}]}' ;;
+  *"Plan the \`code-generation\` step"*)
+    sleep 2
+    echo '{"agents": [{"name": "api", "prompt": "Build the cart store and its REST endpoints."}, {"name": "ui", "prompt": "Build the cart page."}]}' ;;
+  *"Plan the \`code-review\` step"*)
+    sleep 2
+    echo '{"agents": [{"name": "correctness", "prompt": "Check the cart logic against the spec."}, {"name": "security", "prompt": "Check the cart for security issues."}]}' ;;
+  *"Plan the \`verification\` step"*)
+    sleep 1
+    echo '{"agents": [{"name": "verifier", "prompt": "Run the tests and confirm every scenario passes."}]}' ;;
+  *"Plan the \`documentation\` step"*)
+    sleep 1
+    echo '{"agents": [{"name": "docs", "prompt": "Document the cart in the README."}]}' ;;
+  *) exit 1 ;;
+esac

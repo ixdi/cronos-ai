@@ -1,0 +1,8 @@
+#!/bin/sh
+# Stand-in for OpenSpec in the TUI demo: a change validates when its folder exists.
+case "${1:-}" in
+  --version) echo "openspec 1.0.0 (demo)" ;;
+  validate) test -d "openspec/changes/$2" ;;
+  show) cat "openspec/changes/$2/proposal.md"; echo; cat "openspec/changes/$2/specs/"*/spec.md ;;
+  archive) mkdir -p openspec/changes/archive && mv "openspec/changes/$2" "openspec/changes/archive/$2" ;;
+esac

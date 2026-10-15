@@ -1,0 +1,121 @@
+#!/bin/sh
+# Stand-in for Herdr in the TUI demo: agents "work" for a few seconds, make realistic commits, and
+# report success, so the real Cronos-AI task runner walks a task through its whole workflow.
+set -eu
+
+field() { printf '%s\n' "$prompt" | sed -n "s/.*$1 \`\\([^\`]*\\)\`.*/\\1/p" | head -n 1; }
+
+commit() {
+  git -C "$worktree" add -A
+  git -C "$worktree" commit -q -m "$1"
+}
+
+case "${1:-} ${2:-}" in
+  "--version "*) echo "herdr 0.9.0 (demo)" ;;
+  "pane split") printf '{"result":{"pane":{"pane_id":"w1:p%s"}}}' "$$" ;;
+  "agent get") printf '{"result":{"agent":{"status":"done","pane_id":"w1:p0"}}}' ;;
+  "agent read") echo "done" ;;
+  "agent prompt")
+    prompt=$4
+    step=$(field "in step")
+    agent=$(field "contract for agent")
+    worktree=$(field "Work only inside")
+    result=$(field "write your result as JSON to")
+    change=$(field "OpenSpec change")
+    case "$step" in
+      specification-generation)
+        sleep 6
+        dir="$worktree/openspec/changes/$change"
+        mkdir -p "$dir/specs/cart"
+        cat > "$dir/proposal.md" <<'MD'
+## Why
+Shoppers can browse and search the catalog but cannot collect products before paying.
+
+## What Changes
+- Add a cart that keeps items per shopper between visits.
+- Add a /cart page to change quantities and see the total.
+- Expose the cart through the REST API for the payment step.
+MD
+        cat > "$dir/specs/cart/spec.md" <<'MD'
+## ADDED Requirements
+### Requirement: Shopping cart
+The system SHALL keep a cart per shopper with each product and its quantity.
+
+#### Scenario: Add a product
+- **WHEN** a shopper adds a product that is in stock
+- **THEN** the cart shows the product with quantity 1 and the new total
+
+#### Scenario: Cart survives a new visit
+- **WHEN** a signed-in shopper returns the next day
+- **THEN** the cart still holds the same products
+MD
+        cat > "$dir/tasks.md" <<'MD'
+## 1. Cart
+- [ ] 1.1 Cart store and REST endpoints
+- [ ] 1.2 Cart page with quantity editing
+MD
+        commit "docs(spec): propose the shopping cart"
+        summary="Wrote the cart proposal: 3 requirements, 7 scenarios, 6 tasks." ;;
+      code-generation)
+        mkdir -p "$worktree/src/cart"
+        case "$agent" in
+          api)
+            sleep 9
+            cat > "$worktree/src/cart/store.ts" <<'TS'
+export type CartItem = { productId: string; quantity: number; unitPrice: number };
+
+export class CartStore {
+  private items = new Map<string, CartItem>();
+
+  add(productId: string, unitPrice: number): CartItem {
+    const item = this.items.get(productId) ?? { productId, quantity: 0, unitPrice };
+    item.quantity += 1;
+    this.items.set(productId, item);
+    return item;
+  }
+
+  total(): number {
+    return [...this.items.values()].reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
+  }
+}
+TS
+            summary="Cart store and REST endpoints, 14 tests passing." ;;
+          *)
+            sleep 11
+            cat > "$worktree/src/cart/CartPage.tsx" <<'TS'
+import { useCart } from "./useCart";
+
+export function CartPage() {
+  const { items, total, setQuantity } = useCart();
+  return (
+    <main>
+      <h1>Your cart</h1>
+      {items.map((item) => (
+        <CartRow key={item.productId} item={item} onChange={setQuantity} />
+      ))}
+      <p className="total">Total: {total.toFixed(2)} EUR</p>
+    </main>
+  );
+}
+TS
+            summary="Cart page with quantity editing and totals, 9 tests passing." ;;
+        esac
+        commit "feat(cart): add the $agent part of the shopping cart"
+        ;;
+      code-review)
+        sleep 7
+        case "$agent" in
+          security) summary="No injection or authorization issues; prices are read server side." ;;
+          *) summary="Logic matches every scenario; no blocking findings." ;;
+        esac ;;
+      verification) sleep 5; summary="Tests, lint and audit pass; all 7 scenarios covered." ;;
+      documentation)
+        sleep 4
+        printf '\n## Shopping cart\nAdd products from any page and review them at /cart.\n' >> "$worktree/README.md"
+        summary="Documented the cart in the README." ;;
+      *) sleep 2; summary="Done." ;;
+    esac
+    printf '{"status":"success","summary":"%s","findings":[]}' "$summary" > "$result"
+    ;;
+  *) ;;
+esac

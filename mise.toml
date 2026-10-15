@@ -9,3 +9,7 @@ run = "git config core.hooksPath .githooks"
 [tasks.check]
 description = "Run formatting, Clippy, tests, and cargo audit"
 run = "./scripts/check.sh"
+
+[tasks.demo]
+description = "Record docs/tui-demo.mp4 and docs/tui-demo.gif with VHS and fake tools"
+run = "./scripts/demo/record.sh"
