@@ -152,11 +152,83 @@ fn remove_stale_result(path: &Path) -> Result<(), String> {
     }
 }
 
-/// Agent limits per step: writers run alone; review, verification, and docs may run in parallel.
+/// Agent limits per step: the specification has one author; code generation may split the work
+/// between parallel writers in their own worktrees; review, verification, and docs run in parallel.
 fn agent_count_range(step: WorkflowStep) -> (usize, usize) {
     match step {
-        WorkflowStep::SpecificationGeneration | WorkflowStep::CodeGeneration => (1, 1),
+        WorkflowStep::SpecificationGeneration => (1, 1),
         _ => (1, MAX_PARALLEL_AGENTS),
+    }
+}
+
+/// Worktrees of parallel code-generation agents, each on a branch cut from the task branch. They
+/// are removed when this value is dropped, whether the step succeeded or not.
+struct WriterWorktrees {
+    git: GitAdapter,
+    task_worktree: PathBuf,
+    parent: PathBuf,
+    /// Agent name, worktree, and branch, sorted by agent name so merges are deterministic.
+    writers: Vec<(String, PathBuf, String)>,
+}
+
+impl WriterWorktrees {
+    fn create(
+        git: &GitAdapter,
+        task: &Task,
+        task_worktree: &Path,
+        agents: &[AgentPlan],
+    ) -> Result<Self, String> {
+        let name = task_worktree
+            .file_name()
+            .ok_or("the task worktree has no name")?
+            .to_string_lossy();
+        let parent = task_worktree
+            .parent()
+            .ok_or("the task worktree has no parent")?
+            .join(format!("{name}-agents"));
+        ensure_real_directory(&parent)
+            .map_err(|error| format!("could not prepare writer worktrees: {error}"))?;
+        let mut worktrees = Self {
+            git: git.clone(),
+            task_worktree: task_worktree.to_path_buf(),
+            parent: parent.clone(),
+            writers: Vec::new(),
+        };
+        let mut names = agents
+            .iter()
+            .map(|agent| agent.name.clone())
+            .collect::<Vec<_>>();
+        names.sort();
+        for agent in names {
+            let path = parent.join(&agent);
+            // Git cannot nest a branch under the task branch's own name, so writers get a sibling.
+            let branch = format!(
+                "{}-agents/{agent}",
+                GitAdapter::worktree_branch(task.id, task.attempt)
+            );
+            // A crashed earlier run may have left this writer's worktree behind.
+            let _ = git.discard_attempt(task_worktree, &path, &branch);
+            git.add_worktree(task_worktree, &path, &branch)
+                .map_err(|error| format!("could not create {agent}'s worktree: {error}"))?;
+            worktrees.writers.push((agent, path, branch));
+        }
+        Ok(worktrees)
+    }
+
+    fn path(&self, agent: &str) -> Option<&Path> {
+        self.writers
+            .iter()
+            .find(|(name, _, _)| name == agent)
+            .map(|(_, path, _)| path.as_path())
+    }
+}
+
+impl Drop for WriterWorktrees {
+    fn drop(&mut self) {
+        for (_, path, branch) in &self.writers {
+            let _ = self.git.discard_attempt(&self.task_worktree, path, branch);
+        }
+        let _ = std::fs::remove_dir(&self.parent);
     }
 }
 
@@ -172,9 +244,18 @@ pub fn default_timeout_minutes(step: WorkflowStep) -> u32 {
 }
 
 /// System-defined rules appended to every agent prompt, independent of what the orchestrator wrote.
-pub fn agent_contract(task: &Task, step: WorkflowStep, agent: &str, worktree: &Path) -> String {
+pub fn agent_contract(
+    task: &Task,
+    step: WorkflowStep,
+    agent: &str,
+    worktree: &Path,
+    writers: usize,
+) -> String {
     let change = task.openspec_change();
     let rules = match step {
+        WorkflowStep::CodeGeneration if writers > 1 => format!(
+            "Implement your assigned part of the approved OpenSpec change `{change}` with tests. You are one of {writers} code-generation agents working in parallel, each in its own worktree on its own branch: change only the files your part needs. Cronos merges the agents' branches in name order into the task branch; overlapping edits conflict and send the task back to code generation. Commit with a Conventional Commit message and leave your worktree clean."
+        ),
         WorkflowStep::SpecificationGeneration => format!(
             "Create or update the OpenSpec change `{change}` (proposal, design, specs, tasks) so `openspec validate {change} --strict` passes. Apply any revision note from the latest approval. Commit your changes with a Conventional Commit message and leave the worktree clean."
         ),
@@ -550,22 +631,45 @@ impl<A: AgentAdapter> WorkflowEngine<A> {
                 None,
             )?;
         }
+        let writers = match &worktree {
+            Some(path) if step == WorkflowStep::CodeGeneration && agents.len() > 1 => Some(
+                WriterWorktrees::create(&git, &task, path, &agents)
+                    .map_err(|error| self.fail_step(project_id, task_id, step, error))?,
+            ),
+            _ => None,
+        };
+        let agent_worktree = |name: &str| -> Option<PathBuf> {
+            writers
+                .as_ref()
+                .and_then(|writers| writers.path(name))
+                .map(Path::to_path_buf)
+                .or_else(|| worktree.clone())
+        };
         let launch_plans = agents
             .iter()
             .map(|agent| AgentPlan {
-                prompt: match &worktree {
+                prompt: match agent_worktree(&agent.name) {
                     Some(path) => format!(
                         "{}{}",
                         agent.prompt,
-                        agent_contract(&task, step, &agent.name, path)
+                        agent_contract(&task, step, &agent.name, &path, agents.len())
                     ),
                     None => agent.prompt.clone(),
                 },
                 ..agent.clone()
             })
             .collect::<Vec<_>>();
+        let overrides = agents
+            .iter()
+            .filter_map(|agent| {
+                writers
+                    .as_ref()
+                    .and_then(|writers| writers.path(&agent.name))
+                    .map(|path| (agent.name.clone(), path.to_path_buf()))
+            })
+            .collect::<HashMap<_, _>>();
 
-        let outcome = run_parallel(&self.adapter, &task, step, &launch_plans);
+        let outcome = run_parallel(&self.adapter, &task, step, &launch_plans, &overrides);
         // A human may have stopped or recovered the task while agents ran; never apply stale results.
         let current = self.manager.get_task(project_id, task_id)?;
         if current.attempt != task.attempt
@@ -616,6 +720,22 @@ impl<A: AgentAdapter> WorkflowEngine<A> {
             changes_requested |= report.status == ReportStatus::ChangesRequested;
             self.record(project_id, task_id, step, agent, &report)?;
         }
+        if let (Some(writers), Some(task_worktree)) = (&writers, &worktree)
+            && let Some(conflict) =
+                self.merge_writers(project_id, task_id, writers, task_worktree, &git)?
+        {
+            self.manager.record_agent_activity(
+                project_id,
+                task_id,
+                "cronos".to_owned(),
+                step.as_str().to_owned(),
+                AgentStatus::ChangesRequested,
+                Some(truncate(&conflict, MAX_AGENT_SUMMARY_CHARS)),
+            )?;
+            return Ok(self
+                .manager
+                .request_automatic_revision(project_id, task_id)?);
+        }
 
         if let Some(worktree) = &worktree {
             self.check_worktree(project_id, &task, step, worktree, &git, before.as_deref())?;
@@ -631,6 +751,54 @@ impl<A: AgentAdapter> WorkflowEngine<A> {
         Ok(self
             .manager
             .complete_workflow_step(project_id, task_id, step)?)
+    }
+
+    /// Merges the parallel writers' branches into the task branch in name order. On a conflict the
+    /// task branch is reset to where it started and the conflict is returned as a finding.
+    fn merge_writers(
+        &self,
+        project_id: ProjectId,
+        task_id: TaskId,
+        writers: &WriterWorktrees,
+        task_worktree: &Path,
+        git: &GitAdapter,
+    ) -> Result<Option<String>, WorkflowError> {
+        let step = WorkflowStep::CodeGeneration;
+        let fail = |message: String| self.fail_step(project_id, task_id, step, message);
+        let start = git
+            .head(task_worktree)
+            .map_err(|error| fail(error.to_string()))?;
+        for (agent, path, branch) in &writers.writers {
+            if !git
+                .is_clean(path)
+                .map_err(|error| fail(error.to_string()))?
+            {
+                let _ = git.reset_hard(task_worktree, &start);
+                return Err(fail(format!(
+                    "code-generation agent {agent} left uncommitted changes; each writer must commit its work"
+                )));
+            }
+            match git.merge_agent(
+                task_worktree,
+                path,
+                branch,
+                &format!("Merge code-generation agent {agent}"),
+            ) {
+                Ok(()) => {}
+                Err(crate::integrations::GitError::MergeConflict(detail)) => {
+                    git.reset_hard(task_worktree, &start)
+                        .map_err(|error| fail(error.to_string()))?;
+                    return Ok(Some(format!(
+                        "The parallel code-generation agents' changes conflicted while merging {agent}, so none were kept. Give each agent a separate part of the code, or use one agent. {detail}"
+                    )));
+                }
+                Err(error) => {
+                    let _ = git.reset_hard(task_worktree, &start);
+                    return Err(fail(format!("could not merge {agent}'s work: {error}")));
+                }
+            }
+        }
+        Ok(None)
     }
 
     fn record(
@@ -857,18 +1025,24 @@ struct ParallelFailure {
     cancelled: Vec<String>,
 }
 
+/// Runs every agent at once. An agent listed in `worktrees` works in that worktree instead of
+/// the task's.
 fn run_parallel<A: AgentAdapter>(
     adapter: &A,
     task: &Task,
     step: WorkflowStep,
     agents: &[AgentPlan],
+    worktrees: &HashMap<String, PathBuf>,
 ) -> Result<Vec<(String, AgentReport)>, ParallelFailure> {
     adapter.begin_step();
     let (sender, receiver) = mpsc::channel();
     thread::scope(|scope| {
         for agent in agents.iter().cloned() {
             let sender = sender.clone();
-            let task = task.clone();
+            let mut task = task.clone();
+            if let Some(path) = worktrees.get(&agent.name) {
+                task.worktree = Some(path.to_string_lossy().into_owned());
+            }
             scope.spawn(move || {
                 let result = catch_unwind(AssertUnwindSafe(|| adapter.run(&task, step, &agent)))
                     .unwrap_or_else(|_| Err("agent worker panicked".to_owned()))
@@ -1569,7 +1743,7 @@ mod tests {
     }
 
     #[test]
-    fn writing_steps_accept_exactly_one_agent() {
+    fn the_specification_accepts_exactly_one_author() {
         let root = tempfile::tempdir().unwrap();
         let (manager, project_id, task_id) = started_task(root.path());
         let engine = WorkflowEngine::new(
@@ -1773,14 +1947,19 @@ mod tests {
         let (manager, project_id, task_id) = started_task(root.path());
         let task = manager.get_task(project_id, task_id).unwrap();
         let worktree = Path::new("/work/tree");
-        let review = agent_contract(&task, WorkflowStep::CodeReview, "reviewer", worktree);
+        let review = agent_contract(&task, WorkflowStep::CodeReview, "reviewer", worktree, 1);
         assert!(review.contains("/work/tree/.cronos/results/code-review/reviewer.json"));
         assert!(review.contains(&task.openspec_change()));
         assert!(review.contains("read-only"));
         assert!(review.contains("Never push"));
-        let code = agent_contract(&task, WorkflowStep::CodeGeneration, "builder", worktree);
+        let code = agent_contract(&task, WorkflowStep::CodeGeneration, "builder", worktree, 1);
         assert!(code.contains("commit with a Conventional Commit message"));
-        let docs = agent_contract(&task, WorkflowStep::Documentation, "docs", worktree);
+        let docs = agent_contract(&task, WorkflowStep::Documentation, "docs", worktree, 1);
         assert!(docs.contains("do not commit or archive"));
+        assert!(code.contains("You are the only writer"));
+        let part = agent_contract(&task, WorkflowStep::CodeGeneration, "api", worktree, 3);
+        assert!(part.contains("one of 3 code-generation agents"));
+        assert!(part.contains("change only the files your part needs"));
+        assert!(!part.contains("You are the only writer"));
     }
 }

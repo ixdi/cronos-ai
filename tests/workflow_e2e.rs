@@ -672,3 +672,165 @@ fn verification_without_a_check_command_marks_the_task_error() {
         TaskStatus::Error
     );
 }
+
+/// Code-generation agents that each commit their own file, or all the same file when `overlap`.
+struct ParallelWriters {
+    overlap: bool,
+    worktrees: Mutex<Vec<PathBuf>>,
+}
+
+impl AgentAdapter for ParallelWriters {
+    fn requires_worktree(&self) -> bool {
+        true
+    }
+
+    fn run(
+        &self,
+        task: &Task,
+        step: WorkflowStep,
+        agent: &AgentPlan,
+    ) -> Result<AgentReport, String> {
+        assert_eq!(step, WorkflowStep::CodeGeneration);
+        assert!(
+            agent.prompt.contains("one of 2 code-generation agents"),
+            "{}",
+            agent.prompt
+        );
+        let worktree = worktree(task);
+        self.worktrees.lock().unwrap().push(worktree.clone());
+        let file = if self.overlap {
+            "shared.txt".to_owned()
+        } else {
+            format!("{}.txt", agent.name)
+        };
+        fs::write(worktree.join(file), format!("{} part\n", agent.name))
+            .map_err(|error| error.to_string())?;
+        commit(&worktree, &format!("feat: add the {} part", agent.name))?;
+        Ok(AgentReport::success(format!("{} done", agent.name)))
+    }
+
+    fn cancel(&self, _task: &Task, _step: WorkflowStep, _agent: &AgentPlan) {}
+}
+
+fn agent_branches(repository: &Path) -> String {
+    git(
+        repository,
+        &["branch", "--list", "cronos-ai/*/attempt-1-agents/*"],
+    )
+    .unwrap()
+}
+
+#[test]
+fn parallel_code_generation_merges_each_writer_in_name_order() {
+    let temp = tempfile::tempdir().unwrap();
+    let (manager, repository, data_dir, task) = task_at(temp.path(), WorkflowStep::CodeGeneration);
+    let writers = ParallelWriters {
+        overlap: false,
+        worktrees: Mutex::new(Vec::new()),
+    };
+    let engine = WorkflowEngine::with_tools(
+        ProjectManager::new(&data_dir).unwrap(),
+        writers,
+        AgentProfileCatalog::default(),
+        fake_openspec(temp.path()),
+    );
+
+    let advanced = engine
+        .run_step(
+            task.project_id,
+            task.id,
+            WorkflowStep::CodeGeneration,
+            plans(&["ui", "api"]),
+        )
+        .unwrap();
+
+    assert_eq!(advanced.current_step.as_deref(), Some("code-review"));
+    let task_worktree = worktree(&task);
+    assert_eq!(
+        fs::read_to_string(task_worktree.join("api.txt")).unwrap(),
+        "api part\n"
+    );
+    assert_eq!(
+        fs::read_to_string(task_worktree.join("ui.txt")).unwrap(),
+        "ui part\n"
+    );
+    let merges = git(
+        &task_worktree,
+        &["log", "--merges", "--format=%s", "--reverse"],
+    )
+    .unwrap();
+    assert_eq!(
+        merges.lines().collect::<Vec<_>>(),
+        [
+            "Merge code-generation agent api",
+            "Merge code-generation agent ui"
+        ]
+    );
+    let used = engine_writers_worktrees(&manager, &task);
+    assert!(used.is_empty(), "agent worktrees are removed: {used:?}");
+    assert_eq!(agent_branches(&repository).trim(), "");
+}
+
+fn engine_writers_worktrees(manager: &ProjectManager, task: &Task) -> Vec<PathBuf> {
+    let parent = manager
+        .data_dir()
+        .join("worktrees")
+        .join(task.project_id.0.to_string())
+        .join(task.id.0.to_string())
+        .join("attempt-1-agents");
+    fs::read_dir(parent)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn conflicting_parallel_writers_send_the_task_back_unchanged() {
+    let temp = tempfile::tempdir().unwrap();
+    let (manager, repository, data_dir, task) = task_at(temp.path(), WorkflowStep::CodeGeneration);
+    let task_worktree = worktree(&task);
+    let head_before = git(&task_worktree, &["rev-parse", "HEAD"]).unwrap();
+    let engine = WorkflowEngine::with_tools(
+        ProjectManager::new(&data_dir).unwrap(),
+        ParallelWriters {
+            overlap: true,
+            worktrees: Mutex::new(Vec::new()),
+        },
+        AgentProfileCatalog::default(),
+        fake_openspec(temp.path()),
+    );
+
+    let revised = engine
+        .run_step(
+            task.project_id,
+            task.id,
+            WorkflowStep::CodeGeneration,
+            plans(&["ui", "api"]),
+        )
+        .unwrap();
+
+    assert_eq!(revised.current_step.as_deref(), Some("code-generation"));
+    assert_eq!(revised.automatic_revisions, 1);
+    let finding = revised.agent_activity.last().unwrap();
+    assert_eq!(finding.status, AgentStatus::ChangesRequested);
+    assert!(
+        finding.detail.as_deref().unwrap().contains("conflicted"),
+        "{finding:?}"
+    );
+    assert_eq!(
+        git(&task_worktree, &["rev-parse", "HEAD"]).unwrap(),
+        head_before
+    );
+    assert_eq!(
+        git(&task_worktree, &["status", "--porcelain"])
+            .unwrap()
+            .trim(),
+        ""
+    );
+    assert!(engine_writers_worktrees(&manager, &task).is_empty());
+    assert_eq!(agent_branches(&repository).trim(), "");
+}

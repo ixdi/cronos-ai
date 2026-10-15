@@ -248,6 +248,36 @@ impl GitAdapter {
         worktree: &Path,
         branch: &str,
     ) -> Result<(), GitError> {
+        self.merge_branch(repository, worktree, branch, None)
+    }
+
+    /// Merges a parallel writer's branch into the task branch with a message naming the agent.
+    pub fn merge_agent(
+        &self,
+        task_worktree: &Path,
+        agent_worktree: &Path,
+        branch: &str,
+        message: &str,
+    ) -> Result<(), GitError> {
+        self.merge_branch(task_worktree, agent_worktree, branch, Some(message))
+    }
+
+    /// Moves the checked-out branch back to `commit`, discarding later commits and changes.
+    pub fn reset_hard(&self, worktree: &Path, commit: &str) -> Result<(), GitError> {
+        if commit.is_empty() || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(GitError::InvalidBranch);
+        }
+        self.git_text(worktree, &["reset", "--hard", commit])?;
+        Ok(())
+    }
+
+    fn merge_branch(
+        &self,
+        repository: &Path,
+        worktree: &Path,
+        branch: &str,
+        message: Option<&str>,
+    ) -> Result<(), GitError> {
         let repository = self.repository_root(repository)?;
         if !worktree.is_absolute() {
             return Err(GitError::RelativeWorktreePath);
@@ -259,14 +289,18 @@ impl GitAdapter {
             return Err(GitError::DirtyBase(repository.display().to_string()));
         }
         self.ensure_clean(worktree)?;
-        match self.tools.run_git(&[
+        let mut args = vec![
             OsStr::new("-C"),
             repository.as_os_str(),
             OsStr::new("merge"),
             OsStr::new("--no-ff"),
             OsStr::new("--no-edit"),
-            OsStr::new(branch),
-        ]) {
+        ];
+        if let Some(message) = message {
+            args.extend([OsStr::new("-m"), OsStr::new(message)]);
+        }
+        args.push(OsStr::new(branch));
+        match self.tools.run_git(&args) {
             Ok(_) => Ok(()),
             Err(IntegrationError::Failed { stderr, .. }) => {
                 // Only unmerged paths are a conflict the code-generation agent can resolve;

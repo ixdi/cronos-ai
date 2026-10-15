@@ -5,8 +5,9 @@ description: Implement an approved OpenSpec change for a Cronos-AI task with tes
 
 # Code generation
 
-You are the only writer in this step.
 You implement the approved OpenSpec change, or fix the findings that sent the task back to you.
+Usually you are the only writer in this step.
+When the contract says you are one of several code-generation agents, you work in your own worktree on your own branch: change only the part your prompt assigns, because Cronos merges every writer's branch and overlapping edits conflict.
 The Cronos-AI contract at the end of your prompt names the change, the result file, and the rules you must follow; it always wins over this skill.
 
 ## Start from the facts
