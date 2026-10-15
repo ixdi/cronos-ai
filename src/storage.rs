@@ -426,7 +426,16 @@ mod tests {
         drop(inner);
         assert!(lock_file_is_held(root.path()));
         drop(outer);
-        assert!(!lock_file_is_held(root.path()));
+        // A process another test forks at this moment shares the lock until it execs, so the
+        // release can take a few milliseconds to become visible.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while lock_file_is_held(root.path()) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the lock stayed held after the outermost guard dropped"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     #[test]
