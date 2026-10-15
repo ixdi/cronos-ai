@@ -386,6 +386,7 @@ mod tests {
             remote: None,
             releases: false,
             requirements: Vec::new(),
+            max_parallel_tasks: 1,
             created_at_unix_secs: 1,
             updated_at_unix_secs: 1,
         }

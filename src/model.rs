@@ -24,6 +24,8 @@ const DEFAULT_REMOTE: &str = "origin";
 const MAX_REMOTE_CHARS: usize = 100;
 const MAX_PUBLICATION_CHARS: usize = 2_000;
 pub const MAX_REQUIREMENTS: usize = 200;
+/// Most tasks a project may run at the same time.
+pub const MAX_PARALLEL_TASKS: u32 = 8;
 const MAX_REQUIREMENT_CHARS: usize = 2_000;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -161,6 +163,9 @@ pub struct Project {
     pub releases: bool,
     #[serde(default)]
     pub requirements: Vec<Requirement>,
+    /// Tasks that may be active (In Progress or Error) at the same time.
+    #[serde(default = "default_parallelism")]
+    pub max_parallel_tasks: u32,
     pub created_at_unix_secs: u64,
     pub updated_at_unix_secs: u64,
 }
@@ -178,6 +183,9 @@ impl Project {
     }
 
     pub fn validate(&self) -> Result<(), ModelError> {
+        if !(1..=MAX_PARALLEL_TASKS).contains(&self.max_parallel_tasks) {
+            return Err(ModelError::InvalidParallelism);
+        }
         if self.requirements.len() > MAX_REQUIREMENTS {
             return Err(ModelError::TooManyRequirements);
         }
@@ -594,6 +602,12 @@ pub enum ModelError {
     DuplicateRequirement,
     #[error("a project can hold at most {MAX_REQUIREMENTS} requirements")]
     TooManyRequirements,
+    #[error("a project runs between 1 and {MAX_PARALLEL_TASKS} tasks at a time")]
+    InvalidParallelism,
+}
+
+fn default_parallelism() -> u32 {
+    1
 }
 
 fn default_attempt() -> u32 {
@@ -692,6 +706,7 @@ mod tests {
             remote: None,
             releases: false,
             requirements: Vec::new(),
+            max_parallel_tasks: 1,
             created_at_unix_secs: 0,
             updated_at_unix_secs: 0,
         };
@@ -729,6 +744,7 @@ mod tests {
             remote: None,
             releases: false,
             requirements: Vec::new(),
+            max_parallel_tasks: 1,
             created_at_unix_secs: 0,
             updated_at_unix_secs: 0,
         };

@@ -316,6 +316,7 @@ mod tests {
                     created_at_unix_secs: 1,
                 })
                 .collect(),
+            max_parallel_tasks: 1,
             created_at_unix_secs: 1,
             updated_at_unix_secs: 1,
         }

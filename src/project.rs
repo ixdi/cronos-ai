@@ -214,6 +214,7 @@ impl ProjectManager {
             remote: None,
             releases: false,
             requirements: Vec::new(),
+            max_parallel_tasks: 1,
             created_at_unix_secs: now,
             updated_at_unix_secs: now,
         };
@@ -291,6 +292,21 @@ impl ProjectManager {
         let _write = self.store.lock_writes()?;
         let mut project = self.store.load_project(project_id)?;
         project.check_timeout_minutes = minutes;
+        project.updated_at_unix_secs = now_unix_secs()?;
+        project.validate()?;
+        self.store.save_project(&project)?;
+        Ok(project)
+    }
+
+    /// Sets how many tasks the project may run at the same time (1 to 8).
+    pub fn set_project_parallelism(
+        &self,
+        project_id: ProjectId,
+        max_parallel_tasks: u32,
+    ) -> Result<Project, ProjectError> {
+        let _write = self.store.lock_writes()?;
+        let mut project = self.store.load_project(project_id)?;
+        project.max_parallel_tasks = max_parallel_tasks;
         project.updated_at_unix_secs = now_unix_secs()?;
         project.validate()?;
         self.store.save_project(&project)?;
@@ -847,16 +863,29 @@ impl ProjectManager {
         Ok(task)
     }
 
+    /// Starts the highest-priority ready task when the project has a free track. Active tasks
+    /// (In Progress or Error) fill the project's tracks, and a ready task that shares a
+    /// requirement with an active task waits, since both would change the same area.
     pub fn start_next_task(&self, project_id: ProjectId) -> Result<Option<Task>, ProjectError> {
         let _write = self.store.lock_writes()?;
-        if self
+        let project = self.store.load_project(project_id)?;
+        let active = self
             .list_tasks(project_id)?
-            .iter()
-            .any(|task| matches!(task.status, TaskStatus::InProgress | TaskStatus::Error))
-        {
+            .into_iter()
+            .filter(|task| matches!(task.status, TaskStatus::InProgress | TaskStatus::Error))
+            .collect::<Vec<_>>();
+        if active.len() >= project.max_parallel_tasks as usize {
             return Ok(None);
         }
-        let Some(task) = self.ready_tasks(project_id)?.into_iter().next() else {
+        let busy = active
+            .iter()
+            .flat_map(|task| task.requirement_ids.iter().copied())
+            .collect::<HashSet<_>>();
+        let Some(task) = self
+            .ready_tasks(project_id)?
+            .into_iter()
+            .find(|task| task.requirement_ids.iter().all(|id| !busy.contains(id)))
+        else {
             return Ok(None);
         };
         self.set_task_status(project_id, task.id, TaskStatus::InProgress)?;
@@ -1761,6 +1790,124 @@ mod tests {
         manager.propose_plan(project_id, PLAN_ANSWER).unwrap();
         manager.discard_plan(project_id).unwrap();
         assert_eq!(manager.pending_plan(project_id).unwrap(), None);
+    }
+
+    #[test]
+    fn parallel_tasks_fill_the_project_capacity() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(temp.path()).unwrap();
+        let project = manager.create_project("Parallel".to_owned(), None).unwrap();
+        assert_eq!(project.max_parallel_tasks, 1);
+        for title in ["One", "Two", "Three"] {
+            manager
+                .create_task(
+                    project.id,
+                    title.to_owned(),
+                    None,
+                    Priority::Medium,
+                    Vec::new(),
+                )
+                .unwrap();
+        }
+
+        let first = manager.start_next_task(project.id).unwrap().unwrap();
+        assert_eq!(
+            manager.start_next_task(project.id).unwrap(),
+            None,
+            "default is one at a time"
+        );
+
+        manager.set_project_parallelism(project.id, 2).unwrap();
+        let second = manager.start_next_task(project.id).unwrap().unwrap();
+        assert_ne!(first.id, second.id);
+        assert_eq!(
+            manager.start_next_task(project.id).unwrap(),
+            None,
+            "capacity is full"
+        );
+
+        // A task in Error still holds its track until it is recovered or abandoned.
+        manager
+            .set_task_status(project.id, first.id, TaskStatus::Error)
+            .unwrap();
+        assert_eq!(manager.start_next_task(project.id).unwrap(), None);
+        manager
+            .abandon_task(project.id, first.id, "Not needed".to_owned())
+            .unwrap();
+        assert!(manager.start_next_task(project.id).unwrap().is_some());
+
+        assert!(matches!(
+            manager.set_project_parallelism(project.id, 0),
+            Err(ProjectError::Model(ModelError::InvalidParallelism))
+        ));
+        assert!(matches!(
+            manager.set_project_parallelism(project.id, 9),
+            Err(ProjectError::Model(ModelError::InvalidParallelism))
+        ));
+    }
+
+    #[test]
+    fn tasks_sharing_a_requirement_never_run_together() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(temp.path()).unwrap();
+        let project = manager.create_project("Parallel".to_owned(), None).unwrap();
+        manager.set_project_parallelism(project.id, 3).unwrap();
+        let export = manager
+            .add_requirement(
+                project.id,
+                RequirementKind::Functional,
+                "Export CSV".to_owned(),
+            )
+            .unwrap();
+        let schedule = manager
+            .add_requirement(
+                project.id,
+                RequirementKind::Functional,
+                "Schedule exports".to_owned(),
+            )
+            .unwrap();
+        let csv = manager
+            .create_task_for_requirements(
+                project.id,
+                "Add CSV export".to_owned(),
+                None,
+                Priority::High,
+                Vec::new(),
+                vec![export.id],
+            )
+            .unwrap();
+        let stream = manager
+            .create_task_for_requirements(
+                project.id,
+                "Stream exports".to_owned(),
+                None,
+                Priority::High,
+                Vec::new(),
+                vec![export.id],
+            )
+            .unwrap();
+        let cron = manager
+            .create_task_for_requirements(
+                project.id,
+                "Schedule exports".to_owned(),
+                None,
+                Priority::Medium,
+                Vec::new(),
+                vec![schedule.id],
+            )
+            .unwrap();
+
+        let started = [
+            manager.start_next_task(project.id).unwrap().unwrap().id,
+            manager.start_next_task(project.id).unwrap().unwrap().id,
+        ];
+        assert!(started.contains(&cron.id));
+        assert!(started.contains(&csv.id) ^ started.contains(&stream.id));
+        assert_eq!(
+            manager.start_next_task(project.id).unwrap(),
+            None,
+            "the other export task waits for the first to finish"
+        );
     }
 
     #[test]
