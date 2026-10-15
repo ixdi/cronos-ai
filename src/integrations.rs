@@ -973,21 +973,30 @@ const WORKFLOW_EXTENSION: &str = include_str!("../extensions/cronos-workflow.ts"
 /// Writes the embedded workflow extension to the data directory so the binary does not
 /// depend on its source checkout. Rewrites the file only when its content differs.
 pub fn install_workflow_extension(data_dir: &Path) -> io::Result<PathBuf> {
-    let directory = data_dir.join("extensions");
-    std::fs::create_dir_all(&directory)?;
-    let path = directory.join("cronos-workflow.ts");
+    let directory = ensure_real_directory(&data_dir.join("extensions"))?;
+    install_embedded_file(&directory, "cronos-workflow.ts", WORKFLOW_EXTENSION)
+}
+
+/// Atomically writes `content` to `directory/file_name` unless the file already holds it. Refuses
+/// a symlinked target so a planted link can never redirect the write.
+pub fn install_embedded_file(
+    directory: &Path,
+    file_name: &str,
+    content: &str,
+) -> io::Result<PathBuf> {
+    let path = directory.join(file_name);
     if std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "workflow extension path must not be a symlink",
+            format!("{} must not be a symlink", path.display()),
         ));
     }
-    if std::fs::read_to_string(&path).is_ok_and(|current| current == WORKFLOW_EXTENSION) {
+    if std::fs::read_to_string(&path).is_ok_and(|current| current == content) {
         return Ok(path);
     }
-    let temporary = directory.join(format!(".cronos-workflow.{}.tmp", std::process::id()));
-    std::fs::write(&temporary, WORKFLOW_EXTENSION)?;
-    std::fs::rename(&temporary, &path)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
+    io::Write::write_all(&mut temporary, content.as_bytes())?;
+    temporary.persist(&path).map_err(|error| error.error)?;
     Ok(path)
 }
 

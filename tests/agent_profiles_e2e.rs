@@ -363,3 +363,98 @@ fn workflow_launches_each_profile_with_only_its_resources_and_rejects_bad_mcp_be
     );
     assert_eq!(logged_calls(&log).len(), calls_before);
 }
+
+#[test]
+fn run_step_from_the_cli_gives_every_worker_the_built_in_skill_for_its_step() {
+    let temp = tempfile::tempdir().unwrap();
+    let repository = temp.path().join("repo");
+    let data_dir = temp.path().join("cronos-data");
+    init_repository(&repository);
+
+    let manager = ProjectManager::new(&data_dir).unwrap();
+    let git = GitAdapter::default();
+    let project = manager
+        .create_project_with_repository(
+            "Step skills".to_owned(),
+            None,
+            Some(&repository),
+            Some(vec!["true".to_owned()]),
+            None,
+            &git,
+        )
+        .unwrap();
+    let task = manager
+        .create_task(
+            project.id,
+            "Review".to_owned(),
+            None,
+            Priority::High,
+            Vec::new(),
+        )
+        .unwrap();
+    manager.start_next_task(project.id).unwrap();
+    manager
+        .prepare_task_worktree(project.id, task.id, &git)
+        .unwrap();
+    manager
+        .complete_workflow_step(project.id, task.id, WorkflowStep::SpecificationGeneration)
+        .unwrap();
+    manager
+        .record_approval(
+            project.id,
+            task.id,
+            ApprovalGate::Specifications,
+            ApprovalDecision::Approved,
+            None,
+        )
+        .unwrap();
+    manager
+        .complete_workflow_step(project.id, task.id, WorkflowStep::CodeGeneration)
+        .unwrap();
+
+    let bin = temp.path().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let log = temp.path().join("herdr-args.log");
+    fake_herdr(&bin.join("herdr"), &log);
+    let output = Command::new(env!("CARGO_BIN_EXE_cronos-ai"))
+        .arg("--data-dir")
+        .arg(&data_dir)
+        .args([
+            "internal",
+            "workflow",
+            "run-step",
+            &project.id.0.to_string(),
+            &task.id.0.to_string(),
+            "code-review",
+            r#"[{"name":"reviewer","prompt":"Review the branch"}]"#,
+        ])
+        .env(
+            "PATH",
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+        )
+        .env("GIT_CONFIG_GLOBAL", EMPTY_GLOBAL_GIT_CONFIG)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let skill = data_dir.join("skills/cronos-code-review/SKILL.md");
+    assert!(
+        fs::read_to_string(&skill)
+            .unwrap()
+            .contains("name: cronos-code-review")
+    );
+    let starts = logged_calls(&log)
+        .into_iter()
+        .filter(|args| args.starts_with(&["agent".to_owned(), "start".to_owned()]))
+        .collect::<Vec<_>>();
+    assert_eq!(starts.len(), 1);
+    assert!(contains_pair(
+        &starts[0],
+        "--skill",
+        &skill.to_string_lossy()
+    ));
+}

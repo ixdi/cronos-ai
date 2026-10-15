@@ -18,6 +18,7 @@ use crate::{
     integrations::{GitAdapter, ToolCommands, ensure_real_directory, run_check_command},
     model::{AgentStatus, ProjectId, Task, TaskId, TaskStatus, WorkflowStep},
     project::{ProjectError, ProjectManager},
+    step_skills::StepSkills,
 };
 
 const MAX_PARALLEL_AGENTS: usize = 4;
@@ -206,6 +207,7 @@ pub struct HerdrAgentAdapter {
     tools: ToolCommands,
     pane_creation: Mutex<()>,
     profiles: AgentProfileCatalog,
+    step_skills: StepSkills,
     /// Herdr names of agents whose cancellation was requested. Checked before every launch stage,
     /// so a sibling that has not started yet never starts after its step failed.
     cancelled: Mutex<HashSet<String>>,
@@ -221,8 +223,15 @@ impl HerdrAgentAdapter {
             tools,
             pane_creation: Mutex::new(()),
             profiles,
+            step_skills: StepSkills::default(),
             cancelled: Mutex::new(HashSet::new()),
         }
+    }
+
+    /// Gives every worker the installed built-in skill for its step.
+    pub fn with_step_skills(mut self, step_skills: StepSkills) -> Self {
+        self.step_skills = step_skills;
+        self
     }
 
     fn is_cancelled(&self, herdr_name: &str) -> bool {
@@ -336,7 +345,7 @@ impl AgentAdapter for HerdrAgentAdapter {
         let timeout_minutes = profile
             .and_then(|profile| profile.timeout_minutes)
             .unwrap_or_else(|| default_timeout_minutes(step));
-        let pi_args = pi_agent_args(profile);
+        let pi_args = pi_agent_args(self.step_skills.path(step), profile);
         let pane_id = {
             let _guard = self
                 .pane_creation
@@ -964,7 +973,9 @@ pub fn check_program_changed(
     (base != task || uncommitted).then_some(file)
 }
 
-fn pi_agent_args(profile: Option<&AgentProfile>) -> Vec<OsString> {
+/// Pi arguments for a worker: built-in resources off, then the step's built-in skill, then only
+/// what the agent's profile assigns.
+fn pi_agent_args(step_skill: Option<&Path>, profile: Option<&AgentProfile>) -> Vec<OsString> {
     let mut args = [
         "--no-skills",
         "--no-extensions",
@@ -975,11 +986,15 @@ fn pi_agent_args(profile: Option<&AgentProfile>) -> Vec<OsString> {
     .map(OsString::from)
     .collect::<Vec<_>>();
 
+    if let Some(model) = profile.and_then(|profile| profile.model.as_ref()) {
+        args.push("--model".into());
+        args.push(model.into());
+    }
+    if let Some(skill) = step_skill {
+        args.push("--skill".into());
+        args.push(skill.as_os_str().to_owned());
+    }
     if let Some(profile) = profile {
-        if let Some(model) = &profile.model {
-            args.push("--model".into());
-            args.push(model.into());
-        }
         for skill in &profile.skills {
             args.push("--skill".into());
             args.push(skill.as_os_str().to_owned());
@@ -1140,7 +1155,8 @@ mod tests {
             model: Some("anthropic/claude-sonnet-4".to_owned()),
             timeout_minutes: Some(20),
         };
-        let args = pi_agent_args(Some(&profile))
+        let step_skill = Path::new("/data/skills/cronos-code-review/SKILL.md");
+        let args = pi_agent_args(Some(step_skill), Some(&profile))
             .iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
@@ -1154,6 +1170,8 @@ mod tests {
                 "--model",
                 "anthropic/claude-sonnet-4",
                 "--skill",
+                "/data/skills/cronos-code-review/SKILL.md",
+                "--skill",
                 "/profiles/security skills/SKILL.md",
                 "--extension",
                 "/profiles/security extensions/index.ts",
@@ -1164,7 +1182,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            pi_agent_args(None)
+            pi_agent_args(None, None)
                 .iter()
                 .map(|arg| arg.to_string_lossy().into_owned())
                 .collect::<Vec<_>>(),

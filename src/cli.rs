@@ -192,7 +192,8 @@ pub fn run() -> Result<Option<PathBuf>, Box<dyn Error>> {
                     })?;
                     let agents: Vec<AgentPlan> = serde_json::from_str(&agents_json)?;
                     let profiles = AgentProfileCatalog::load(&root)?;
-                    let adapter = HerdrAgentAdapter::with_profiles(profiles.clone());
+                    let adapter = HerdrAgentAdapter::with_profiles(profiles.clone())
+                        .with_step_skills(crate::step_skills::install_step_skills(&root)?);
                     let task = WorkflowEngine::with_profiles(manager, adapter, profiles).run_step(
                         parse_project_id(&project_id)?,
                         parse_task_id(&task_id)?,

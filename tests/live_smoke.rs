@@ -9,6 +9,7 @@ use cronos_ai::{
     integrations::GitAdapter,
     model::{AgentStatus, ApprovalDecision, ApprovalGate, Priority, WorkflowStep},
     project::ProjectManager,
+    step_skills::install_step_skills,
     workflow::{AgentPlan, HerdrAgentAdapter, WorkflowEngine},
 };
 
@@ -97,7 +98,8 @@ fn real_herdr_pi_review_agent_writes_a_structured_result() {
 
     let engine = WorkflowEngine::with_profiles(
         ProjectManager::new(&data_dir).unwrap(),
-        HerdrAgentAdapter::with_profiles(AgentProfileCatalog::default()),
+        HerdrAgentAdapter::with_profiles(AgentProfileCatalog::default())
+            .with_step_skills(install_step_skills(&data_dir).unwrap()),
         AgentProfileCatalog::default(),
     );
     let reviewed = engine
