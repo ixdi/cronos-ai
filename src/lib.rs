@@ -3,6 +3,7 @@ pub mod cli;
 pub mod integrations;
 pub mod model;
 pub mod project;
+pub mod release;
 pub mod step_skills;
 pub mod storage;
 pub mod tui;
