@@ -8,6 +8,9 @@ Cronos-AI is a supervised software factory for taking a project task through a s
 
 It is an opinionated stack with a Rust TUI. Rust owns persisted task state, human approval gates, and the step loop of every task, a one-shot Pi planner proposes each step's agents, and Herdr runs the Pi agents that work in parallel within a step.
 
+> [!WARNNG]
+> It's still a work in progress — it's not ready for production yet!
+
 > [!NOTE]
 > Tasks run one at a time by default; set a project's parallel capacity to run several on separate feature tracks. Which task starts next follows its priority, or an agent prioritizer on the model you choose (`project set-prioritizer <ID> agent --model <model>`).
 
