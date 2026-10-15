@@ -75,6 +75,24 @@ impl PiRpcHandle {
     pub fn abort(&self) {
         let _ = self.input.send(PiRpcInput::Abort);
     }
+
+    /// A handle driven by the test instead of a Pi process: send events and the final result
+    /// through the returned senders.
+    #[cfg(test)]
+    pub(crate) fn for_tests() -> (Self, mpsc::Sender<String>, mpsc::Sender<Result<(), String>>) {
+        let (event_sender, events) = mpsc::channel();
+        let (finished_sender, finished) = mpsc::channel();
+        let (input, _) = mpsc::channel();
+        (
+            Self {
+                events,
+                finished,
+                input,
+            },
+            event_sender,
+            finished_sender,
+        )
+    }
 }
 
 #[derive(Debug, Error)]

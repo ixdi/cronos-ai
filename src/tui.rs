@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     error::Error,
     io,
     path::{Path, PathBuf},
@@ -32,9 +33,9 @@ use crate::{
     agent_profiles::{load_profiles_for_editing, save_edited_profiles},
     integrations::{GitAdapter, PiRpcHandle, ToolCommands, herdr_session_available},
     model::{
-        AgentActivity, AgentStatus, ApprovalDecision, ApprovalGate, Priority, Project,
-        ProjectStatus, PublishMode, RequirementId, RequirementKind, Task, TaskId, TaskStatus,
-        WorkflowStep,
+        AgentActivity, AgentStatus, ApprovalDecision, ApprovalGate, MAX_PARALLEL_TASKS, Priority,
+        Project, ProjectStatus, PublishMode, RequirementId, RequirementKind, Task, TaskId,
+        TaskStatus, WorkflowStep,
     },
     planning::Plan,
     project::{MAX_AUTOMATIC_REVISIONS, MergeOutcome, ProjectError, ProjectManager},
@@ -82,6 +83,7 @@ enum ProjectField {
     CheckTimeout,
     Publish,
     Releases,
+    Parallel,
 }
 
 impl ProjectField {
@@ -93,19 +95,21 @@ impl ProjectField {
             Self::CheckCommand => Self::CheckTimeout,
             Self::CheckTimeout => Self::Publish,
             Self::Publish => Self::Releases,
-            Self::Releases => Self::Name,
+            Self::Releases => Self::Parallel,
+            Self::Parallel => Self::Name,
         }
     }
 
     fn previous(self) -> Self {
         match self {
-            Self::Name => Self::Releases,
+            Self::Name => Self::Parallel,
             Self::Description => Self::Name,
             Self::Repository => Self::Description,
             Self::CheckCommand => Self::Repository,
             Self::CheckTimeout => Self::CheckCommand,
             Self::Publish => Self::CheckTimeout,
             Self::Releases => Self::Publish,
+            Self::Parallel => Self::Releases,
         }
     }
 }
@@ -118,6 +122,7 @@ struct ProjectForm {
     check_timeout: String,
     publish: PublishMode,
     releases: bool,
+    max_parallel_tasks: u32,
     focus: ProjectField,
 }
 
@@ -131,6 +136,7 @@ impl Default for ProjectForm {
             check_timeout: String::new(),
             publish: PublishMode::Local,
             releases: false,
+            max_parallel_tasks: 1,
             focus: ProjectField::Name,
         }
     }
@@ -145,7 +151,7 @@ impl ProjectForm {
             ProjectField::Repository => Some(&mut self.repository),
             ProjectField::CheckCommand => Some(&mut self.check_command),
             ProjectField::CheckTimeout => Some(&mut self.check_timeout),
-            ProjectField::Publish | ProjectField::Releases => None,
+            ProjectField::Publish | ProjectField::Releases | ProjectField::Parallel => None,
         }
     }
 
@@ -246,8 +252,8 @@ struct Dashboard {
     should_quit: bool,
     error: Option<String>,
     dialog: Dialog,
-    workflow: Option<PiRpcHandle>,
-    workflow_task: Option<(crate::model::ProjectId, crate::model::TaskId)>,
+    /// One Pi orchestrator per running task.
+    workflows: HashMap<TaskId, (crate::model::ProjectId, PiRpcHandle)>,
     workflow_status: Option<String>,
     review_text: Vec<String>,
     review_scroll: u16,
@@ -278,8 +284,7 @@ impl Dashboard {
             should_quit: false,
             error: None,
             dialog: Dialog::None,
-            workflow: None,
-            workflow_task: None,
+            workflows: HashMap::new(),
             workflow_status: None,
             review_text: Vec::new(),
             review_scroll: 0,
@@ -610,6 +615,12 @@ impl Dashboard {
         }
     }
 
+    /// Whether the selected task's orchestrator is still running; its controls wait for it.
+    fn selected_task_is_running(&self) -> bool {
+        self.selected_task()
+            .is_some_and(|task| self.workflows.contains_key(&task.id))
+    }
+
     fn active_approval_gate(&self) -> Option<ApprovalGate> {
         match self.selected_task()?.current_step.as_deref()? {
             "specification-approval" => Some(ApprovalGate::Specifications),
@@ -619,7 +630,7 @@ impl Dashboard {
     }
 
     fn approve_active_gate(&mut self) {
-        if self.workflow.is_some() {
+        if self.selected_task_is_running() {
             self.error = Some("Wait for the Pi workflow to settle before approving.".to_owned());
             return;
         }
@@ -631,7 +642,7 @@ impl Dashboard {
     }
 
     fn request_revision(&mut self) {
-        if self.workflow.is_some() {
+        if self.selected_task_is_running() {
             self.error =
                 Some("Wait for the Pi workflow to settle before requesting revisions.".to_owned());
             return;
@@ -648,7 +659,7 @@ impl Dashboard {
     }
 
     fn retry_error_task(&mut self) {
-        if self.workflow.is_some() {
+        if self.selected_task_is_running() {
             self.error = Some("Wait for the Pi workflow to settle before retrying.".to_owned());
             return;
         }
@@ -675,7 +686,7 @@ impl Dashboard {
     }
 
     fn retry_failed_step(&mut self) {
-        if self.workflow.is_some() {
+        if self.selected_task_is_running() {
             self.error = Some("Wait for the Pi workflow to settle before retrying.".to_owned());
             return;
         }
@@ -961,7 +972,7 @@ impl Dashboard {
     }
 
     fn open_clarify_dialog(&mut self) {
-        if self.workflow.is_some() {
+        if self.selected_task_is_running() {
             self.error = Some("Wait for the Pi workflow to settle before clarifying.".to_owned());
             return;
         }
@@ -979,7 +990,7 @@ impl Dashboard {
     }
 
     fn open_abandon_dialog(&mut self) {
-        if self.workflow.is_some() {
+        if self.selected_task_is_running() {
             self.error =
                 Some("Wait for the Pi workflow to settle before abandoning the task.".to_owned());
             return;
@@ -1035,6 +1046,13 @@ impl Dashboard {
                     match form.focus {
                         ProjectField::Publish => form.cycle_publish(key == KeyCode::Right),
                         ProjectField::Releases => form.releases = key == KeyCode::Right,
+                        ProjectField::Parallel => {
+                            form.max_parallel_tasks = if key == KeyCode::Right {
+                                (form.max_parallel_tasks + 1).min(MAX_PARALLEL_TASKS)
+                            } else {
+                                form.max_parallel_tasks.saturating_sub(1).max(1)
+                            };
+                        }
                         _ => {}
                     }
                 }
@@ -1178,6 +1196,15 @@ impl Dashboard {
             {
                 self.error = Some(format!(
                     "Project created, but releases could not be turned on: {error}"
+                ));
+            }
+            if form.max_parallel_tasks != 1
+                && let Err(error) = self
+                    .manager
+                    .set_project_parallelism(project.id, form.max_parallel_tasks)
+            {
+                self.error = Some(format!(
+                    "Project created, but its parallel capacity could not be saved: {error}"
                 ));
             }
         });
@@ -1555,11 +1582,9 @@ impl Dashboard {
         Some((self.selected_project()?.id, self.selected_task()?.id))
     }
 
+    /// Resumes every interrupted task, then starts ready tasks until the project's tracks are
+    /// full.
     fn start_next_workflow(&mut self) {
-        if self.workflow.is_some() {
-            self.error = Some("A Pi workflow is already running.".to_owned());
-            return;
-        }
         let Some(project_id) = self.selected_project().map(|project| project.id) else {
             return;
         };
@@ -1585,44 +1610,74 @@ impl Dashboard {
                 Some("Start Cronos-AI inside a Herdr-managed pane to run tasks.".to_owned());
             return;
         }
-        if let Ok(tasks) = self.manager.list_tasks(project_id)
-            && let Some(task) = tasks
-                .iter()
-                .find(|task| task.status == TaskStatus::InProgress)
-        {
-            self.resume_interrupted_task(project_id, task.id);
-            return;
+        let interrupted = self
+            .manager
+            .list_tasks(project_id)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|task| {
+                task.status == TaskStatus::InProgress && !self.workflows.contains_key(&task.id)
+            })
+            .collect::<Vec<_>>();
+        let mut resumed = 0;
+        for task in &interrupted {
+            if self.resume_interrupted_task(project_id, task.id) {
+                resumed += 1;
+            }
         }
-        match self.manager.start_next_task(project_id) {
-            Ok(Some(task)) => {
-                let result = self
-                    .manager
-                    .prepare_task_worktree(project_id, task.id, &GitAdapter::default())
-                    .map_err(|error| error.to_string())
-                    .and_then(|_| self.launch_pi_for_task(project_id, task.id));
-                if let Err(error) = result {
-                    let _ = self
+        let mut started = 0;
+        loop {
+            match self.manager.start_next_task(project_id) {
+                Ok(Some(task)) => {
+                    let result = self
                         .manager
-                        .set_task_status(project_id, task.id, TaskStatus::Error);
-                    self.error = Some(error);
-                    self.refresh_for_ui();
+                        .prepare_task_worktree(project_id, task.id, &GitAdapter::default())
+                        .map_err(|error| error.to_string())
+                        .and_then(|_| self.launch_pi_for_task(project_id, task.id));
+                    if let Err(error) = result {
+                        let _ =
+                            self.manager
+                                .set_task_status(project_id, task.id, TaskStatus::Error);
+                        self.error = Some(error);
+                        break;
+                    }
+                    started += 1;
+                }
+                Ok(None) => break,
+                Err(error) => {
+                    self.error = Some(error.to_string());
+                    break;
                 }
             }
-            Ok(None) => {
-                self.error = Some("The project queue is already active or blocked.".to_owned())
-            }
-            Err(error) => self.error = Some(error.to_string()),
         }
+        if started == 0 && resumed == 0 && self.error.is_none() {
+            self.error = Some(if interrupted.is_empty() {
+                "No task can start: the project's tracks are full, or no ready task avoids the requirements of running work.".to_owned()
+            } else {
+                "The active tasks are waiting for your approval in their details.".to_owned()
+            });
+        } else if self.error.is_none() {
+            self.workflow_status = Some(format!(
+                "Started {started} and resumed {resumed} {}.",
+                if started + resumed == 1 {
+                    "task"
+                } else {
+                    "tasks"
+                }
+            ));
+        }
+        self.refresh_for_ui();
     }
 
-    /// Resumes an In Progress task whose orchestrator is no longer running.
+    /// Resumes an In Progress task whose orchestrator is no longer running. Returns false when
+    /// the task waits for a human approval or could not be resumed.
     fn resume_interrupted_task(
         &mut self,
         project_id: crate::model::ProjectId,
         task_id: crate::model::TaskId,
-    ) {
+    ) -> bool {
         let Ok(task) = self.manager.get_task(project_id, task_id) else {
-            return;
+            return false;
         };
         if task
             .current_step
@@ -1630,9 +1685,7 @@ impl Dashboard {
             .and_then(WorkflowStep::parse)
             .is_some_and(WorkflowStep::requires_human_approval)
         {
-            self.error =
-                Some("The active task is waiting for your approval in its details.".to_owned());
-            return;
+            return false;
         }
         match cancel_interrupted_agents(
             &self.manager,
@@ -1640,16 +1693,15 @@ impl Dashboard {
             project_id,
             task_id,
         ) {
-            Ok(cancelled) => {
-                self.workflow_status = Some(format!(
-                    "Resuming {} ({cancelled} interrupted agents cancelled)",
-                    terminal_safe(&task.title)
-                ));
+            Ok(_) => {
                 self.continue_task(project_id, task_id);
+                true
             }
-            Err(error) => self.error = Some(error.to_string()),
+            Err(error) => {
+                self.error = Some(error.to_string());
+                false
+            }
         }
-        self.refresh_for_ui();
     }
 
     fn launch_pi_for_task(
@@ -1681,29 +1733,39 @@ impl Dashboard {
         let handle = commands
             .spawn_pi_rpc(command)
             .map_err(|error| error.to_string())?;
-        self.workflow = Some(handle);
-        self.workflow_task = Some((project_id, task_id));
+        self.workflows.insert(task_id, (project_id, handle));
         self.workflow_status = Some("Pi orchestrator started".to_owned());
         self.error = None;
         Ok(())
     }
 
+    /// Shows each orchestrator's latest progress and finishes the ones that settled.
     fn poll_workflow(&mut self) {
-        let Some(handle) = self.workflow.as_ref() else {
-            return;
-        };
-        while let Ok(event) = handle.events.try_recv() {
-            self.workflow_status = Some(terminal_safe(&event));
+        let mut settled = Vec::new();
+        for (task_id, (project_id, handle)) in &self.workflows {
+            while let Ok(event) = handle.events.try_recv() {
+                let title = self
+                    .tasks
+                    .iter()
+                    .find(|task| task.id == *task_id)
+                    .map(|task| format!("{}: ", terminal_safe(&task.title)))
+                    .unwrap_or_default();
+                self.workflow_status = Some(format!("{title}{}", terminal_safe(&event)));
+            }
+            match handle.finished.try_recv() {
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Ok(result) => settled.push((*project_id, *task_id, result)),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => settled.push((
+                    *project_id,
+                    *task_id,
+                    Err("Pi workflow monitor disconnected unexpectedly.".to_owned()),
+                )),
+            }
         }
-        let finished = handle.finished.try_recv();
-        if matches!(finished, Err(std::sync::mpsc::TryRecvError::Empty)) {
-            return;
-        }
-        self.workflow = None;
-        let task_ids = self.workflow_task.take();
-        match finished {
-            Ok(Ok(())) => {
-                if let Some((project_id, task_id)) = task_ids {
+        for (project_id, task_id, result) in settled {
+            self.workflows.remove(&task_id);
+            match result {
+                Ok(()) => {
                     self.refresh_for_ui();
                     if let Ok(task) = self.manager.get_task(project_id, task_id)
                         && task.status == TaskStatus::InProgress
@@ -1718,24 +1780,19 @@ impl Dashboard {
                                 task_id,
                                 TaskStatus::Error,
                             );
-                            self.error = Some(
-                                "Pi settled before completing the current workflow step."
-                                    .to_owned(),
-                            );
+                            self.error = Some(format!(
+                                "{}: Pi settled before completing the current workflow step.",
+                                terminal_safe(&task.title)
+                            ));
                             self.refresh_for_ui();
                         }
                     }
                 }
+                Err(error) => {
+                    self.mark_workflow_error(Some((project_id, task_id)));
+                    self.error = Some(error);
+                }
             }
-            Ok(Err(error)) => {
-                self.mark_workflow_error(task_ids);
-                self.error = Some(error);
-            }
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.mark_workflow_error(task_ids);
-                self.error = Some("Pi workflow monitor disconnected unexpectedly.".to_owned());
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
     }
 
@@ -1890,7 +1947,12 @@ fn draw_header(frame: &mut Frame, app: &Dashboard, area: Rect) {
     if app.screen == Screen::Review {
         crumbs.push(Span::styled(" › review", Style::default().fg(MUTED)));
     }
-    let orchestrator = if app.workflow.is_some() {
+    let orchestrator = if app.workflows.len() > 1 {
+        Span::styled(
+            format!("● {} orchestrators running ", app.workflows.len()),
+            Style::default().fg(PRIMARY),
+        )
+    } else if !app.workflows.is_empty() {
         Span::styled("● orchestrator running ", Style::default().fg(PRIMARY))
     } else {
         Span::styled("○ orchestrator idle ", Style::default().fg(MUTED))
@@ -2160,8 +2222,14 @@ fn draw_tasks(frame: &mut Frame, app: &Dashboard, area: Rect) {
             ));
         }
     }
-    let mut block =
-        panel(format!("{project_name} · tasks")).title_top(Line::from(counts).right_aligned());
+    let capacity = app
+        .selected_project()
+        .map(|project| project.max_parallel_tasks)
+        .filter(|capacity| *capacity > 1)
+        .map(|capacity| format!(" · up to {capacity} at a time"))
+        .unwrap_or_default();
+    let mut block = panel(format!("{project_name} · tasks{capacity}"))
+        .title_top(Line::from(counts).right_aligned());
     if !app.tasks.is_empty() {
         block = block.title_bottom(
             board::analytics_line(&board::ProjectAnalytics::from_tasks(&app.tasks)).left_aligned(),
@@ -2968,8 +3036,13 @@ fn draw_dialog(frame: &mut Frame, app: &Dashboard) {
                         "off"
                     },
                 ),
+                selector_field(
+                    form.focus == ProjectField::Parallel,
+                    "Parallel tasks",
+                    &format!("{} at a time", form.max_parallel_tasks),
+                ),
             ],
-            "Tab/Shift+Tab fields  Enter create  Esc cancel",
+            "Tab/Shift+Tab fields  ←/→ choose  Enter create  Esc cancel",
         ),
         Dialog::CreateTask(form) => {
             let priority_focused = form.focus == TaskField::Priority;
@@ -4124,6 +4197,122 @@ mod tests {
                 .as_deref()
                 .unwrap()
                 .contains("Created 2 tasks")
+        );
+    }
+
+    #[test]
+    fn project_form_sets_parallel_capacity_and_the_task_list_shows_it() {
+        let root = tempfile::tempdir().unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+        app.handle_key(KeyCode::Char('n'));
+        for character in "Factory".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        for _ in 0..7 {
+            app.handle_key(KeyCode::Tab);
+        }
+        let backend = render(&app);
+        let (_, parallel_row) = rendered_text_position(&backend, "› Parallel tasks");
+        let (_, releases_row) = rendered_text_position(&backend, "  Releases");
+        assert!(releases_row < parallel_row, "fields are drawn in Tab order");
+        rendered_text_position(&backend, "◀ 1 at a time ▶");
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Enter);
+        assert!(matches!(app.dialog, Dialog::None), "{:?}", app.error);
+        let project = app.manager.list_projects().unwrap()[0].clone();
+        assert_eq!(project.max_parallel_tasks, 3);
+
+        app.manager
+            .create_task(
+                project.id,
+                "Build".to_owned(),
+                None,
+                Priority::Medium,
+                Vec::new(),
+            )
+            .unwrap();
+        app.handle_key(KeyCode::Enter);
+        let backend = render(&app);
+        rendered_text_position(&backend, "Factory · tasks · up to 3 at a time");
+    }
+
+    #[test]
+    fn each_running_task_has_its_own_orchestrator() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(root.path()).unwrap();
+        let project = manager.create_project("Parallel".to_owned(), None).unwrap();
+        manager.set_project_parallelism(project.id, 2).unwrap();
+        for title in ["Alpha", "Beta"] {
+            manager
+                .create_task(
+                    project.id,
+                    title.to_owned(),
+                    None,
+                    Priority::Medium,
+                    Vec::new(),
+                )
+                .unwrap();
+        }
+        let alpha = manager.start_next_task(project.id).unwrap().unwrap();
+        let beta = manager.start_next_task(project.id).unwrap().unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+        app.handle_key(KeyCode::Enter);
+        let (alpha_handle, alpha_events, alpha_done) =
+            crate::integrations::PiRpcHandle::for_tests();
+        let (beta_handle, _beta_events, _beta_done) = crate::integrations::PiRpcHandle::for_tests();
+        app.workflows.insert(alpha.id, (project.id, alpha_handle));
+        app.workflows.insert(beta.id, (project.id, beta_handle));
+
+        let backend = render(&app);
+        rendered_text_position(&backend, "● 2 orchestrators running");
+
+        alpha_events
+            .send("specification agents running".to_owned())
+            .unwrap();
+        app.poll_workflow();
+        assert!(
+            app.workflow_status
+                .as_deref()
+                .unwrap()
+                .contains("specification agents running")
+        );
+        assert!(
+            app.workflow_status
+                .as_deref()
+                .unwrap()
+                .contains(&alpha.title)
+        );
+
+        // Abandoning is refused only for the task whose orchestrator is running.
+        app.selected_task = app
+            .tasks
+            .iter()
+            .position(|task| task.id == alpha.id)
+            .unwrap();
+        app.screen = Screen::TaskDetail;
+        app.handle_key(KeyCode::Char('a'));
+        assert!(matches!(app.dialog, Dialog::None));
+        assert!(app.error.as_deref().unwrap().contains("Wait for"));
+
+        // When one orchestrator settles, the other keeps running.
+        alpha_done.send(Err("pi crashed".to_owned())).unwrap();
+        app.poll_workflow();
+        assert!(!app.workflows.contains_key(&alpha.id));
+        assert!(app.workflows.contains_key(&beta.id));
+        assert_eq!(
+            manager.get_task(project.id, alpha.id).unwrap().status,
+            TaskStatus::Error
+        );
+        assert_eq!(
+            manager.get_task(project.id, beta.id).unwrap().status,
+            TaskStatus::InProgress
+        );
+        app.handle_key(KeyCode::Char('a'));
+        assert!(
+            matches!(app.dialog, Dialog::Abandon { .. }),
+            "{:?}",
+            app.error
         );
     }
 
