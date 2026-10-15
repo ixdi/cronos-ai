@@ -155,7 +155,7 @@ fn remove_stale_result(path: &Path) -> Result<(), String> {
 
 /// Agent limits per step: the specification has one author; code generation may split the work
 /// between parallel writers in their own worktrees; review, verification, and docs run in parallel.
-fn agent_count_range(step: WorkflowStep) -> (usize, usize) {
+pub(crate) fn agent_count_range(step: WorkflowStep) -> (usize, usize) {
     match step {
         WorkflowStep::SpecificationGeneration => (1, 1),
         _ => (1, MAX_PARALLEL_AGENTS),
@@ -1228,7 +1228,7 @@ fn pi_agent_args(step_skill: Option<&Path>, profile: Option<&AgentProfile>) -> V
     args
 }
 
-fn validate_profile_assignments(
+pub(crate) fn validate_profile_assignments(
     profiles: &AgentProfileCatalog,
     step: WorkflowStep,
     agents: &[AgentPlan],
@@ -1247,7 +1247,10 @@ fn validate_profile_assignments(
     Ok(())
 }
 
-fn validate_agents(step: WorkflowStep, agents: &[AgentPlan]) -> Result<(), WorkflowError> {
+pub(crate) fn validate_agents(
+    step: WorkflowStep,
+    agents: &[AgentPlan],
+) -> Result<(), WorkflowError> {
     let (min, max) = agent_count_range(step);
     if agents.len() < min || agents.len() > max {
         return Err(WorkflowError::InvalidAgentCount { step, min, max });

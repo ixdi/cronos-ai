@@ -2,6 +2,7 @@ pub mod agent_profiles;
 pub mod cli;
 pub mod integrations;
 pub mod model;
+pub mod orchestration;
 pub mod planning;
 pub mod prioritization;
 pub mod project;
