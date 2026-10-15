@@ -229,3 +229,10 @@ A project SHALL store how many tasks may be active at the same time, from 1 to 8
 #### Scenario: Reject an invalid capacity
 - **WHEN** a user sets a capacity of 0 or more than 8
 - **THEN** the project is unchanged and the user sees the allowed range
+
+### Requirement: Project sandbox setting
+A project SHALL store whether its workers run in the write sandbox, defaulting to off, set from the CLI or the TUI project form.
+
+#### Scenario: Turn the sandbox on
+- **WHEN** a user turns the sandbox on for a project
+- **THEN** the setting is saved and later workflow steps run their workers in the sandbox

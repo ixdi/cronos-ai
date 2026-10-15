@@ -168,9 +168,9 @@ Pi keeps running agent steps until the task reaches an approval gate, local merg
 
 - **What Rust enforces:** Cronos tools cannot change task status, approvals, or worktree paths. Rust validates every step, profile, and transition, and checks worktree rules after each step.
 - **What it cannot enforce:** workers are full Pi sessions with shell access, running with the user's operating-system permissions. A worker's shell could edit Cronos data files, leave the worktree, weaken tests or the check program, or push. Cronos never writes or deletes through symlinks agents place in `.cronos/`, and it flags a changed check program, but the human gates and the review view are the real protection.
+- **Optional write sandbox (implemented):** With `project set-sandbox on`, each worker runs in a write sandbox (`sandbox-exec` on macOS, bubblewrap on Linux): it can still write its worktree, the repository's Git objects, build caches, and temporary files, but not Cronos data, the base checkout, or the repository's `.git/hooks` and `.git/config`. The sandbox does not limit network access or reading files, and a worker can still weaken tests inside its worktree, so the human gates remain the real protection. Herdr replaces the worker pane's shell with a sandboxed shell before Pi starts, and a sandboxed project refuses to run when the sandbox tool is missing.
 - **Recommendation:** run Cronos-AI as a dedicated OS user or in a container for untrusted work.
 
 ## Future work
 
 - Jev-based prioritization.
-- Sandboxed workers.

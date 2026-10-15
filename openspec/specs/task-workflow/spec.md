@@ -186,11 +186,11 @@ The workflow extension SHALL be embedded in the Cronos-AI binary and written to 
 - **THEN** the orchestrator loads the extension from the data directory
 
 ### Requirement: Documented worker trust boundary
-Documentation SHALL state that workers run with the user's operating-system permissions, that Cronos tools cannot change status or approvals but a worker's shell could, and SHALL recommend a dedicated user or container for untrusted work.
+Documentation SHALL state that workers run with the user's operating-system permissions, that Cronos tools cannot change status or approvals but a worker's shell could, what the optional write sandbox protects and what it does not, and SHALL recommend a dedicated user or container for untrusted work.
 
 #### Scenario: Read the trust model
 - **WHEN** a user reads the integration documentation
-- **THEN** it describes what the gates protect against and what requires operating-system isolation
+- **THEN** it describes what the gates protect against, what the write sandbox adds, and what requires operating-system isolation
 
 ### Requirement: One step process per task
 The system SHALL let only one process run a workflow step for a task at a time, using an operating-system lock that is released when the process exits. Resume, step retry, retry, and clarification SHALL refuse to act while the lock is held, and SHALL stop agents left by an earlier process before continuing. A step SHALL discard its results if the task's attempt, step, or status changed while its agents ran. Herdr agent names SHALL include the attempt.
@@ -294,3 +294,18 @@ The system SHALL run at most the project's parallel capacity of tasks at the sam
 #### Scenario: Advance workflow steps
 - **WHEN** a task step completes successfully
 - **THEN** the next defined step of that task starts
+
+### Requirement: Worker write sandbox
+When a project's sandbox is on, the system SHALL run every worker inside an operating-system write sandbox that denies writes to Cronos-AI's data directory except the worker's own worktree, to the project's base checkout except its Git directory, and to the Git directory's hooks and configuration. The system SHALL refuse to run a step for a sandboxed project when the platform's sandbox tool is unavailable.
+
+#### Scenario: Protected writes are refused
+- **WHEN** a sandboxed worker tries to write Cronos-AI's data, the base checkout, or a Git hook
+- **THEN** the write fails
+
+#### Scenario: Work and commits still succeed
+- **WHEN** a sandboxed worker writes files in its worktree, build caches, or temporary files and commits
+- **THEN** the writes and the commit succeed
+
+#### Scenario: Sandbox tool missing
+- **WHEN** a sandboxed project's step starts on a machine without the sandbox tool
+- **THEN** the step does not start and the user is told what to install

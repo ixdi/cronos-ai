@@ -39,7 +39,9 @@ The project check command runs without a shell in the task worktree after the ve
 
 ## Trust boundary
 
-Cronos tools cannot change task status, approvals, or worktree paths, and Rust validates every step, profile, and transition and checks the worktree after each step. Workers, however, are full Pi sessions with shell access running with your operating-system permissions: a worker's shell could edit Cronos data files, leave the worktree, change tests or the check program, or push. The human approval gates and the review view are the real protection. Run Cronos-AI as a dedicated OS user or in a container for untrusted work.
+Cronos tools cannot change task status, approvals, or worktree paths, and Rust validates every step, profile, and transition and checks the worktree after each step. Workers, however, are full Pi sessions with shell access running with your operating-system permissions: a worker's shell could edit Cronos data files, leave the worktree, change tests or the check program, or push. The human approval gates and the review view are the real protection.
+
+With `project set-sandbox on`, each worker instead runs in a write sandbox (`sandbox-exec` on macOS, bubblewrap on Linux): it can still write its worktree, the repository's Git objects, build caches, and temporary files, but not Cronos data, the base checkout, or the repository's `.git/hooks` and `.git/config`. The sandbox does not limit network access or reading files, and a worker can still weaken tests inside its worktree, so the human gates remain the real protection. Run Cronos-AI as a dedicated OS user or in a container for untrusted work.
 
 ## Jev
 

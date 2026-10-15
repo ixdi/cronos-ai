@@ -144,7 +144,7 @@ The live smoke test starts one real Pi agent through Herdr. Run it by hand insid
 CRONOS_LIVE_SMOKE=1 cargo test --test live_smoke -- --ignored --nocapture
 ```
 
-Workers run with your operating-system permissions; see the [trust boundary](docs/integration-contracts.md#trust-boundary) before running untrusted work.
+Workers run with your operating-system permissions; `project set-sandbox <PROJECT_ID> on` keeps them from writing Cronos data, the base checkout, and Git hooks. See the [trust boundary](docs/integration-contracts.md#trust-boundary) before running untrusted work.
 
 ## Documentation
 

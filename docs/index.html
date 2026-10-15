@@ -308,7 +308,7 @@
 		<div class="notice" role="note"><strong>Model access:</strong>
 		the orchestrator can read the worktree and use only read-only task-state and profile queries plus a narrow current-step command. Rust validates task status, step order, profile IDs, approval gates, agent inputs, and worktree paths, and appends its own rules to every agent prompt.</div>
 		<div class="notice" role="note"><strong>Trust boundary:</strong>
-		workers are full Pi sessions with shell access and your operating-system permissions. Cronos tools cannot change task status or approvals, but a worker's shell could. Review the work at the approval gates, and run Cronos-AI as a dedicated user or in a container for untrusted work. See <a href="integration-contracts.html#trust-boundary">integration contracts</a>.</div>
+		workers are full Pi sessions with shell access and your operating-system permissions. Cronos tools cannot change task status or approvals, but a worker's shell could. Turn on a project's write sandbox (<code>cronos-ai project set-sandbox</code>) to keep workers from writing Cronos data, the base checkout, and Git hooks; review the work at the approval gates, and run Cronos-AI as a dedicated user or in a container for untrusted work. See <a href="integration-contracts.html#trust-boundary">integration contracts</a>.</div>
 		<p>For field-level details, see <a href="storage-format.html">storage format</a>, <a href="workflow-states.html">workflow states</a>, <a href="monitoring.html">TUI controls</a>, and <a href="integration-contracts.html">integration contracts</a>.</p>
 	</section>
 
