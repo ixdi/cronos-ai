@@ -104,6 +104,25 @@ enum ProjectAction {
         id: String,
         minutes: Option<u32>,
     },
+    /// Ask the read-only planner for tasks covering the requirements; the plan waits for approval.
+    Plan {
+        id: String,
+        /// Minutes the planner may run.
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..=480))]
+        timeout_minutes: u64,
+    },
+    /// Print the plan waiting for approval, or null.
+    PlanShow {
+        id: String,
+    },
+    /// Create the pending plan's tasks.
+    PlanApply {
+        id: String,
+    },
+    /// Throw the pending plan away.
+    PlanDiscard {
+        id: String,
+    },
     /// Tag each locally merged task as the next release and add it to CHANGELOG.md (on), or not (off).
     SetReleases {
         id: String,
@@ -308,6 +327,26 @@ pub fn run() -> Result<Option<PathBuf>, Box<dyn Error>> {
             }
             ProjectAction::SetCheckCommand { id, command } => {
                 print_json(&manager.set_project_check_command(parse_project_id(&id)?, command)?)?;
+            }
+            ProjectAction::Plan {
+                id,
+                timeout_minutes,
+            } => {
+                print_json(&manager.plan_tasks(
+                    parse_project_id(&id)?,
+                    &ToolCommands::default(),
+                    std::time::Duration::from_secs(timeout_minutes * 60),
+                )?)?;
+            }
+            ProjectAction::PlanShow { id } => {
+                print_json(&manager.pending_plan(parse_project_id(&id)?)?)?;
+            }
+            ProjectAction::PlanApply { id } => {
+                print_json(&manager.apply_plan(parse_project_id(&id)?)?)?;
+            }
+            ProjectAction::PlanDiscard { id } => {
+                manager.discard_plan(parse_project_id(&id)?)?;
+                print_json(&serde_json::Value::Null)?;
             }
             ProjectAction::SetReleases { id, state } => {
                 print_json(&manager.set_project_releases(

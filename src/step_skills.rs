@@ -75,6 +75,16 @@ pub fn install_step_skills(data_dir: &Path) -> io::Result<StepSkills> {
     Ok(StepSkills { paths })
 }
 
+const PLANNING_SKILL_NAME: &str = "cronos-project-planning";
+const PLANNING_SKILL: &str = include_str!("../skills/cronos-project-planning/SKILL.md");
+
+/// Writes the embedded project-planning skill to `<data>/skills/cronos-project-planning/SKILL.md`.
+pub fn install_planning_skill(data_dir: &Path) -> io::Result<PathBuf> {
+    let root = ensure_real_directory(&data_dir.join("skills"))?;
+    let directory = ensure_real_directory(&root.join(PLANNING_SKILL_NAME))?;
+    install_embedded_file(&directory, "SKILL.md", PLANNING_SKILL)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{STEP_SKILLS, install_step_skills};
@@ -134,6 +144,22 @@ mod tests {
         install_step_skills(temp.path()).unwrap();
 
         assert_ne!(std::fs::read_to_string(path).unwrap(), "tampered");
+    }
+
+    #[test]
+    fn the_planning_skill_is_installed_next_to_the_step_skills() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = super::install_planning_skill(temp.path()).unwrap();
+
+        assert_eq!(
+            path,
+            temp.path().join("skills/cronos-project-planning/SKILL.md")
+        );
+        assert!(
+            std::fs::read_to_string(path)
+                .unwrap()
+                .starts_with("---\nname: cronos-project-planning\n")
+        );
     }
 
     #[cfg(unix)]

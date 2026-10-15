@@ -858,6 +858,89 @@ impl ToolCommands {
         self
     }
 
+    /// Runs Pi once, read-only, in the repository with only the planning skill and returns its
+    /// final answer. Pi's own discovery is off and project-local Pi files are ignored; the whole
+    /// process group is stopped when the time limit is reached.
+    pub fn run_planner(
+        &self,
+        repository: &Path,
+        skill: &Path,
+        prompt: &str,
+        timeout: Duration,
+    ) -> Result<String, IntegrationError> {
+        let io_error = |source| IntegrationError::Io { tool: "pi", source };
+        let mut stdout = tempfile::tempfile().map_err(io_error)?;
+        let mut stderr = tempfile::tempfile().map_err(io_error)?;
+        let mut command = Command::new(&self.pi);
+        command
+            .args([
+                "-p",
+                "--mode",
+                "text",
+                "--no-session",
+                "--no-skills",
+                "--no-extensions",
+                "--no-context-files",
+                "--no-mcp",
+                "--no-prompt-templates",
+                "--no-approve",
+                "--tools",
+                "read,grep,find,ls",
+                "--skill",
+            ])
+            .arg(skill)
+            .arg("--")
+            .arg(prompt)
+            .current_dir(repository)
+            .stdin(Stdio::null())
+            .stdout(stdout.try_clone().map_err(io_error)?)
+            .stderr(stderr.try_clone().map_err(io_error)?);
+        #[cfg(unix)]
+        std::os::unix::process::CommandExt::process_group(&mut command, 0);
+        let mut child = command.spawn().map_err(io_error)?;
+        let started = Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait().map_err(io_error)? {
+                break status;
+            }
+            if started.elapsed() >= timeout {
+                #[cfg(unix)]
+                let _ = Command::new("kill")
+                    .args(["-KILL", &format!("-{}", child.id())])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(IntegrationError::Failed {
+                    tool: "pi",
+                    status: "timeout".to_owned(),
+                    stderr: format!(
+                        "the planner exceeded its {}-minute time limit",
+                        timeout.as_secs().div_ceil(60)
+                    ),
+                });
+            }
+            thread::sleep(Duration::from_millis(50));
+        };
+        let read = |file: &mut std::fs::File| -> Result<String, IntegrationError> {
+            let mut text = String::new();
+            file.seek(SeekFrom::Start(0)).map_err(io_error)?;
+            file.read_to_string(&mut text).map_err(io_error)?;
+            Ok(text)
+        };
+        if !status.success() {
+            let stderr = read(&mut stderr)?;
+            let lines = stderr.lines().collect::<Vec<_>>();
+            return Err(IntegrationError::Failed {
+                tool: "pi",
+                status: status.to_string(),
+                stderr: lines[lines.len().saturating_sub(20)..].join("\n"),
+            });
+        }
+        read(&mut stdout)
+    }
+
     fn run_gh(&self, dir: &Path, args: &[&str]) -> Result<Output, IntegrationError> {
         let args = args.iter().map(OsStr::new).collect::<Vec<_>>();
         run_program(&self.gh, "gh", Some(dir), &args)
@@ -1800,6 +1883,95 @@ mod tests {
             fixture_git(&remote, &["rev-parse", "v0.1.1^{commit}"]),
             fixture_git(&repository, &["rev-parse", "HEAD"])
         );
+    }
+
+    use std::time::Duration;
+
+    fn fake_pi(directory: &Path, body: &str) -> PathBuf {
+        let path = directory.join("pi");
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&path, permissions).unwrap();
+        path
+    }
+
+    #[test]
+    fn the_planner_runs_read_only_in_the_repository_and_returns_its_answer() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        fs::create_dir_all(&repository).unwrap();
+        let pi = fake_pi(
+            temp.path(),
+            r#"printf '%s\n' "$@" > "$(dirname "$0")/pi-args"; pwd > "$(dirname "$0")/pi-cwd"; printf 'plan answer\n'"#,
+        );
+        let tools = ToolCommands::with_paths(pi.clone(), pi.clone(), pi.clone(), "git".into());
+
+        let answer = tools
+            .run_planner(
+                &repository,
+                Path::new("/skills/planning/SKILL.md"),
+                "Plan it",
+                Duration::from_secs(10),
+            )
+            .unwrap();
+
+        assert_eq!(answer, "plan answer\n");
+        let args = fs::read_to_string(temp.path().join("pi-args")).unwrap();
+        let args = args.lines().collect::<Vec<_>>();
+        for flag in [
+            "-p",
+            "--no-session",
+            "--no-skills",
+            "--no-extensions",
+            "--no-context-files",
+            "--no-mcp",
+            "--no-approve",
+        ] {
+            assert!(args.contains(&flag), "{flag} missing from {args:?}");
+        }
+        let tools_at = args.iter().position(|arg| *arg == "--tools").unwrap();
+        assert_eq!(args[tools_at + 1], "read,grep,find,ls");
+        let skill_at = args.iter().position(|arg| *arg == "--skill").unwrap();
+        assert_eq!(args[skill_at + 1], "/skills/planning/SKILL.md");
+        assert_eq!(&args[args.len() - 2..], ["--", "Plan it"]);
+        assert_eq!(
+            fs::canonicalize(
+                fs::read_to_string(temp.path().join("pi-cwd"))
+                    .unwrap()
+                    .trim()
+            )
+            .unwrap(),
+            fs::canonicalize(&repository).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_failing_or_slow_planner_is_reported() {
+        let temp = tempfile::tempdir().unwrap();
+        let failing = fake_pi(temp.path(), "echo 'no credentials' >&2; exit 3");
+        let tools =
+            ToolCommands::with_paths(failing.clone(), failing.clone(), failing, "git".into());
+        let error = tools
+            .run_planner(temp.path(), Path::new("/s"), "p", Duration::from_secs(10))
+            .unwrap_err();
+        assert!(error.to_string().contains("no credentials"), "{error}");
+
+        let slow_dir = temp.path().join("slow");
+        fs::create_dir_all(&slow_dir).unwrap();
+        let slow = fake_pi(&slow_dir, "sleep 30");
+        let tools = ToolCommands::with_paths(slow.clone(), slow.clone(), slow, "git".into());
+        let started = std::time::Instant::now();
+        let error = tools
+            .run_planner(
+                temp.path(),
+                Path::new("/s"),
+                "p",
+                Duration::from_millis(300),
+            )
+            .unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(error.to_string().contains("time limit"), "{error}");
     }
 
     #[test]

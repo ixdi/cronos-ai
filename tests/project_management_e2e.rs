@@ -316,3 +316,87 @@ fn requirements_are_added_listed_and_removed_from_the_cli() {
     assert_eq!(listed.as_array().unwrap().len(), 1);
     assert_eq!(listed[0]["text"], "Exports finish within 2 seconds");
 }
+
+#[test]
+fn tasks_are_planned_from_requirements_reviewed_and_applied_from_the_cli() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("data");
+    let repository = temp.path().join("repo");
+    std::fs::create_dir_all(&repository).unwrap();
+    git(&repository, &["init"]);
+    let bin = temp.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(
+        bin.join("pi"),
+        r#"#!/bin/sh
+cat <<'PLAN'
+Here is the plan.
+```json
+{"tasks": [
+  {"key": "csv", "title": "Add CSV export", "priority": "high", "depends_on": [], "requirements": ["R1"]},
+  {"key": "fast", "title": "Stream large exports", "priority": "medium", "depends_on": ["csv"], "requirements": ["R2"]}
+]}
+```
+PLAN
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(bin.join("pi"), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let run = |args: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_cronos-ai"))
+            .arg("--data-dir")
+            .arg(&data)
+            .args(args)
+            .env("PATH", &path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+
+    let project_id = id(&run(&[
+        "project",
+        "create",
+        "Planned",
+        "--repository",
+        repository.to_str().unwrap(),
+    ]));
+    run(&["requirement", "add", &project_id, "Users can export CSV"]);
+    run(&[
+        "requirement",
+        "add",
+        &project_id,
+        "--kind",
+        "non-functional",
+        "Exports stream in constant memory",
+    ]);
+
+    let plan = run(&["project", "plan", &project_id]);
+    assert_eq!(plan["tasks"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        run(&["task", "list", &project_id])
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    assert_eq!(run(&["project", "plan-show", &project_id]), plan);
+
+    let tasks = run(&["project", "plan-apply", &project_id]);
+    assert_eq!(tasks.as_array().unwrap().len(), 2);
+    let ready = run(&["task", "ready", &project_id]);
+    assert_eq!(
+        ready.as_array().unwrap().len(),
+        1,
+        "the dependent task waits"
+    );
+    assert_eq!(ready[0]["title"], "Add CSV export");
+    assert!(run(&["project", "plan-show", &project_id]).is_null());
+}

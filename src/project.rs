@@ -8,7 +8,7 @@ use std::{
 use thiserror::Error;
 
 use crate::{
-    integrations::{GitAdapter, GitError, PullRequest},
+    integrations::{GitAdapter, GitError, IntegrationError, PullRequest, ToolCommands},
     model::{
         AgentActivity, AgentStatus, ApprovalDecision, ApprovalGate, ApprovalRecord,
         MAX_AGENT_EVENTS, MAX_APPROVAL_RECORDS, MAX_RECOVERY_RECORDS, ModelError, Priority,
@@ -16,8 +16,9 @@ use crate::{
         Requirement, RequirementId, RequirementKind, Task, TaskId, TaskStatus, WorkflowStep,
         normalize_text,
     },
-    planning::{Plan, PlanError, parse_plan},
+    planning::{Plan, PlanError, parse_plan, planning_prompt},
     release::{Version, changelog_section, insert_section, next_version, utc_date},
+    step_skills::install_planning_skill,
     storage::{ProjectStore, StoreError},
 };
 
@@ -116,6 +117,8 @@ pub enum ProjectError {
     NoPendingPlan,
     #[error("add requirements before planning tasks")]
     NoRequirements,
+    #[error("the planner failed: {0}")]
+    Planner(IntegrationError),
 }
 
 /// Exclusive per-task lock held while a workflow step runs. The operating system releases it when
@@ -420,6 +423,32 @@ impl ProjectManager {
         project.validate()?;
         self.store.save_project(&project)?;
         Ok(project)
+    }
+
+    /// Runs the read-only planner on the project's repository and keeps its plan for approval.
+    /// The store is not locked while the planner runs, so the project stays usable meanwhile.
+    pub fn plan_tasks(
+        &self,
+        project_id: ProjectId,
+        tools: &ToolCommands,
+        timeout: std::time::Duration,
+    ) -> Result<Plan, ProjectError> {
+        let project = self.store.load_project(project_id)?;
+        if project.requirements.is_empty() {
+            return Err(ProjectError::NoRequirements);
+        }
+        let repository = self.repository_path(&project, &GitAdapter::with_tools(tools.clone()))?;
+        let tasks = self.store.list_tasks(project_id)?;
+        let skill = install_planning_skill(self.data_dir()).map_err(StoreError::Io)?;
+        let answer = tools
+            .run_planner(
+                &repository,
+                &skill,
+                &planning_prompt(&project, &tasks),
+                timeout,
+            )
+            .map_err(ProjectError::Planner)?;
+        self.propose_plan(project_id, &answer)
     }
 
     /// Validates the planner's answer against the project and keeps it for human approval. An
