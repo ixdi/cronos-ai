@@ -2035,7 +2035,7 @@ fn draw(frame: &mut Frame, app: &Dashboard) {
     draw_dialog(frame, app);
 }
 
-/// Brand, breadcrumb of where the user is, and whether an orchestrator is running.
+/// Brand, breadcrumb of where the user is, and how many task runners are working.
 fn draw_header(frame: &mut Frame, app: &Dashboard, area: Rect) {
     let mut crumbs = vec![Span::styled(
         "Cronos-AI",
@@ -2082,13 +2082,13 @@ fn draw_header(frame: &mut Frame, app: &Dashboard, area: Rect) {
     }
     let orchestrator = if app.workflows.len() > 1 {
         Span::styled(
-            format!("● {} orchestrators running ", app.workflows.len()),
+            format!("● {} task runners working ", app.workflows.len()),
             Style::default().fg(PRIMARY),
         )
     } else if !app.workflows.is_empty() {
-        Span::styled("● orchestrator running ", Style::default().fg(PRIMARY))
+        Span::styled("● task runner working ", Style::default().fg(PRIMARY))
     } else {
-        Span::styled("○ orchestrator idle ", Style::default().fg(MUTED))
+        Span::styled("○ no task running ", Style::default().fg(MUTED))
     };
     let width = orchestrator.width() as u16;
     let columns = Layout::default()
@@ -4538,7 +4538,7 @@ mod tests {
         app.workflows.insert(beta.id, (project.id, beta_handle));
 
         let backend = render(&app);
-        rendered_text_position(&backend, "● 2 orchestrators running");
+        rendered_text_position(&backend, "● 2 task runners working");
 
         alpha_events
             .send("specification agents running".to_owned())
@@ -5512,7 +5512,7 @@ mod tests {
         assert_eq!(cell.fg, WARNING);
         assert_eq!(cell.bg, super::SELECTION);
         rendered_text_position(&backend, "Projects › Demo");
-        rendered_text_position(&backend, "○ orchestrator idle");
+        rendered_text_position(&backend, "○ no task running");
     }
 
     fn type_text(app: &mut Dashboard, text: &str) {
