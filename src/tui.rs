@@ -19,7 +19,10 @@ use ratatui::{
     widgets::{Block, BorderType, Cell, Clear, Padding, Paragraph, Row, Table, TableState, Wrap},
 };
 
+mod board;
 mod profiles;
+
+use board::TaskView;
 
 use profiles::{EditorAction, ProfileEditor, ProfileList};
 
@@ -238,6 +241,7 @@ struct Dashboard {
     review_scroll: u16,
     profile_list: ProfileList,
     profile_editor: Option<ProfileEditor>,
+    task_view: TaskView,
 }
 
 impl Dashboard {
@@ -260,6 +264,7 @@ impl Dashboard {
             review_scroll: 0,
             profile_list: ProfileList::default(),
             profile_editor: None,
+            task_view: TaskView::default(),
         })
     }
 
@@ -461,6 +466,17 @@ impl Dashboard {
                 } else {
                     self.error = Some("Archived projects cannot receive tasks.".to_owned());
                 }
+            }
+            (Screen::Tasks, KeyCode::Char('b')) => {
+                self.task_view = match self.task_view {
+                    TaskView::Table => TaskView::Board,
+                    TaskView::Board => TaskView::Table,
+                };
+            }
+            (Screen::Tasks, KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right)
+                if self.task_view == TaskView::Board =>
+            {
+                self.selected_task = board::move_on_board(&self.tasks, self.selected_task, key);
             }
             (Screen::Tasks, KeyCode::Up) => {
                 self.selected_task = self.selected_task.saturating_sub(1);
@@ -1532,7 +1548,7 @@ fn draw(frame: &mut Frame, app: &Dashboard) {
         .constraints([
             Constraint::Length(1),
             Constraint::Min(4),
-            Constraint::Length(2),
+            Constraint::Length(footer_lines(app, frame.area().width).len() as u16),
         ])
         .split(frame.area());
     draw_header(frame, app, areas[0]);
@@ -1608,8 +1624,8 @@ fn draw_header(frame: &mut Frame, app: &Dashboard, area: Rect) {
 }
 
 /// Message line (error or orchestrator status) above the key hints for the current screen.
-fn draw_footer(frame: &mut Frame, app: &Dashboard, area: Rect) {
-    let help = match app.screen {
+fn footer_help(app: &Dashboard) -> &'static str {
+    match app.screen {
         Screen::Projects => {
             "↑/↓ select  Enter open  n new project  p agent profiles  r refresh  q quit"
         }
@@ -1620,8 +1636,11 @@ fn draw_footer(frame: &mut Frame, app: &Dashboard, area: Rect) {
             .profile_editor
             .as_ref()
             .map_or("Esc back", ProfileEditor::hints),
+        Screen::Tasks if app.task_view == TaskView::Board => {
+            "←/→/↑/↓ select  Enter details  n new task  s start/resume  b table  Backspace projects  q quit"
+        }
         Screen::Tasks => {
-            "↑/↓ select  Enter details  n new task  s start/resume  Backspace projects  r refresh  q quit"
+            "↑/↓ select  Enter details  n new task  s start/resume  b board  Backspace projects  q quit"
         }
         Screen::TaskDetail
             if app
@@ -1637,7 +1656,12 @@ fn draw_footer(frame: &mut Frame, app: &Dashboard, area: Rect) {
             "v review  a abandon  ↑/↓ activity  Backspace tasks  r refresh  q quit"
         }
         Screen::Review => "↑/↓ scroll  PgUp/PgDn page  Backspace details  q quit",
-    };
+    }
+}
+
+/// The footer: the latest error or workflow status, then the screen's shortcuts wrapped between
+/// shortcuts so none is cut off on a narrow terminal.
+fn footer_lines(app: &Dashboard, width: u16) -> Vec<Line<'static>> {
     let message = if let Some(error) = &app.error {
         Line::from(Span::styled(
             format!("✕ Error: {}", terminal_safe(error)),
@@ -1651,10 +1675,26 @@ fn draw_footer(frame: &mut Frame, app: &Dashboard, area: Rect) {
     } else {
         Line::default()
     };
-    frame.render_widget(
-        Paragraph::new(vec![message, shortcut_help_line(help)]),
-        area,
-    );
+    let mut lines = vec![fit_line(message, usize::from(width))];
+    let mut row = String::new();
+    for shortcut in footer_help(app).split("  ") {
+        if !row.is_empty()
+            && row.chars().count() + 2 + shortcut.chars().count() > usize::from(width)
+        {
+            lines.push(shortcut_help_line(&row));
+            row.clear();
+        }
+        if !row.is_empty() {
+            row.push_str("  ");
+        }
+        row.push_str(shortcut);
+    }
+    lines.push(shortcut_help_line(&row));
+    lines
+}
+
+fn draw_footer(frame: &mut Frame, app: &Dashboard, area: Rect) {
+    frame.render_widget(Paragraph::new(footer_lines(app, area.width)), area);
 }
 
 /// Rounded panel with a padded, highlighted title.
@@ -1831,8 +1871,13 @@ fn draw_tasks(frame: &mut Frame, app: &Dashboard, area: Rect) {
             ));
         }
     }
-    let block =
+    let mut block =
         panel(format!("{project_name} · tasks")).title_top(Line::from(counts).right_aligned());
+    if !app.tasks.is_empty() {
+        block = block.title_bottom(
+            board::analytics_line(&board::ProjectAnalytics::from_tasks(&app.tasks)).left_aligned(),
+        );
+    }
     if app.tasks.is_empty() {
         draw_empty_state(
             frame,
@@ -1840,6 +1885,10 @@ fn draw_tasks(frame: &mut Frame, app: &Dashboard, area: Rect) {
             area,
             key_hint("No tasks yet. Press ", "n", " to add one."),
         );
+        return;
+    }
+    if app.task_view == TaskView::Board {
+        board::draw_board(frame, &app.tasks, app.selected_task, block, area);
         return;
     }
     let rows = app.tasks.iter().map(|task| {
@@ -1931,7 +1980,6 @@ fn now_unix_secs() -> u64 {
         .map_or(0, |duration| duration.as_secs())
 }
 
-/// One line showing every workflow step: done, current, or still ahead.
 const PROGRESS_CONNECTOR: &str = " ─ ";
 
 /// Splits the progress line between stages so a wrapped row ends with "─" and the next row
@@ -1981,6 +2029,7 @@ fn wrap_progress(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
     lines.into_iter().map(Line::from).collect()
 }
 
+/// One line showing every workflow step: done, current, or still ahead.
 fn workflow_progress_line(task: &Task) -> Line<'static> {
     let steps = std::iter::successors(Some(WorkflowStep::SpecificationGeneration), |step| {
         step.next()
@@ -3307,6 +3356,149 @@ mod tests {
 
         let backend = render(&app);
         rendered_text_position(&backend, "Publish: push to upstream");
+    }
+
+    #[test]
+    fn board_view_groups_tasks_by_status_and_opens_the_selected_card() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(root.path()).unwrap();
+        let project = manager.create_project("Demo".to_owned(), None).unwrap();
+        for title in ["Write parser", "Add docs"] {
+            manager
+                .create_task(
+                    project.id,
+                    title.to_owned(),
+                    None,
+                    Priority::Medium,
+                    Vec::new(),
+                )
+                .unwrap();
+        }
+        let started = manager.start_next_task(project.id).unwrap().unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+        app.handle_key(KeyCode::Enter);
+
+        app.handle_key(KeyCode::Char('b'));
+        let backend = render(&app);
+        rendered_text_position(&backend, "pending 1");
+        rendered_text_position(&backend, "in progress 1");
+        rendered_text_position(&backend, "completed 0");
+        rendered_text_position(&backend, "specification-generation");
+        assert!(rendered_text_position(&backend, "b table").1 > 0);
+
+        let pending = app
+            .tasks
+            .iter()
+            .position(|task| task.status == TaskStatus::Pending)
+            .unwrap();
+        app.selected_task = pending;
+        app.handle_key(KeyCode::Down);
+        assert_eq!(
+            app.selected_task, pending,
+            "the pending column has one card"
+        );
+        app.handle_key(KeyCode::Right);
+        assert_eq!(app.tasks[app.selected_task].id, started.id);
+        app.handle_key(KeyCode::Left);
+        assert_eq!(app.selected_task, pending);
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Enter);
+        assert_eq!(app.screen, Screen::TaskDetail);
+        assert_eq!(app.selected_task().unwrap().id, started.id);
+
+        app.handle_key(KeyCode::Backspace);
+        app.handle_key(KeyCode::Char('b'));
+        let backend = render(&app);
+        rendered_text_position(&backend, "Status");
+        rendered_text_position(&backend, "b board");
+    }
+
+    #[test]
+    fn narrow_terminals_keep_every_shortcut_and_board_count_visible() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(root.path()).unwrap();
+        let project = manager.create_project("Demo".to_owned(), None).unwrap();
+        let rejected = manager
+            .create_task(
+                project.id,
+                "Old idea".to_owned(),
+                None,
+                Priority::Low,
+                Vec::new(),
+            )
+            .unwrap();
+        manager
+            .create_task(
+                project.id,
+                "Build".to_owned(),
+                None,
+                Priority::High,
+                Vec::new(),
+            )
+            .unwrap();
+        manager.start_next_task(project.id).unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+        app.handle_key(KeyCode::Enter);
+        let draw = |app: &Dashboard| {
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+            terminal.draw(|frame| super::draw(frame, app)).unwrap();
+            terminal.backend().clone()
+        };
+
+        let backend = draw(&app);
+        rendered_text_position(&backend, "Backspace projects");
+        rendered_text_position(&backend, "q quit");
+        let (x, _) = rendered_text_position(&backend, "░░░░░░░░░░ 0/2 done");
+        assert_eq!(x, 2, "the summary keeps a space after the panel corner");
+
+        app.handle_key(KeyCode::Char('b'));
+        let backend = draw(&app);
+        rendered_text_position(&backend, "in progress 1");
+        assert!(
+            std::panic::catch_unwind(|| rendered_text_position(&backend, "rejected")).is_err(),
+            "an empty rejected column is hidden"
+        );
+
+        manager
+            .abandon_task(project.id, rejected.id, "Not needed".to_owned())
+            .unwrap();
+        app.refresh_for_ui();
+        let backend = draw(&app);
+        rendered_text_position(&backend, "rejected 1");
+    }
+
+    #[test]
+    fn task_list_shows_project_progress() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(root.path()).unwrap();
+        let project = manager.create_project("Demo".to_owned(), None).unwrap();
+        let task = manager
+            .create_task(
+                project.id,
+                "Ship".to_owned(),
+                None,
+                Priority::Medium,
+                Vec::new(),
+            )
+            .unwrap();
+        manager
+            .create_task(
+                project.id,
+                "Next".to_owned(),
+                None,
+                Priority::Low,
+                Vec::new(),
+            )
+            .unwrap();
+        manager.start_next_task(project.id).unwrap();
+        manager
+            .set_task_status(project.id, task.id, TaskStatus::Error)
+            .unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+        app.handle_key(KeyCode::Enter);
+
+        let backend = render(&app);
+        rendered_text_position(&backend, "░░░░░░░░░░ 0/2 done (0%) · 1 error");
     }
 
     #[test]
