@@ -82,4 +82,3 @@ Rule applied: the specs and code are the truth. `design/design.md` now labels ev
 - The trust boundary is documented, not sandboxed. Agents can still weaken tests; the human gates are the real protection.
 - Code generation uses a single agent per step.
 - The live smoke test must be run manually in an isolated Herdr session.
-- No default per-step worker skills are shipped; agents use only what the user's profiles assign.

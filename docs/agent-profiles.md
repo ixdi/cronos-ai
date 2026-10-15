@@ -39,7 +39,7 @@ mkdir -p "$profile_dir"
 cp examples/agent-profiles.json "$profile_dir/agent-profiles.json"
 ```
 
-If Cronos-AI was started with a custom `--data-dir`, put the file in that directory instead. A missing catalog means there are no profiles; Cronos-AI does not create or install resources automatically.
+If Cronos-AI was started with a custom `--data-dir`, put the file in that directory instead. A missing catalog means there are no profiles; Cronos-AI does not create or install user-configured resources automatically.
 
 A profile has a stable `id`, a description, allowed workflow `steps`, and optional resource lists. IDs start with a lowercase letter and contain only lowercase letters, digits, `_`, or `-` (up to 64 characters). Descriptions are nonblank and at most 500 characters. Each profile must list at least one agent-running step:
 
@@ -72,7 +72,20 @@ The complete, schema-valid catalog is in [`examples/agent-profiles.json`](../exa
 
 During a workflow step, the Pi orchestrator can call `cronos_agent_profiles` to see profiles allowed for that step. It may select a profile by adding its `id` as `profile_id` to that agent's plan. Different agents in the same step can use different profiles. Rust rejects unknown IDs or profiles assigned to another step before launching any sibling agent.
 
-If an agent has no `profile_id`, it gets no optional user-configured skills, extensions, or MCP servers. Editing the catalog affects future worker launches; already-running agents keep their current resources.
+Every worker also loads Cronos-AI's built-in skill for its step, before any profile skills:
+
+| Step | Built-in skill |
+|---|---|
+| `specification-generation` | `cronos-specification-generation`: write a reviewable, testable OpenSpec change |
+| `code-generation` | `cronos-code-generation`: implement test-first in small commits and leave the worktree clean |
+| `code-review` | `cronos-code-review`: review read-only against the change and report verified findings |
+| `verification` | `cronos-verification`: run the project's tests, linters, and audits read-only |
+| `documentation` | `cronos-documentation`: update only the assigned docs, without committing |
+
+The skills are embedded in the binary and written to `<data-dir>/skills/<name>/SKILL.md` when a step starts; an edited copy is restored, so put your own guidance in a profile skill instead.
+Their sources are in [`skills/`](../skills/).
+
+If an agent has no `profile_id`, it gets its step's built-in skill and no optional user-configured skills, extensions, or MCP servers. Editing the catalog affects future worker launches; already-running agents keep their current resources.
 
 ## Configure MCP servers
 

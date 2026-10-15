@@ -40,6 +40,7 @@ The OpenSpec specs in `openspec/specs/` are the source of truth for behavior. Th
 | OpenSpec | One change per task; validated after specs and archived during documentation | Implemented |
 | Git worktrees | One worktree and branch per attempt; local merge only | Implemented |
 | Agent profiles | Per-step Pi skills, extensions, MCP config, model, and time limit; managed in the TUI (`p`) or by editing `agent-profiles.json` | Implemented |
+| Built-in step skills | One Pi skill per agent step (`skills/`), embedded in the binary and loaded by every worker before profile skills | Implemented |
 | Jev | Prioritization and dependency model | Future (built-in priority/dependency ordering is used) |
 | Remote push / GitHub | Publishing after merge | Future (users push manually) |
 | Release numbers, changelog per release | Versioning of merged work | Future |

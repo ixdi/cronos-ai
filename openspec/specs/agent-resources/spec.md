@@ -33,15 +33,15 @@ The orchestrator SHALL be able to discover profiles permitted for the current wo
 - **THEN** Cronos-AI reports a validation error and does not start any agent in that step
 
 ### Requirement: Load only profile-assigned Pi resources
-A worker SHALL receive only the skills, extensions, and MCP configuration assigned by its selected profile, in addition to Cronos-AI's required workflow behavior. Cronos-AI SHALL pass resource values as separate arguments, SHALL NOT install resources automatically, and SHALL fail before launch when a configured resource is missing or invalid.
+A worker SHALL receive only its step's built-in skill and the skills, extensions, and MCP configuration assigned by its selected profile, in addition to Cronos-AI's required workflow behavior. Cronos-AI SHALL pass resource values as separate arguments, SHALL NOT install user-configured resources automatically, and SHALL fail before launch when a configured resource is missing or invalid.
 
 #### Scenario: Launch with assigned resources
 - **WHEN** a valid agent plan selects a profile with skills or extensions
-- **THEN** the worker loads those configured resources and no unassigned discovered skills or extensions
+- **THEN** the worker loads its step's built-in skill and those configured resources, and no unassigned discovered skills or extensions
 
 #### Scenario: Launch without a profile
 - **WHEN** an agent plan omits its optional profile identifier
-- **THEN** the worker starts without optional user-configured skills, extensions, or MCP servers
+- **THEN** the worker starts with its step's built-in skill and without optional user-configured skills, extensions, or MCP servers
 
 #### Scenario: Configured resource is unavailable
 - **WHEN** a selected profile refers to a missing or invalid resource
@@ -80,3 +80,18 @@ The TUI SHALL let a user list, create, edit, and delete agent profiles, includin
 #### Scenario: Delete a profile
 - **WHEN** a user confirms deleting a profile
 - **THEN** it is removed from the catalog and agents can no longer select it
+
+### Requirement: Built-in step skills
+Cronos-AI SHALL ship one built-in Pi skill for each agent-running workflow step and SHALL load the step's skill into every worker of that step, before any profile-assigned skills. Cronos-AI SHALL write the built-in skills from its binary into its data directory, SHALL restore a copy whose content differs, and SHALL refuse to write through a symlink.
+
+#### Scenario: Worker loads its step skill
+- **WHEN** a workflow step launches a worker, with or without a profile
+- **THEN** the worker loads the built-in skill for that step
+
+#### Scenario: Edited skill is restored
+- **WHEN** a built-in skill file in the data directory was changed and a workflow step starts
+- **THEN** the file is rewritten with the content shipped in the binary
+
+#### Scenario: Symlinked skill path
+- **WHEN** a built-in skill directory in the data directory is a symlink
+- **THEN** Cronos-AI writes nothing through it and the step fails before any agent starts

@@ -8,6 +8,7 @@ Cronos-AI stores each project under the storage root supplied to `ProjectStore`:
 <root>/locks/store.lock
 <root>/locks/<task-uuid>.lock
 <root>/extensions/cronos-workflow.ts
+<root>/skills/cronos-<step>/SKILL.md
 <root>/agent-profiles.json            (optional)
 <root>/worktrees/<project-uuid>/<task-uuid>/attempt-<n>/
 ```
@@ -18,6 +19,6 @@ Project and task text is validated before saving and after loading. Individual J
 
 Every change to projects and tasks holds the store lock (`locks/store.lock`) while it reads, checks, and saves its records, so the TUI, the CLI, and a running workflow step never overwrite each other's changes. Reads do not take it. The operating system releases it when its holder exits, so a crash never leaves the store locked.
 
-A task's lock file is held by the process running one of its workflow steps and is released by the operating system when that process exits; its content is unused. The workflow extension is rewritten from the binary when it differs. Inside each worktree, `.cronos/results/<step>/<agent>.json` holds agent results and `.cronos/check-output.log` the latest check output; `.cronos/` is excluded through the repository's local `info/exclude` and never committed.
+A task's lock file is held by the process running one of its workflow steps and is released by the operating system when that process exits; its content is unused. The workflow extension and the built-in step skills are rewritten from the binary when they differ, never through a symlink. Inside each worktree, `.cronos/results/<step>/<agent>.json` holds agent results and `.cronos/check-output.log` the latest check output; `.cronos/` is excluded through the repository's local `info/exclude` and never committed.
 
 Task source code is kept in its Git worktree, not in JSON. The stored worktree reference is metadata and must be validated against the task's allowed worktree root before any later destructive filesystem operation.

@@ -292,7 +292,7 @@
 				<p>Press <kbd>p</kbd>
 					on the project list to create, edit, and delete agent profiles: named sets of Pi skills, extensions, and optional MCP configs for specific workflow steps, stored in <code>agent-profiles.json</code> in Cronos-AI's data directory. The orchestrator discovers eligible profile IDs; Rust validates each assignment before Herdr starts workers.</p>
 				<p class="small">A profile can also set the worker's <code>model</code>
-					and <code>timeout_minutes</code>. Unprofiled workers load no optional user resources. MCP configs remain separate, and Cronos-AI never installs resources or runs arbitrary shell hooks. See the <a href="agent-profiles.html">profile setup guide</a>
+					and <code>timeout_minutes</code>. Every worker loads Cronos-AI's built-in skill for its step; unprofiled workers load no optional user resources. MCP configs remain separate, and Cronos-AI never installs user resources or runs arbitrary shell hooks. See the <a href="agent-profiles.html">profile setup guide</a>
 					and <a href="../examples/agent-profiles.json">sample catalog</a>.</p>
 			</article>
 			<article class="card teal">
