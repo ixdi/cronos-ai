@@ -33,9 +33,9 @@ use crate::{
     agent_profiles::{load_profiles_for_editing, save_edited_profiles},
     integrations::{GitAdapter, PiRpcHandle, ToolCommands, herdr_session_available},
     model::{
-        AgentActivity, AgentStatus, ApprovalDecision, ApprovalGate, MAX_PARALLEL_TASKS, Priority,
-        Project, ProjectStatus, PublishMode, RequirementId, RequirementKind, Task, TaskId,
-        TaskStatus, WorkflowStep,
+        AgentActivity, AgentStatus, ApprovalDecision, ApprovalGate, MAX_PARALLEL_TASKS,
+        Prioritizer, Priority, Project, ProjectStatus, PublishMode, RequirementId, RequirementKind,
+        Task, TaskId, TaskStatus, WorkflowStep,
     },
     planning::Plan,
     project::{MAX_AUTOMATIC_REVISIONS, MergeOutcome, ProjectError, ProjectManager},
@@ -85,6 +85,7 @@ enum ProjectField {
     Releases,
     Parallel,
     Sandbox,
+    Prioritizer,
 }
 
 impl ProjectField {
@@ -98,13 +99,14 @@ impl ProjectField {
             Self::Publish => Self::Releases,
             Self::Releases => Self::Parallel,
             Self::Parallel => Self::Sandbox,
-            Self::Sandbox => Self::Name,
+            Self::Sandbox => Self::Prioritizer,
+            Self::Prioritizer => Self::Name,
         }
     }
 
     fn previous(self) -> Self {
         match self {
-            Self::Name => Self::Sandbox,
+            Self::Name => Self::Prioritizer,
             Self::Description => Self::Name,
             Self::Repository => Self::Description,
             Self::CheckCommand => Self::Repository,
@@ -113,6 +115,7 @@ impl ProjectField {
             Self::Releases => Self::Publish,
             Self::Parallel => Self::Releases,
             Self::Sandbox => Self::Parallel,
+            Self::Prioritizer => Self::Sandbox,
         }
     }
 }
@@ -127,6 +130,7 @@ struct ProjectForm {
     releases: bool,
     max_parallel_tasks: u32,
     sandbox: bool,
+    prioritizer: Prioritizer,
     focus: ProjectField,
 }
 
@@ -142,6 +146,7 @@ impl Default for ProjectForm {
             releases: false,
             max_parallel_tasks: 1,
             sandbox: false,
+            prioritizer: Prioritizer::BuiltIn,
             focus: ProjectField::Name,
         }
     }
@@ -159,7 +164,8 @@ impl ProjectForm {
             ProjectField::Publish
             | ProjectField::Releases
             | ProjectField::Parallel
-            | ProjectField::Sandbox => None,
+            | ProjectField::Sandbox
+            | ProjectField::Prioritizer => None,
         }
     }
 
@@ -249,6 +255,16 @@ impl TaskForm {
     }
 }
 
+/// How long the agent prioritizer may take before the built-in order is used.
+const PRIORITIZER_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// An agent prioritizer answering on its own thread.
+struct RankJob {
+    project_id: crate::model::ProjectId,
+    resumed: usize,
+    receiver: std::sync::mpsc::Receiver<Result<Option<crate::prioritization::Ranking>, String>>,
+}
+
 struct Dashboard {
     manager: ProjectManager,
     projects: Vec<Project>,
@@ -275,6 +291,7 @@ struct Dashboard {
     /// Tool paths used for planning; tests point them at fakes.
     tools: ToolCommands,
     plan_job: Option<PlanJob>,
+    rank_job: Option<RankJob>,
     pending_plan: Option<Plan>,
     selected_requirement: usize,
 }
@@ -303,6 +320,7 @@ impl Dashboard {
             task_view: TaskView::default(),
             tools: ToolCommands::default(),
             plan_job: None,
+            rank_job: None,
             pending_plan: None,
             selected_requirement: 0,
         })
@@ -1055,6 +1073,13 @@ impl Dashboard {
                         ProjectField::Publish => form.cycle_publish(key == KeyCode::Right),
                         ProjectField::Releases => form.releases = key == KeyCode::Right,
                         ProjectField::Sandbox => form.sandbox = key == KeyCode::Right,
+                        ProjectField::Prioritizer => {
+                            form.prioritizer = if key == KeyCode::Right {
+                                Prioritizer::Agent
+                            } else {
+                                Prioritizer::BuiltIn
+                            };
+                        }
                         ProjectField::Parallel => {
                             form.max_parallel_tasks = if key == KeyCode::Right {
                                 (form.max_parallel_tasks + 1).min(MAX_PARALLEL_TASKS)
@@ -1205,6 +1230,15 @@ impl Dashboard {
             {
                 self.error = Some(format!(
                     "Project created, but releases could not be turned on: {error}"
+                ));
+            }
+            if form.prioritizer == Prioritizer::Agent
+                && let Err(error) =
+                    self.manager
+                        .set_project_prioritizer(project.id, Prioritizer::Agent, None)
+            {
+                self.error = Some(format!(
+                    "Project created, but its prioritizer could not be saved: {error}"
                 ));
             }
             if form.sandbox
@@ -1641,10 +1675,104 @@ impl Dashboard {
                 resumed += 1;
             }
         }
+        let agent_chooses = self
+            .selected_project()
+            .is_some_and(|project| project.prioritizer == Prioritizer::Agent)
+            && self
+                .manager
+                .startable_tasks(project_id)
+                .is_ok_and(|(startable, _)| startable.len() > 1);
+        if agent_chooses {
+            self.start_ranked(project_id, resumed);
+            return;
+        }
+        self.start_ready_tasks(project_id, &[], None, resumed, interrupted.is_empty());
+    }
+
+    /// Asks the agent prioritizer on a background thread; the tasks start when it answers.
+    fn start_ranked(&mut self, project_id: crate::model::ProjectId, resumed: usize) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let data_dir = self.manager.data_dir().to_path_buf();
+        let tools = self.tools.clone();
+        std::thread::spawn(move || {
+            let result = ProjectManager::new(data_dir)
+                .map_err(|error| error.to_string())
+                .and_then(|manager| {
+                    manager
+                        .rank_startable_tasks(project_id, &tools, PRIORITIZER_TIMEOUT)
+                        .map_err(|error| error.to_string())
+                });
+            let _ = sender.send(result);
+        });
+        self.rank_job = Some(RankJob {
+            project_id,
+            resumed,
+            receiver,
+        });
+        self.workflow_status = Some("Prioritizer choosing the next task…".to_owned());
+    }
+
+    /// Starts tasks in the prioritizer's order once it answers, or in the built-in order when it
+    /// failed.
+    fn poll_rank_job(&mut self) {
+        let Some(job) = &self.rank_job else {
+            return;
+        };
+        let result = match job.receiver.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err("the prioritizer stopped without an answer".to_owned())
+            }
+        };
+        let (project_id, resumed) = (job.project_id, job.resumed);
+        self.rank_job = None;
+        match result {
+            Ok(Some(ranking)) => self.start_ready_tasks(
+                project_id,
+                &ranking.order,
+                Some(ranking.reason),
+                resumed,
+                true,
+            ),
+            Ok(None) => self.start_ready_tasks(project_id, &[], None, resumed, true),
+            Err(error) => {
+                self.start_ready_tasks(project_id, &[], None, resumed, true);
+                if self.error.is_none() {
+                    self.workflow_status = Some(format!(
+                        "The prioritizer failed, so the built-in order was used: {}",
+                        terminal_safe(&error)
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Starts tasks in `order` (then the built-in order) until the project's tracks are full.
+    /// The first started task records why the prioritizer chose it.
+    fn start_ready_tasks(
+        &mut self,
+        project_id: crate::model::ProjectId,
+        order: &[TaskId],
+        reason: Option<String>,
+        resumed: usize,
+        nothing_interrupted: bool,
+    ) {
+        let mut reason = reason.filter(|reason| !reason.is_empty());
         let mut started = 0;
         loop {
-            match self.manager.start_next_task(project_id) {
+            match self.manager.start_next_task_in_order(project_id, order) {
                 Ok(Some(task)) => {
+                    if let Some(reason) = reason.take() {
+                        let _ = self.manager.record_agent_activity(
+                            project_id,
+                            task.id,
+                            "prioritizer".to_owned(),
+                            WorkflowStep::SpecificationGeneration.as_str().to_owned(),
+                            AgentStatus::Completed,
+                            Some(reason),
+                        );
+                    }
                     let result = self
                         .manager
                         .prepare_task_worktree(project_id, task.id, &GitAdapter::default())
@@ -1667,7 +1795,7 @@ impl Dashboard {
             }
         }
         if started == 0 && resumed == 0 && self.error.is_none() {
-            self.error = Some(if interrupted.is_empty() {
+            self.error = Some(if nothing_interrupted {
                 "No task can start: the project's tracks are full, or no ready task avoids the requirements of running work.".to_owned()
             } else {
                 "The active tasks are waiting for your approval in their details.".to_owned()
@@ -1843,6 +1971,7 @@ pub fn run(data_dir: PathBuf) -> Result<(), Box<dyn Error>> {
     while !app.should_quit {
         app.poll_workflow();
         app.poll_plan_job();
+        app.poll_rank_job();
         terminal.draw(|frame| draw(frame, &app))?;
         if event::poll(Duration::from_millis(200))? {
             match event::read()? {
@@ -3066,6 +3195,14 @@ fn draw_dialog(frame: &mut Frame, app: &Dashboard) {
                         "off"
                     },
                 ),
+                selector_field(
+                    form.focus == ProjectField::Prioritizer,
+                    "Prioritizer",
+                    match form.prioritizer {
+                        Prioritizer::BuiltIn => "built-in priority order",
+                        Prioritizer::Agent => "agent decides (set its model in the CLI)",
+                    },
+                ),
             ],
             "Tab/Shift+Tab fields  ←/→ choose  Enter create  Esc cancel",
         ),
@@ -4282,6 +4419,106 @@ mod tests {
         app.handle_key(KeyCode::Enter);
         assert!(matches!(app.dialog, Dialog::None), "{:?}", app.error);
         assert!(app.manager.list_projects().unwrap()[0].sandbox);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_agent_prioritizer_picks_the_task_that_starts_and_explains_why() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(root.path().join("data")).unwrap();
+        let project = manager.create_project("Ranked".to_owned(), None).unwrap();
+        manager
+            .set_project_prioritizer(project.id, crate::model::Prioritizer::Agent, None)
+            .unwrap();
+        manager
+            .create_task(
+                project.id,
+                "Feature".to_owned(),
+                None,
+                Priority::High,
+                Vec::new(),
+            )
+            .unwrap();
+        let docs = manager
+            .create_task(
+                project.id,
+                "Docs".to_owned(),
+                None,
+                Priority::Low,
+                Vec::new(),
+            )
+            .unwrap();
+        let pi = root.path().join("pi");
+        std::fs::write(
+            &pi,
+            "#!/bin/sh\nsleep 0.2\nprintf '{\"order\": [\"T2\"], \"reason\": \"Docs unblock the launch\"}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&pi, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut app =
+            Dashboard::new(ProjectManager::new(root.path().join("data")).unwrap()).unwrap();
+        app.tools = crate::integrations::ToolCommands::with_paths(
+            pi,
+            "herdr".into(),
+            "openspec".into(),
+            "git".into(),
+        );
+        app.handle_key(KeyCode::Enter);
+
+        app.start_ranked(project.id, 0);
+        assert!(app.rank_job.is_some());
+        let backend = render(&app);
+        rendered_text_position(&backend, "Prioritizer choosing");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while app.rank_job.is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the prioritizer never answered"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            app.poll_rank_job();
+        }
+
+        // The project has no repository, so the chosen task cannot get a worktree and stops with
+        // Error, but it is the agent's choice and carries its reason.
+        let chosen = manager.get_task(project.id, docs.id).unwrap();
+        assert_ne!(chosen.status, TaskStatus::Pending);
+        let reason = chosen
+            .agent_activity
+            .iter()
+            .find(|activity| activity.agent_name == "prioritizer")
+            .unwrap();
+        assert_eq!(reason.detail.as_deref(), Some("Docs unblock the launch"));
+    }
+
+    #[test]
+    fn project_form_chooses_the_agent_prioritizer() {
+        let root = tempfile::tempdir().unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+        app.handle_key(KeyCode::Char('n'));
+        for character in "Ranked".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        for _ in 0..9 {
+            app.handle_key(KeyCode::Tab);
+        }
+        let backend = render(&app);
+        let (_, prioritizer_row) = rendered_text_position(&backend, "› Prioritizer");
+        let (_, sandbox_row) = rendered_text_position(&backend, "  Sandbox");
+        assert!(
+            sandbox_row < prioritizer_row,
+            "fields are drawn in Tab order"
+        );
+        rendered_text_position(&backend, "◀ built-in priority order ▶");
+        app.handle_key(KeyCode::Right);
+        app.handle_key(KeyCode::Enter);
+        assert!(matches!(app.dialog, Dialog::None), "{:?}", app.error);
+        assert_eq!(
+            app.manager.list_projects().unwrap()[0].prioritizer,
+            crate::model::Prioritizer::Agent
+        );
     }
 
     #[test]
