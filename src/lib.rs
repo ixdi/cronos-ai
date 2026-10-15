@@ -2,6 +2,7 @@ pub mod agent_profiles;
 pub mod cli;
 pub mod integrations;
 pub mod model;
+pub mod planning;
 pub mod project;
 pub mod release;
 pub mod step_skills;
