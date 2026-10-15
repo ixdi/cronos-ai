@@ -27,7 +27,6 @@ const MAX_RESULT_BYTES: u64 = 64 * 1024;
 const MAX_FINDINGS: usize = 20;
 const MAX_FINDING_CHARS: usize = 1_000;
 // shortcut: fixed check-command limit, make it configurable per project when a suite needs longer.
-const CHECK_COMMAND_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 pub const RESULTS_DIR: &str = ".cronos/results";
 pub const CRONOS_EXCLUDE_PATTERN: &str = ".cronos/";
 
@@ -747,6 +746,7 @@ impl<A: AgentAdapter> WorkflowEngine<A> {
     ) -> Result<bool, WorkflowError> {
         let step = WorkflowStep::Verification;
         let project = self.manager.get_project(project_id)?;
+        let timeout = project.check_timeout();
         let Some(command) = project.check_command else {
             return Err(self.fail_step(
                 project_id,
@@ -765,7 +765,7 @@ impl<A: AgentAdapter> WorkflowEngine<A> {
         let before = git
             .status(worktree)
             .map_err(|error| self.fail_step(project_id, task_id, step, error.to_string()))?;
-        let outcome = run_check_command(worktree, &command, CHECK_COMMAND_TIMEOUT)
+        let outcome = run_check_command(worktree, &command, timeout)
             .map_err(|error| self.fail_step(project_id, task_id, step, error.to_string()))?;
         let after = git
             .status(worktree)

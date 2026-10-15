@@ -69,6 +69,7 @@ enum ProjectField {
     Description,
     Repository,
     CheckCommand,
+    CheckTimeout,
 }
 
 impl ProjectField {
@@ -77,16 +78,18 @@ impl ProjectField {
             Self::Name => Self::Description,
             Self::Description => Self::Repository,
             Self::Repository => Self::CheckCommand,
-            Self::CheckCommand => Self::Name,
+            Self::CheckCommand => Self::CheckTimeout,
+            Self::CheckTimeout => Self::Name,
         }
     }
 
     fn previous(self) -> Self {
         match self {
-            Self::Name => Self::CheckCommand,
+            Self::Name => Self::CheckTimeout,
             Self::Description => Self::Name,
             Self::Repository => Self::Description,
             Self::CheckCommand => Self::Repository,
+            Self::CheckTimeout => Self::CheckCommand,
         }
     }
 }
@@ -96,6 +99,7 @@ struct ProjectForm {
     description: String,
     repository: String,
     check_command: String,
+    check_timeout: String,
     focus: ProjectField,
 }
 
@@ -106,6 +110,7 @@ impl Default for ProjectForm {
             description: String::new(),
             repository: String::new(),
             check_command: String::new(),
+            check_timeout: String::new(),
             focus: ProjectField::Name,
         }
     }
@@ -118,6 +123,7 @@ impl ProjectForm {
             ProjectField::Description => &mut self.description,
             ProjectField::Repository => &mut self.repository,
             ProjectField::CheckCommand => &mut self.check_command,
+            ProjectField::CheckTimeout => &mut self.check_timeout,
         }
     }
 }
@@ -881,11 +887,23 @@ impl Dashboard {
             .split_whitespace()
             .map(str::to_owned)
             .collect::<Vec<_>>();
+        let check_timeout = match form.check_timeout.trim() {
+            "" => None,
+            minutes => match minutes.parse::<u32>() {
+                Ok(minutes) => Some(minutes),
+                Err(_) => {
+                    self.error = Some("Check limit must be a whole number of minutes.".to_owned());
+                    self.dialog = Dialog::CreateProject(form);
+                    return;
+                }
+            },
+        };
         let result = self.manager.create_project_with_repository(
             form.name.clone(),
             (!form.description.trim().is_empty()).then(|| form.description.clone()),
             repository.as_deref(),
             (!check_command.is_empty()).then_some(check_command),
+            check_timeout,
             &GitAdapter::default(),
         );
         match result {
@@ -1659,6 +1677,15 @@ fn draw_projects(frame: &mut Frame, app: &Dashboard, area: Rect) {
             || Span::styled("— not set", Style::default().fg(WARNING)),
             |command| Span::raw(truncate_end(&terminal_safe(&command.join(" ")), 30)),
         );
+        // The default limit is muted so a project-specific one stands out.
+        let limit = Span::styled(
+            format!("{} min", project.check_timeout().as_secs() / 60),
+            if project.check_timeout_minutes.is_some() {
+                Style::default()
+            } else {
+                Style::default().fg(MUTED)
+            },
+        );
         Row::new(vec![
             Cell::from(Line::from(vec![
                 Span::styled(
@@ -1680,6 +1707,7 @@ fn draw_projects(frame: &mut Frame, app: &Dashboard, area: Rect) {
             )),
             Cell::from(repository),
             Cell::from(check),
+            Cell::from(limit),
             Cell::from(Span::styled(
                 project.task_ids.len().to_string(),
                 Style::default().fg(MUTED),
@@ -1691,10 +1719,11 @@ fn draw_projects(frame: &mut Frame, app: &Dashboard, area: Rect) {
         Table::new(
             rows,
             [
-                Constraint::Fill(2),
-                Constraint::Length(11),
-                Constraint::Fill(2),
                 Constraint::Fill(1),
+                Constraint::Length(11),
+                Constraint::Fill(1),
+                Constraint::Fill(1),
+                Constraint::Length(7),
                 Constraint::Length(5),
             ],
         )
@@ -1703,6 +1732,7 @@ fn draw_projects(frame: &mut Frame, app: &Dashboard, area: Rect) {
             "Status",
             "Repository",
             "Check command",
+            "Limit",
             "Tasks",
         ]))
         .column_spacing(2)
@@ -2266,6 +2296,12 @@ fn draw_dialog(frame: &mut Frame, app: &Dashboard) {
                     &form.check_command,
                     "./scripts/check.sh (split on spaces, no shell)",
                 ),
+                form_field(
+                    form.focus == ProjectField::CheckTimeout,
+                    "Check limit",
+                    &form.check_timeout,
+                    "minutes, default 60",
+                ),
             ],
             "Tab/Shift+Tab fields  Enter create  Esc cancel",
         ),
@@ -2822,6 +2858,63 @@ mod tests {
     }
 
     #[test]
+    fn project_list_shows_a_custom_check_time_limit() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(root.path()).unwrap();
+        let project = manager.create_project("Timed".to_owned(), None).unwrap();
+        manager
+            .set_project_check_command(project.id, vec!["make".to_owned(), "check".to_owned()])
+            .unwrap();
+        manager
+            .set_project_check_timeout(project.id, Some(90))
+            .unwrap();
+        let app = Dashboard::new(manager).unwrap();
+
+        let backend = render(&app);
+        assert!(rendered_text_position(&backend, "90 min").1 > 0);
+    }
+
+    #[test]
+    fn project_form_saves_a_check_time_limit_and_rejects_invalid_minutes() {
+        let root = tempfile::tempdir().unwrap();
+        let mut app = Dashboard::new(ProjectManager::new(root.path()).unwrap()).unwrap();
+        app.handle_key(KeyCode::Char('n'));
+        for character in "Factory".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        for _ in 0..4 {
+            app.handle_key(KeyCode::Tab);
+        }
+        let backend = render(&app);
+        assert!(rendered_text_position(&backend, "› Check limit").1 > 0);
+        assert!(rendered_text_position(&backend, "minutes, default 60").1 > 0);
+
+        for character in "abc".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Enter);
+        assert!(matches!(app.dialog, Dialog::CreateProject(_)));
+        assert!(
+            app.error
+                .as_deref()
+                .unwrap()
+                .contains("whole number of minutes")
+        );
+        assert!(app.manager.list_projects().unwrap().is_empty());
+
+        for _ in 0..3 {
+            app.handle_key(KeyCode::Backspace);
+        }
+        for character in "90".chars() {
+            app.handle_key(KeyCode::Char(character));
+        }
+        app.handle_key(KeyCode::Enter);
+        assert!(matches!(app.dialog, Dialog::None));
+        let project = &app.manager.list_projects().unwrap()[0];
+        assert_eq!(project.check_timeout_minutes, Some(90));
+    }
+
+    #[test]
     fn task_details_show_location_progress_and_step_retry() {
         let root = tempfile::tempdir().unwrap();
         let manager = ProjectManager::new(root.path()).unwrap();
@@ -2906,6 +2999,7 @@ mod tests {
                 "Demo".to_owned(),
                 None,
                 Some(&repository),
+                None,
                 None,
                 &crate::integrations::GitAdapter::default(),
             )
@@ -3509,6 +3603,7 @@ mod tests {
                 None,
                 Some(&repository),
                 None,
+                None,
                 &crate::integrations::GitAdapter::default(),
             )
             .unwrap();
@@ -3545,6 +3640,7 @@ mod tests {
                 None,
                 Some(&repository),
                 Some(vec!["true".to_owned()]),
+                None,
                 &git_adapter,
             )
             .unwrap();

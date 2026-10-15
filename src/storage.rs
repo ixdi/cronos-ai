@@ -353,6 +353,7 @@ mod tests {
             task_ids,
             repository: None,
             check_command: None,
+            check_timeout_minutes: None,
             created_at_unix_secs: 1,
             updated_at_unix_secs: 1,
         }

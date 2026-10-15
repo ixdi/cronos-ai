@@ -58,6 +58,11 @@ enum ProjectAction {
         #[arg(last = true, required = true, value_name = "PROGRAM [ARGS]...")]
         command: Vec<String>,
     },
+    /// Set how many minutes (1-480) the check command may run; omit MINUTES to restore the 60-minute default.
+    SetCheckTimeout {
+        id: String,
+        minutes: Option<u32>,
+    },
     Select {
         id: String,
     },
@@ -209,6 +214,7 @@ pub fn run() -> Result<Option<PathBuf>, Box<dyn Error>> {
                     description,
                     repository.as_deref(),
                     None,
+                    None,
                     &GitAdapter::default(),
                 )?)?;
             }
@@ -222,6 +228,9 @@ pub fn run() -> Result<Option<PathBuf>, Box<dyn Error>> {
             }
             ProjectAction::SetCheckCommand { id, command } => {
                 print_json(&manager.set_project_check_command(parse_project_id(&id)?, command)?)?;
+            }
+            ProjectAction::SetCheckTimeout { id, minutes } => {
+                print_json(&manager.set_project_check_timeout(parse_project_id(&id)?, minutes)?)?;
             }
             ProjectAction::Select { id } => {
                 print_json(&manager.select_project(parse_project_id(&id)?)?)?;

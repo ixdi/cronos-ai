@@ -16,6 +16,10 @@ pub const MAX_APPROVAL_RECORDS: usize = 100;
 pub const MAX_RECOVERY_RECORDS: usize = 50;
 pub const MAX_CHECK_COMMAND_ARGS: usize = 64;
 const MAX_CHECK_COMMAND_ARG_CHARS: usize = 4_096;
+/// Check-command time limit used when a project does not set its own.
+pub const DEFAULT_CHECK_TIMEOUT_MINUTES: u32 = 60;
+/// Longest check-command time limit a project can set, matching the agent profile limit.
+pub const MAX_CHECK_TIMEOUT_MINUTES: u32 = 480;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(transparent)]
@@ -78,12 +82,28 @@ pub struct Project {
     /// Program and arguments run without a shell in the task worktree during verification.
     #[serde(default)]
     pub check_command: Option<Vec<String>>,
+    /// Minutes the check command may run before it is stopped; `None` uses the default.
+    #[serde(default)]
+    pub check_timeout_minutes: Option<u32>,
     pub created_at_unix_secs: u64,
     pub updated_at_unix_secs: u64,
 }
 
 impl Project {
+    pub fn check_timeout(&self) -> std::time::Duration {
+        let minutes = self
+            .check_timeout_minutes
+            .unwrap_or(DEFAULT_CHECK_TIMEOUT_MINUTES);
+        std::time::Duration::from_secs(u64::from(minutes) * 60)
+    }
+
     pub fn validate(&self) -> Result<(), ModelError> {
+        if self
+            .check_timeout_minutes
+            .is_some_and(|minutes| minutes == 0 || minutes > MAX_CHECK_TIMEOUT_MINUTES)
+        {
+            return Err(ModelError::InvalidCheckTimeout);
+        }
         validate_required_text("project name", &self.name, MAX_NAME_CHARS)?;
         validate_optional_text(
             "project description",
@@ -433,6 +453,8 @@ pub enum ModelError {
     TooManyRecoveryRecords,
     #[error("check command must have a program and at most {MAX_CHECK_COMMAND_ARGS} arguments")]
     InvalidCheckCommand,
+    #[error("check time limit must be between 1 and {MAX_CHECK_TIMEOUT_MINUTES} minutes")]
+    InvalidCheckTimeout,
 }
 
 fn default_attempt() -> u32 {
@@ -473,7 +495,8 @@ fn validate_optional_text(
 #[cfg(test)]
 mod tests {
     use super::{
-        ModelError, Priority, Project, ProjectId, ProjectStatus, Task, TaskId, TaskStatus,
+        DEFAULT_CHECK_TIMEOUT_MINUTES, MAX_CHECK_TIMEOUT_MINUTES, ModelError, Priority, Project,
+        ProjectId, ProjectStatus, Task, TaskId, TaskStatus,
     };
     use std::collections::BTreeMap;
 
@@ -511,6 +534,7 @@ mod tests {
             task_ids: vec![duplicate_id, duplicate_id],
             repository: None,
             check_command: None,
+            check_timeout_minutes: None,
             created_at_unix_secs: 0,
             updated_at_unix_secs: 0,
         };
@@ -531,6 +555,40 @@ mod tests {
             project.validate(),
             Err(ModelError::BlankText("project name"))
         );
+    }
+
+    #[test]
+    fn check_timeout_defaults_to_an_hour_and_must_stay_in_range() {
+        let mut project = Project {
+            id: ProjectId::new(),
+            name: "Cronos project".to_owned(),
+            description: None,
+            status: ProjectStatus::Active,
+            task_ids: Vec::new(),
+            repository: None,
+            check_command: None,
+            check_timeout_minutes: None,
+            created_at_unix_secs: 0,
+            updated_at_unix_secs: 0,
+        };
+        assert_eq!(
+            project.check_timeout(),
+            std::time::Duration::from_secs(DEFAULT_CHECK_TIMEOUT_MINUTES as u64 * 60)
+        );
+        assert_eq!(DEFAULT_CHECK_TIMEOUT_MINUTES, 60);
+
+        for minutes in [1, MAX_CHECK_TIMEOUT_MINUTES] {
+            project.check_timeout_minutes = Some(minutes);
+            assert_eq!(project.validate(), Ok(()));
+            assert_eq!(
+                project.check_timeout(),
+                std::time::Duration::from_secs(u64::from(minutes) * 60)
+            );
+        }
+        for minutes in [0, MAX_CHECK_TIMEOUT_MINUTES + 1] {
+            project.check_timeout_minutes = Some(minutes);
+            assert_eq!(project.validate(), Err(ModelError::InvalidCheckTimeout));
+        }
     }
 
     #[test]
@@ -562,6 +620,7 @@ mod tests {
         .unwrap();
         assert_eq!(project.repository, None);
         assert_eq!(project.check_command, None);
+        assert_eq!(project.check_timeout_minutes, None);
     }
 
     #[test]

@@ -119,6 +119,7 @@ fn fixture() -> Fixture {
             None,
             Some(&repository),
             Some(vec!["true".to_owned()]),
+            None,
             &git_adapter,
         )
         .unwrap();

@@ -158,7 +158,14 @@ impl ProjectManager {
         name: String,
         description: Option<String>,
     ) -> Result<Project, ProjectError> {
-        self.create_project_with_repository(name, description, None, None, &GitAdapter::default())
+        self.create_project_with_repository(
+            name,
+            description,
+            None,
+            None,
+            None,
+            &GitAdapter::default(),
+        )
     }
 
     pub fn create_project_with_repository(
@@ -167,6 +174,7 @@ impl ProjectManager {
         description: Option<String>,
         repository: Option<&Path>,
         check_command: Option<Vec<String>>,
+        check_timeout_minutes: Option<u32>,
         git: &GitAdapter,
     ) -> Result<Project, ProjectError> {
         let _write = self.store.lock_writes()?;
@@ -185,6 +193,7 @@ impl ProjectManager {
             task_ids: Vec::new(),
             repository,
             check_command,
+            check_timeout_minutes,
             created_at_unix_secs: now,
             updated_at_unix_secs: now,
         };
@@ -247,6 +256,21 @@ impl ProjectManager {
         }
         let mut project = self.store.load_project(project_id)?;
         project.check_command = Some(command);
+        project.updated_at_unix_secs = now_unix_secs()?;
+        project.validate()?;
+        self.store.save_project(&project)?;
+        Ok(project)
+    }
+
+    /// Sets how long the check command may run; `None` restores the default.
+    pub fn set_project_check_timeout(
+        &self,
+        project_id: ProjectId,
+        minutes: Option<u32>,
+    ) -> Result<Project, ProjectError> {
+        let _write = self.store.lock_writes()?;
+        let mut project = self.store.load_project(project_id)?;
+        project.check_timeout_minutes = minutes;
         project.updated_at_unix_secs = now_unix_secs()?;
         project.validate()?;
         self.store.save_project(&project)?;
@@ -1046,8 +1070,8 @@ mod tests {
     use super::{MergeOutcome, ProjectError, ProjectManager};
     use crate::integrations::GitAdapter;
     use crate::model::{
-        AgentStatus, ApprovalDecision, ApprovalGate, MAX_AGENT_EVENTS, Priority, ProjectId,
-        ProjectStatus, RecoveryAction, TaskStatus, WorkflowStep,
+        AgentStatus, ApprovalDecision, ApprovalGate, MAX_AGENT_EVENTS, ModelError, Priority,
+        ProjectId, ProjectStatus, RecoveryAction, TaskStatus, WorkflowStep,
     };
     use std::{fs, path::Path, process::Command};
 
@@ -1168,6 +1192,40 @@ mod tests {
     }
 
     #[test]
+    fn check_timeout_is_set_validated_and_reset() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = ProjectManager::new(temp.path()).unwrap();
+        let project = manager.create_project("Timed".to_owned(), None).unwrap();
+        assert_eq!(project.check_timeout_minutes, None);
+
+        let configured = manager
+            .set_project_check_timeout(project.id, Some(90))
+            .unwrap();
+        assert_eq!(configured.check_timeout_minutes, Some(90));
+        assert!(matches!(
+            manager.set_project_check_timeout(project.id, Some(0)),
+            Err(ProjectError::Model(ModelError::InvalidCheckTimeout))
+        ));
+        assert_eq!(
+            manager
+                .get_project(project.id)
+                .unwrap()
+                .check_timeout_minutes,
+            Some(90)
+        );
+
+        let reset = manager.set_project_check_timeout(project.id, None).unwrap();
+        assert_eq!(reset.check_timeout_minutes, None);
+        assert_eq!(
+            manager
+                .get_project(project.id)
+                .unwrap()
+                .check_timeout_minutes,
+            None
+        );
+    }
+
+    #[test]
     fn pending_legacy_project_can_be_configured_with_a_git_repository() {
         let temp = tempfile::tempdir().unwrap();
         let repository = temp.path().join("repo");
@@ -1208,6 +1266,7 @@ mod tests {
                 None,
                 Some(&repository),
                 Some(vec!["true".to_owned()]),
+                None,
                 &git,
             )
             .unwrap();
@@ -1273,6 +1332,7 @@ mod tests {
                 None,
                 Some(&repository),
                 Some(vec!["true".to_owned()]),
+                None,
                 &git,
             )
             .unwrap();
@@ -1336,6 +1396,7 @@ mod tests {
                 None,
                 Some(&repository),
                 Some(vec!["true".to_owned()]),
+                None,
                 &git,
             )
             .unwrap();
@@ -1406,6 +1467,7 @@ mod tests {
                 "Factory".to_owned(),
                 None,
                 Some(&repository),
+                None,
                 None,
                 &git,
             )

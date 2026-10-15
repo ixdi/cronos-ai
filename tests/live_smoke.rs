@@ -62,6 +62,7 @@ fn real_herdr_pi_review_agent_writes_a_structured_result() {
             None,
             Some(&repository),
             Some(vec!["true".to_owned()]),
+            None,
             &git_adapter,
         )
         .unwrap();

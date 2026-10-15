@@ -185,6 +185,7 @@ fn workflow_launches_each_profile_with_only_its_resources_and_rejects_bad_mcp_be
             None,
             Some(&repository),
             Some(vec!["true".to_owned()]),
+            None,
             &git,
         )
         .unwrap();

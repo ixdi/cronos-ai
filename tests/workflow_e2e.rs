@@ -213,6 +213,7 @@ fn task_workflow_revises_retries_documents_archives_and_merges_locally() {
             None,
             Some(&repository),
             Some(vec!["./check.sh".to_owned()]),
+            None,
             &git_adapter,
         )
         .unwrap();
@@ -394,6 +395,7 @@ fn read_only_steps_and_uncommitted_writers_fail_the_task() {
                 None,
                 Some(&repository),
                 Some(vec!["./check.sh".to_owned()]),
+                None,
                 &git_adapter,
             )
             .unwrap();
@@ -469,6 +471,7 @@ fn task_with_check_at(
             None,
             Some(&repository),
             check_command,
+            None,
             &git_adapter,
         )
         .unwrap();

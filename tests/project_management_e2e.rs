@@ -204,3 +204,19 @@ fn tasks_created_by_concurrent_processes_are_all_kept() {
         .count();
     assert_eq!(stored, PROCESSES, "every saved task file is listed");
 }
+
+#[test]
+fn check_time_limit_is_set_rejected_when_out_of_range_and_reset_from_the_cli() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("data");
+    let project_id = id(&cronos(&data, &["project", "create", "Timed"]).unwrap());
+
+    let configured = cronos(&data, &["project", "set-check-timeout", &project_id, "90"]).unwrap();
+    assert_eq!(configured["check_timeout_minutes"], 90);
+
+    let error = cronos(&data, &["project", "set-check-timeout", &project_id, "481"]).unwrap_err();
+    assert!(error.contains("between 1 and 480 minutes"), "{error}");
+
+    let reset = cronos(&data, &["project", "set-check-timeout", &project_id]).unwrap();
+    assert!(reset["check_timeout_minutes"].is_null());
+}
