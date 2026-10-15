@@ -14,10 +14,10 @@ The OpenSpec specs in `openspec/specs/` are the source of truth for behavior. Th
 ## Execution model
 
 - **Implemented:**
-  - One task runs at a time.
+  - Up to the project's parallel capacity (1 by default, at most 8) of tasks run at the same time, each on its own feature track: worktree, branch, step lock, Herdr agents, and Pi orchestrator. Tasks in Error keep their track until recovered or abandoned.
+  - Scheduling is conflict-aware: a ready task that shares a requirement with an active task waits. Dependencies still order related work, store changes and merges are serialized, and a merge conflict returns the later task to code generation.
   - Within a task, steps run sequentially; a step starts only after the previous one finishes.
   - Independent agents within one step run in parallel.
-- **Future:** several tasks run in parallel on separate feature tracks. The step order within each task does not change.
 
 ## Task statuses
 
@@ -172,7 +172,6 @@ Pi keeps running agent steps until the task reaches an approval gate, local merg
 
 ## Future work
 
-- Parallel tasks on feature tracks, with conflict-aware scheduling.
 - Jev-based prioritization.
 - Parallel code-generation agents in separate sub-worktrees with a deterministic merge.
 - Sandboxed workers.

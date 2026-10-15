@@ -218,3 +218,14 @@ The system SHALL run a read-only Pi planner in the project repository to propose
 #### Scenario: Responsive dashboard while planning
 - **WHEN** the user starts planning from the TUI
 - **THEN** the planner runs in the background, the dashboard stays usable, and the plan appears when it is ready
+
+### Requirement: Parallel task capacity
+A project SHALL store how many tasks may be active at the same time, from 1 to 8 and defaulting to 1, set from the CLI or the TUI project form, and the task list SHALL show a capacity above one.
+
+#### Scenario: Set the capacity
+- **WHEN** a user sets a project's parallel capacity to 3
+- **THEN** it is saved and the task list shows that up to 3 tasks run at a time
+
+#### Scenario: Reject an invalid capacity
+- **WHEN** a user sets a capacity of 0 or more than 8
+- **THEN** the project is unchanged and the user sees the allowed range

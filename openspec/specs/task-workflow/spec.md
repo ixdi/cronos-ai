@@ -2,20 +2,9 @@
 
 ## Purpose
 
-Defines how Cronos-AI executes one task at a time through supervised workflow steps, including parallel agents within a step, approvals, and human-directed recovery.
+Defines how Cronos-AI executes tasks, one at a time or in parallel up to a project capacity, through supervised workflow steps, including parallel agents within a step, approvals, and human-directed recovery.
 
 ## Requirements
-
-### Requirement: Ordered single-task execution
-The system SHALL execute no more than one task at a time in the first release and SHALL advance each task through its workflow steps in order, starting a step only after the preceding step is complete.
-
-#### Scenario: Process the task queue
-- **WHEN** multiple tasks are ready
-- **THEN** the system processes one task at a time and does not start the next task until the current task is completed or explicitly abandoned
-
-#### Scenario: Advance workflow steps
-- **WHEN** a task step completes successfully
-- **THEN** the next defined step starts
 
 ### Requirement: Parallel agents within a step
 The system SHALL run independent sub-agents assigned to the same workflow step in parallel and SHALL wait for their results before advancing to the next step. Specification and code generation SHALL use exactly one agent; code review, verification, and documentation SHALL accept one to four agents. Code review and verification agents SHALL NOT modify the task worktree.
@@ -274,3 +263,26 @@ When a project has releases on, after a task merges locally the system SHALL tag
 #### Scenario: Releases off
 - **WHEN** a project has releases off
 - **THEN** merging creates no tag and does not touch `CHANGELOG.md`
+
+### Requirement: Ordered parallel task execution
+The system SHALL run at most the project's parallel capacity of tasks at the same time, counting In Progress and Error tasks, and SHALL advance each task through its workflow steps in order, starting a step only after the preceding step of that task is complete. A ready task SHALL NOT start while an active task shares one of its requirements. Each running task SHALL have its own orchestrator.
+
+#### Scenario: Fill the project's tracks
+- **WHEN** a project allows three tasks at a time and four independent tasks are ready
+- **THEN** three tasks start and the fourth waits until one of them completes or is abandoned
+
+#### Scenario: Default to one task
+- **WHEN** a project keeps the default capacity of one and several tasks are ready
+- **THEN** the system processes one task at a time and does not start the next until the current one is completed or abandoned
+
+#### Scenario: Avoid conflicting work
+- **WHEN** a ready task shares a requirement with an active task
+- **THEN** it waits and another ready task without that requirement may start instead
+
+#### Scenario: Error holds a track
+- **WHEN** an active task fails and is marked Error
+- **THEN** it keeps its track until a human recovers or abandons it
+
+#### Scenario: Advance workflow steps
+- **WHEN** a task step completes successfully
+- **THEN** the next defined step of that task starts

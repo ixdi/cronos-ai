@@ -8,8 +8,8 @@ Cronos-AI is a supervised software factory for taking a project task through a s
 
 It is an opinionated stack with a Rust TUI. Rust owns persisted task state and human approval gates, Pi orchestrates workflow steps, and Herdr manages the agents that work in parallel within a step.
 
-> [!WARNING]
-> The MVP is not yet capable of running multiple tasks concurrently. Jev-based prioritisation has been deferred.
+> [!NOTE]
+> Tasks run one at a time by default; set a project's parallel capacity to run several on separate feature tracks. Jev-based prioritisation has been deferred.
 
 ## What it does
 
@@ -17,14 +17,14 @@ It is an opinionated stack with a Rust TUI. Rust owns persisted task state and h
 - Record a project's functional and non-functional requirements and let a read-only Pi planner propose the tasks that cover them; nothing is created until you approve the plan.
 - Monitor task status and agent activity in a terminal dashboard.
 - Manage named Pi skill, extension, MCP, model, and time-limit profiles for workflow agents from the TUI.
-- Run one task at a time through specification, implementation, review, verification, approval, documentation, and local merge steps. Agents report structured results; Rust decides each step from them and runs the project's check command before final approval.
+- Run each task through specification, implementation, review, verification, approval, documentation, and local merge steps, one task at a time or several in parallel up to a per-project capacity, never two tasks that share a requirement. Agents report structured results; Rust decides each step from them and runs the project's check command before final approval.
 - Send code back for automatic revision (up to 3 per attempt) when reviewers, verifiers, or the check command find problems.
 - Require human approval of specifications and final code, with a review view of the spec, commits, diff, and check output; request revisions, retry a failed step, or recover failed attempts with additional context.
 - Give each attempt an isolated local Git worktree. After final approval, changes are merged locally by default, or, per project, merged and pushed or opened as a pull request with the GitHub CLI. Projects can also tag each merge as a semantic-version release and record it in `CHANGELOG.md`.
 
 ![Workflow diagram](design/workflow.svg)
 
-The diagram shows the target model, where several feature tracks run in parallel. Today, one task runs at a time through the same per-task steps.
+The diagram shows several feature tracks running in parallel, each through the same per-task steps. A project runs one track by default; raise it with `project set-parallelism` or the **Parallel tasks** field of the project form.
 
 ## Requirements
 
@@ -81,6 +81,7 @@ The project form is only for new projects. To add a repository, check command, o
 ./target/release/cronos-ai project set-repository <PROJECT_ID> --repository /path/to/repository
 ./target/release/cronos-ai project set-check-command <PROJECT_ID> -- ./scripts/check.sh
 ./target/release/cronos-ai project set-check-timeout <PROJECT_ID> 90   # minutes, 1-480; omit to restore 60
+./target/release/cronos-ai project set-parallelism <PROJECT_ID> 3      # tasks at a time, 1-8
 ```
 
 ## When something fails

@@ -28,7 +28,7 @@
 			</div>
 			<article class="reference-content">
 <h2 id="task-queue">Task queue</h2>
-<p>Cronos starts at most one task at a time. <code>start_next_task</code> selects the highest-priority ready Pending task after checking its dependencies. While a task is In Progress or Error, the queue does not start another task. An Error task must be recovered or explicitly abandoned first.</p>
+<p>Cronos runs up to the project's parallel capacity of tasks at a time (1 by default; set 1 to 8 with <code>project set-parallelism</code> or the project form). Tasks that are In Progress or Error fill the tracks, so an Error task must be recovered or abandoned to free its track. <code>start_next_task</code> selects the highest-priority ready Pending task whose dependencies are Completed and that shares no requirement with an active task; a task that would touch the same requirement waits. In the TUI, <strong>s</strong> resumes every interrupted task and then starts ready tasks until the tracks are full, each with its own Pi orchestrator.</p>
 <p>A project needs a local Git repository with a committed <code>openspec/</code> directory (<code>openspec init</code>, then commit it) and a check command before its tasks can start.</p>
 <h2 id="ordered-steps">Ordered steps</h2>
 <table>

@@ -112,8 +112,8 @@
 	<section id="workflow" aria-labelledby="workflow-title">
 		<div class="section-intro">
 			<div class="eyebrow">02 · Workflow</div>
-			<h2 id="workflow-title">One task, ordered steps, explicit approvals</h2>
-			<p>A project can contain many features and tasks. In the current MVP, the queue runs one task at a time; independent agents within the active step can run in parallel. The editable feature-track diagram describes the target project-level parallel model.</p>
+			<h2 id="workflow-title">Parallel tracks, ordered steps, explicit approvals</h2>
+			<p>A project can contain many features and tasks. By default the queue runs one task at a time; raise the project's parallel capacity to run several on separate feature tracks, never two that share a requirement. Independent agents within each task's active step also run in parallel.</p>
 		</div>
 		<div class="grid">
 			<article class="card"><h3>1. Specifications</h3><p>One agent writes and commits the task's OpenSpec change; Rust requires <code>openspec validate --strict</code>
@@ -129,7 +129,7 @@
 		</div>
 		<figure class="feature-preview">
 			<img src="../design/workflow.png" alt="A project fans out to independent feature tracks; each track proceeds through specs, build, verify, and human approval.">
-			<figcaption>Parallel feature tracks are the target model. The current MVP still processes one task at a time.</figcaption>
+			<figcaption>Each feature track runs one task through its steps; a project runs as many tracks as its parallel capacity allows.</figcaption>
 		</figure>
 	</section>
 
@@ -270,7 +270,7 @@
 			<a href="../design/workflow.drawio">Editable feature-flow diagram</a>
 			<a href="../design/workflow.png">Feature-flow preview</a>
 		</div>
-		<p class="small" style="margin-top:14px">The parallel feature view is a target model. The Rust MVP currently runs one task at a time, while independent agents within that task's active step may run concurrently.</p>
+		<p class="small" style="margin-top:14px">Tasks run on parallel tracks up to the project's capacity (one by default), each with its own worktree and orchestrator, while independent agents within each task's active step run concurrently.</p>
 	</section>
 
 	<section id="technical" aria-labelledby="technical-title">
