@@ -3,6 +3,7 @@ pub mod cli;
 pub mod integrations;
 pub mod model;
 pub mod planning;
+pub mod prioritization;
 pub mod project;
 pub mod release;
 pub mod sandbox;
